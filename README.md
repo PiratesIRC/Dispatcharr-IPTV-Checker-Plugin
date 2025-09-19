@@ -1,5 +1,5 @@
 # Dispatcharr-IPTV-Checker-Plugin
-A Dispatcharr Plugin that goes through a playlist to check IPTV channels
+A Dispatcharr Plugin that goes through a playlist to check IPTV channels.
 Based on https://github.com/NewsGuyTor/IPTVChecker
 
 **Description:** Check IPTV streams' status and analyze each stream's quality
