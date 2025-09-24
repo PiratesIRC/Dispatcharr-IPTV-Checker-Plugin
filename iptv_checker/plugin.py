@@ -10,11 +10,8 @@ import json
 import os
 import re
 import csv
-from datetime import datetime
-from urllib.parse import urlparse
-import shutil
-import threading
 import time
+from datetime import datetime
 
 # Setup logging using Dispatcharr's format
 LOGGER = logging.getLogger("plugins.iptv_checker")
@@ -29,81 +26,174 @@ class Plugin:
     """Dispatcharr IPTV Checker Plugin"""
     
     name = "IPTV Checker"
-    version = "0.1"
-    description = "Check IPTV stream status and analyze stream quality"
+    version = "0.2"
+    description = "Check stream status and quality for channels in specified Dispatcharr groups."
     
-    # Settings rendered by UI
     fields = [
         {
-            "id": "m3u_url",
-            "label": "M3U8 Playlist URL",
+            "id": "dispatcharr_url",
+            "label": "Dispatcharr URL",
             "type": "string",
             "default": "",
-            "placeholder": "http://example.com/playlist.m3u8",
-            "help_text": "Base name for the EPG Source(s) added to Dispatcharr.",
+            "placeholder": "http://192.168.1.10:9191",
+            "help_text": "URL of your Dispatcharr instance (from your browser's address bar). Example: http://127.0.0.1:9191",
+        },
+        {
+            "id": "dispatcharr_username",
+            "label": "Dispatcharr Admin Username",
+            "type": "string",
+            "help_text": "Your admin username for the Dispatcharr UI. Required for WRITE operations.",
+        },
+        {
+            "id": "dispatcharr_password",
+            "label": "Dispatcharr Admin Password",
+            "type": "string",
+            "input_type": "password",
+            "help_text": "Your admin password for the Dispatcharr UI. Required for WRITE operations.",
+        },
+        {
+            "id": "group_names",
+            "label": "Group(s) to Check (comma-separated)",
+            "type": "string",
+            "default": "",
+            "help_text": "The name of the Dispatcharr Channel Group(s) to check. Leave blank to check all groups.",
         },
         {
             "id": "timeout",
             "label": "Connection Timeout (seconds)",
             "type": "number",
             "default": 10,
-            "help_text": "Timeout for stream connection attempts",
+            "help_text": "Timeout for each stream connection attempt. Default: 10",
         },
         {
-            "id": "selected_groups",
-            "label": "Groups to Check (comma-separated)",
+            "id": "dead_connection_retries",
+            "label": "Dead Connection Retries",
+            "type": "number",
+            "default": 3,
+            "help_text": "Number of times to retry checking a stream if it appears to be dead. Default: 3",
+        },
+        {
+            "id": "dead_prefix",
+            "label": "Dead Channel Prefix",
             "type": "string",
             "default": "",
-            "help_text": "Specific groups to check, or leave empty to check all groups",
+            "placeholder": "[DEAD] ",
+            "help_text": "Prefix to add to dead channels (e.g., '[DEAD] ').",
         },
+        {
+            "id": "dead_suffix",
+            "label": "Dead Channel Suffix",
+            "type": "string",
+            "default": "",
+            "placeholder": " [DEAD]",
+            "help_text": "Suffix to add to dead channels (e.g., ' [DEAD]').",
+        },
+        {
+            "id": "move_to_group_name",
+            "label": "Move Dead Channels to Group",
+            "type": "string",
+            "default": "Graveyard",
+            "help_text": "Enter the name for the group to move dead channels into.",
+        },
+        {
+            "id": "low_framerate_prefix",
+            "label": "Low Framerate Prefix - Less than 30fps",
+            "type": "string",
+            "default": "",
+            "help_text": "Prefix to add to low framerate channels. (e.g., ' [SLOW]').",
+        },
+        {
+            "id": "low_framerate_suffix",
+            "label": "Low Framerate Suffix - Less than 30fps",
+            "type": "string",
+            "default": " [Slow]",
+            "help_text": "Suffix to add to low framerate channels. (e.g., ' [SLOW]').",
+        },
+        {
+            "id": "move_low_framerate_group",
+            "label": "Move Low Framerate Channels to Group",
+            "type": "string",
+            "default": "Slow",
+            "help_text": "Enter the name for the group to move low framerate channels into.",
+        },
+        {
+            "id": "video_format_suffixes",
+            "label": "Add Video Format Suffixes - [4k], [FHD], [HD], [SD], [Unknown]",
+            "type": "string",
+            "default": "4k, FHD, HD, SD, Unknown",
+            "help_text": "A comma-separated list of formats to add as a suffix (e.g., [HD]) to channel names.",
+        }
     ]
     
-    # Actions for Dispatcharr UI
     actions = [
         {
-            "id": "load_playlist",
-            "label": "Load Playlist",
-            "description": "Load and parse the M3U8 playlist to discover available groups",
-        },
-        {
-            "id": "preview_check",
-            "label": "Preview Check",
-            "description": "Preview what groups and channels will be checked based on current settings",
+            "id": "load_groups",
+            "label": "Load Group(s)",
+            "description": "Load channels from the specified Dispatcharr group(s) (or all groups if blank).",
         },
         {
             "id": "check_streams",
-            "label": "Check Streams", 
-            "description": "Check stream status and analyze quality issues",
-            "confirm": {
-                "required": True,
-                "title": "Check IPTV Streams?",
-                "message": "This will check streams. Use 'Preview Check' first to see what will be checked. Continue?",
-            }
+            "label": "Process Channels/Streams", 
+            "description": "Check stream status (alive/dead), framerate, and identify video format (HD, SD etc.)",
+            "confirm": { "required": True, "title": "Check Streams?", "message": "This will check all streams from the previously loaded groups. Continue?" }
+        },
+        {
+            "id": "get_results",
+            "label": "Check Status/View Last Results",
+            "description": "Display live progress if a check is running or summary of the last check.",
+        },
+        {
+            "id": "rename_channels",
+            "label": "Rename Dead Channels",
+            "description": "Rename all channels marked as 'Dead' in the last check, based on prefix/suffix settings.",
+            "confirm": { "required": True, "title": "Rename Dead Channels?", "message": "This action is irreversible. Continue?" }
+        },
+        {
+            "id": "move_dead_channels",
+            "label": "Move Dead Channels to Group",
+            "description": "Moves all channels marked as 'Dead' in the last check to the specified group.",
+            "confirm": { "required": True, "title": "Move Dead Channels?", "message": "This action is irreversible. Continue?" }
+        },
+        {
+            "id": "rename_low_framerate_channels",
+            "label": "Rename Low Framerate Channels",
+            "description": "Rename channels with streams under 30fps based on prefix/suffix settings.",
+            "confirm": { "required": True, "title": "Rename Low Framerate Channels?", "message": "This action is irreversible. Continue?" }
+        },
+        {
+            "id": "move_low_framerate_channels",
+            "label": "Move Low Framerate Channels to Group",
+            "description": "Moves channels with streams under 30fps to the specified group.",
+            "confirm": { "required": True, "title": "Move Low Framerate Channels?", "message": "This action is irreversible. Continue?" }
+        },
+        {
+            "id": "add_video_format_suffix",
+            "label": "Add Video Format Suffix to Channels",
+            "description": "Adds a format suffix like [HD] or [FHD] to alive channel names.",
+            "confirm": { "required": True, "title": "Add Video Format Suffixes?", "message": "This will rename channels based on the last check. This action is irreversible. Continue?" }
+        },
+        {
+            "id": "remove_bracket_tags",
+            "label": "Remove [] tags",
+            "description": "Removes any text inside square brackets [] from the names of all loaded channels.",
+            "confirm": { "required": True, "title": "Remove [] tags from Channel Names?", "message": "This will modify the names of all currently loaded channels. This action is irreversible. Continue?" }
         },
         {
             "id": "view_table",
             "label": "View Results Table",
-            "description": "Display detailed results in table format"
-        },
-        {
-            "id": "get_results",
-            "label": "View Last Results",
-            "description": "Display summary of the last stream check results"
+            "description": "Display detailed results in table format. (Copy/paste into text editor for better formatting."
         },
         {
             "id": "export_results",
             "label": "Export Results to CSV",
-            "description": "Export the last check results to a CSV file"
+            "description": "Export the last check results to a CSV file. Will be saved in Docker container: /data/exports/"
         }
     ]
     
     def __init__(self):
         self.results_file = "/data/iptv_checker_results.json"
-        self.channels = []
+        self.loaded_channels_file = "/data/iptv_checker_loaded_channels.json"
         self.check_progress = {"current": 0, "total": 0, "status": "idle"}
-        self.groups = []
-        self.last_check_summary = {}
-        
         LOGGER.info(f"{self.name} Plugin v{self.version} initialized")
 
     def run(self, action, params, context):
@@ -111,582 +201,498 @@ class Plugin:
         LOGGER.info(f"IPTV Checker run called with action: {action}")
         
         try:
-            # Get settings from context (Dispatcharr provides this)
             settings = context.get("settings", {})
             logger = context.get("logger", LOGGER)
             
-            if action == "load_playlist":
-                return self.load_playlist_action(settings, logger)
-            elif action == "preview_check":
-                return self.preview_check_action(settings, logger)
-            elif action == "check_streams":
-                return self.check_streams_action(settings, logger)
-            elif action == "view_table":
-                return self.view_table_action(settings, logger)
-            elif action == "get_results":
-                return self.get_results_action(settings, logger)
-            elif action == "export_results":
-                return self.export_results_action(settings, logger)
+            action_map = {
+                "load_groups": self.load_groups_action,
+                "check_streams": self.check_streams_action,
+                "get_results": self.get_results_action,
+                "rename_channels": self.rename_channels_action,
+                "move_dead_channels": self.move_dead_channels_action,
+                "rename_low_framerate_channels": self.rename_low_framerate_channels_action,
+                "move_low_framerate_channels": self.move_low_framerate_channels_action,
+                "add_video_format_suffix": self.add_video_format_suffix_action,
+                "remove_bracket_tags": self.remove_tags_action,
+                "view_table": self.view_table_action,
+                "export_results": self.export_results_action,
+            }
+            
+            if action in action_map:
+                return action_map[action](settings, logger)
             else:
-                return {
-                    "status": "error",
-                    "message": f"Unknown action: {action}",
-                    "available_actions": [
-                        "load_playlist", "check_streams", "get_results", 
-                        "export_results"
-                    ]
-                }
+                return {"status": "error", "message": f"Unknown action: {action}"}
         except Exception as e:
+            self.check_progress['status'] = 'idle'
             LOGGER.error(f"Error in plugin run: {str(e)}")
             return {"status": "error", "message": str(e)}
-    
-    def preview_check_action(self, settings, logger):
-        """Preview what will be checked based on current settings"""
-        try:
-            m3u_url = settings.get("m3u_url", "").strip()
-            if not m3u_url:
-                return {"status": "error", "message": "Please configure M3U8 URL in plugin settings first"}
             
-            # Validate URL format
-            if not m3u_url.startswith(('http://', 'https://')):
-                return {"status": "error", "message": f"Invalid URL format: {m3u_url}. URL must start with http:// or https://"}
-            
-            # Load M3U to get current channel data
-            headers = {'User-Agent': 'IPTVChecker 1.0'}
-            logger.info(f"Attempting to load M3U from: {m3u_url}")
-            response = requests.get(m3u_url, headers=headers, timeout=30)
-            response.raise_for_status()
-            
-            all_channels = self.parse_m3u(response.text)
-            available_groups = list(set(ch.get('group', 'No Group') for ch in all_channels))
-            available_groups.sort()
-            
-            # Check what will be filtered
-            selected_groups_str = settings.get("selected_groups", "").strip()
-            if selected_groups_str:
-                selected_groups = [g.strip() for g in selected_groups_str.split(',') if g.strip()]
-                filtered_channels = [ch for ch in all_channels 
-                                   if ch.get('group', 'No Group') in selected_groups]
-                
-                # Find which groups exist and which don't
-                existing_groups = [g for g in selected_groups if g in available_groups]
-                missing_groups = [g for g in selected_groups if g not in available_groups]
-                
-                message_parts = [f"Preview for 'Check Streams' action:"]
-                
-                if filtered_channels:
-                    message_parts.extend([
-                        f"• Will check: {len(filtered_channels)} channels",
-                        f"• From groups: {', '.join(existing_groups)} ({len(existing_groups)} groups)"
-                    ])
-                    
-                    # Show channel count per group
-                    group_counts = {}
-                    for ch in filtered_channels:
-                        group = ch.get('group', 'No Group')
-                        group_counts[group] = group_counts.get(group, 0) + 1
-                    
-                    message_parts.append("• Channels per group:")
-                    for group in sorted(group_counts.keys()):
-                        message_parts.append(f"  - {group}: {group_counts[group]} channels")
-                else:
-                    message_parts.append("• Will check: 0 channels (no matches found)")
-                
-                if missing_groups:
-                    message_parts.extend([
-                        f"• Groups not found: {', '.join(missing_groups)}",
-                        f"• Available groups: {', '.join(available_groups)}"
-                    ])
-                    
-            else:
-                # Will check all groups
-                group_counts = {}
-                for ch in all_channels:
-                    group = ch.get('group', 'No Group')
-                    group_counts[group] = group_counts.get(group, 0) + 1
-                
-                message_parts = [
-                    f"Preview for 'Check Streams' action:",
-                    f"• Will check: {len(all_channels)} channels (all channels)",
-                    f"• From groups: all {len(available_groups)} groups",
-                    "• Channels per group:"
-                ]
-                
-                for group in sorted(group_counts.keys()):
-                    message_parts.append(f"  - {group}: {group_counts[group]} channels")
-            
-            # Add timing estimate
-            total_channels = len(filtered_channels) if selected_groups_str else len(all_channels)
-            timeout = settings.get("timeout", 10)
-            estimated_minutes = (total_channels * (timeout + 5)) / 60  # rough estimate
-            
-            message_parts.extend([
-                f"• Estimated time: {estimated_minutes:.1f} minutes",
-                f"• Timeout per stream: {timeout} seconds"
-            ])
-            
-            return {
-                "status": "success",
-                "message": "\n".join(message_parts)
-            }
-            
-        except requests.RequestException as e:
-            return {"status": "error", "message": f"Error loading playlist for preview: {str(e)}"}
-        except Exception as e:
-            logger.error(f"Unexpected error in preview_check: {str(e)}")
-            return {"status": "error", "message": f"Error generating preview: {str(e)}"}
+    def _get_api_token(self, settings, logger):
+        """Get an API access token using username and password."""
+        dispatcharr_url = settings.get("dispatcharr_url", "").strip().rstrip('/')
+        username = settings.get("dispatcharr_username", "")
+        password = settings.get("dispatcharr_password", "")
 
-    def load_playlist_action(self, settings, logger):
-        """Load playlist and discover groups - Dispatcharr action"""
-        m3u_url = settings.get("m3u_url", "").strip()
-        if not m3u_url:
-            return {"status": "error", "message": "Please configure M3U8 URL in plugin settings first"}
+        if not all([dispatcharr_url, username, password]):
+            return None, "Dispatcharr URL, Username, and Password must be configured."
+
+        try:
+            url = f"{dispatcharr_url}/api/accounts/token/"
+            payload = {"username": username, "password": password}
+            response = requests.post(url, json=payload, timeout=15)
+
+            if response.status_code == 401:
+                return None, "Authentication failed. Please check your username and password."
+            
+            response.raise_for_status()
+            access_token = response.json().get("access")
+
+            if not access_token:
+                return None, "Login successful, but no access token was returned by the API."
+            
+            logger.info("Successfully obtained API access token.")
+            return access_token, None
+        except requests.exceptions.ConnectionError as e:
+            return None, f"Unable to connect to the Dispatcharr URL: {e}"
+        except requests.RequestException as e:
+            return None, f"A network error occurred while authenticating: {e}"
+
+    def _get_api_data(self, endpoint, token, settings):
+        """Helper to perform GET requests to the Dispatcharr API."""
+        dispatcharr_url = settings.get("dispatcharr_url", "").strip().rstrip('/')
+        url = f"{dispatcharr_url}{endpoint}"
+        headers = {'Authorization': f'Bearer {token}', 'Accept': 'application/json'}
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        
+        json_data = response.json()
+        if isinstance(json_data, dict):
+            return json_data.get('results', json_data)
+        elif isinstance(json_data, list):
+            return json_data
+        return []
+    
+    def _post_api_data(self, endpoint, token, payload, settings):
+        """Helper to perform POST requests to the Dispatcharr API."""
+        dispatcharr_url = settings.get("dispatcharr_url", "").strip().rstrip('/')
+        url = f"{dispatcharr_url}{endpoint}"
+        headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+        return response.json()
+
+    def _trigger_m3u_refresh(self, token, settings, logger):
+        """Triggers a global M3U refresh to update the GUI via WebSockets."""
+        logger.info("Triggering M3U refresh to update the GUI...")
+        try:
+            self._post_api_data("/api/m3u/refresh/", token, {}, settings)
+            logger.info("M3U refresh triggered successfully.")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to trigger M3U refresh: {e}")
+            return False
+
+    def load_groups_action(self, settings, logger):
+        """Load channels and streams from specified Dispatcharr groups."""
+        try:
+            token, error = self._get_api_token(settings, logger)
+            if error: return {"status": "error", "message": error}
+
+            group_names_str = settings.get("group_names", "").strip()
+            all_groups = self._get_api_data("/api/channels/groups/", token, settings)
+            group_name_to_id = {g['name']: g['id'] for g in all_groups if 'name' in g and 'id' in g}
+
+            if not group_names_str:
+                target_group_names, target_group_ids = set(group_name_to_id.keys()), set(group_name_to_id.values())
+                if not target_group_ids: return {"status": "error", "message": "No groups found in Dispatcharr."}
+            else:
+                input_names = {name.strip() for name in group_names_str.split(',') if name.strip()}
+                valid_names, invalid_names = {n for n in input_names if n in group_name_to_id}, input_names - {n for n in input_names if n in group_name_to_id}
+                target_group_ids, target_group_names = {group_name_to_id[name] for name in valid_names}, valid_names
+                if not target_group_ids: return {"status": "error", "message": f"None of the specified groups could be found: {', '.join(invalid_names)}"}
+
+            all_channels = self._get_api_data("/api/channels/channels/", token, settings)
+            loaded_channels = []
+            for channel in all_channels:
+                if channel.get('channel_group_id') in target_group_ids:
+                    logger.info(f"Fetching streams for channel: {channel.get('name')}")
+                    channel_streams = self._get_api_data(f"/api/channels/channels/{channel['id']}/streams/", token, settings)
+                    loaded_channels.append({**channel, "streams": channel_streams})
+            
+            with open(self.loaded_channels_file, 'w') as f: json.dump(loaded_channels, f)
+
+            total_streams = sum(len(c.get('streams', [])) for c in loaded_channels)
+            group_msg = "all groups" if not group_names_str else f"group(s): {', '.join(target_group_names)}"
+            
+            timeout = settings.get("timeout", 10)
+            retries = settings.get("dead_connection_retries", 3)
+            estimated_seconds = total_streams * (timeout * (retries + 1) + 2)
+            estimated_minutes = estimated_seconds / 60
+            
+            message = f"Successfully loaded {len(loaded_channels)} channels with {total_streams} streams from {group_msg}."
+            if 'invalid_names' in locals() and invalid_names:
+                message += f"\n\nWarning: Ignored groups not found: {', '.join(invalid_names)}"
+            if total_streams > 0:
+                message += f"\n\nNext, run 'Check Streams'. Estimated time: {estimated_minutes:.1f} minutes."
+
+            return {"status": "success", "message": message}
+        except Exception as e: return {"status": "error", "message": str(e)}
+
+    def check_streams_action(self, settings, logger):
+        """Check status and format of all loaded streams."""
+        if not os.path.exists(self.loaded_channels_file):
+            return {"status": "error", "message": "No channels loaded. Please run 'Load Group(s)' first."}
+        
+        with open(self.loaded_channels_file, 'r') as f: loaded_channels = json.load(f)
+        
+        all_streams = [
+            {"channel_id": ch['id'], "channel_name": ch['name'], "stream_url": s['url'], "stream_id": s['id']}
+            for ch in loaded_channels for s in ch.get('streams', []) if s.get('url')
+        ]
+        
+        if not all_streams: return {"status": "error", "message": "The loaded groups contain no streams to check."}
+
+        self.check_progress = {"current": 0, "total": len(all_streams), "status": "running"}
+        logger.info(f"Starting check for {len(all_streams)} streams...")
+        
+        results = []
+        timeout = settings.get("timeout", 10)
+        retries = settings.get("dead_connection_retries", 3)
+
+        for i, stream_data in enumerate(all_streams):
+            self.check_progress["current"] = i + 1
+            results.append({**stream_data, **self.check_stream(stream_data, timeout, retries, logger)})
+
+        with open(self.results_file, 'w') as f: json.dump(results, f, indent=2)
+        self.check_progress['status'] = 'idle'
+            
+        alive = sum(1 for r in results if r['status'] == 'Alive')
+        return {"status": "success", "message": f"Stream check completed successfully.\nFound {alive} alive and {len(results) - alive} dead streams."}
+
+    def rename_channels_action(self, settings, logger):
+        """Rename channels that were marked as dead in the last check."""
+        dead_prefix = settings.get("dead_prefix", "")
+        dead_suffix = settings.get("dead_suffix", "")
+        if not dead_prefix.strip() and not dead_suffix.strip():
+            return {"status": "error", "message": "Please configure a Dead Channel Prefix or Suffix before renaming."}
+
+        if not os.path.exists(self.results_file):
+            return {"status": "error", "message": "No check results found. Please run 'Check Streams' first."}
+            
+        with open(self.results_file, 'r') as f: results = json.load(f)
+            
+        dead_channels = {r['channel_id']: r['channel_name'] for r in results if r['status'] == 'Dead'}
+        if not dead_channels: return {"status": "success", "message": "No dead channels found in the last check."}
+            
+        payload = []
+        for cid, name in dead_channels.items():
+            new_name = name
+            if dead_prefix and not name.startswith(dead_prefix):
+                new_name = f"{dead_prefix}{new_name}"
+            if dead_suffix and not new_name.endswith(dead_suffix):
+                new_name = f"{new_name}{dead_suffix}"
+            
+            if new_name != name: 
+                payload.append({'id': cid, 'name': new_name})
+        
+        if not payload: return {"status": "success", "message": "No channels needed renaming."}
+            
+        try:
+            token, error = self._get_api_token(settings, logger)
+            if error: return {"status": "error", "message": error}
+            count = self._perform_bulk_patch(token, settings, logger, payload)
+            self._trigger_m3u_refresh(token, settings, logger)
+            return {"status": "success", "message": f"Successfully renamed {count} dead channels. GUI refresh triggered."}
+        except Exception as e: return {"status": "error", "message": str(e)}
+
+    def move_dead_channels_action(self, settings, logger):
+        """Move channels marked as dead to a new group."""
+        move_to_group_name = settings.get("move_to_group_name", "Graveyard").strip()
+        if not move_to_group_name:
+            return {"status": "error", "message": "Please enter a destination group name in the settings."}
+
+        if not os.path.exists(self.results_file):
+            return {"status": "error", "message": "No check results found. Please run 'Check Streams' first."}
+
+        with open(self.results_file, 'r') as f: results = json.load(f)
+        
+        dead_channel_ids = {r['channel_id'] for r in results if r['status'] == 'Dead'}
+        if not dead_channel_ids: return {"status": "success", "message": "No dead channels were found in the last check."}
         
         try:
-            headers = {'User-Agent': 'IPTVChecker 1.0'}
-            response = requests.get(m3u_url, headers=headers, timeout=30)
-            response.raise_for_status()
+            token, error = self._get_api_token(settings, logger)
+            if error: return {"status": "error", "message": error}
             
-            channels = self.parse_m3u(response.text)
-            groups = list(set(channel.get('group', 'No Group') for channel in channels))
-            groups.sort()
-            
-            # Store for later use
-            self.channels = channels
-            self.groups = groups
-            
-            # Save groups to a file for persistence
-            try:
-                groups_file = "/data/iptv_checker_groups.json"
-                with open(groups_file, 'w') as f:
-                    json.dump({"groups": groups, "channels_count": len(channels)}, f)
-            except Exception as e:
-                logger.warning(f"Could not save groups to file: {str(e)}")
-            
-            # Format groups for easy copy-paste
-            groups_text = ", ".join(groups)
-            
-            return {
-                "status": "success",
-                "message": f"Loaded {len(channels)} channels from {len(groups)} groups.\n\nAvailable groups:\n{groups_text}\n\nCopy the groups you want to check into the 'Groups to Check' setting above (comma-separated), or leave empty to check all groups.",
-                "channels": len(channels),
-                "groups": len(groups)
-            }
-        except Exception as e:
-            LOGGER.error(f"Error loading M3U: {str(e)}")
-            return {"status": "error", "message": f"Failed to load playlist: {str(e)}"}
-    
-    def check_streams_action(self, settings, logger):
-        """Start stream checking - Dispatcharr action"""
-        try:
-            m3u_url = settings.get("m3u_url", "").strip()
-            if not m3u_url:
-                return {"status": "error", "message": "Please configure M3U8 URL in plugin settings first"}
-            
-            # Load M3U first to get current channel data
-            headers = {'User-Agent': 'IPTVChecker 1.0'}
-            response = requests.get(m3u_url, headers=headers, timeout=30)
-            response.raise_for_status()
-            
-            all_channels = self.parse_m3u(response.text)
-            
-            # Filter by selected groups
-            selected_groups_str = settings.get("selected_groups", "").strip()
-            if selected_groups_str:
-                selected_groups = [g.strip() for g in selected_groups_str.split(',') if g.strip()]
-                filtered_channels = [ch for ch in all_channels 
-                                   if ch.get('group', 'No Group') in selected_groups]
-                
-                # Check if any of the selected groups actually exist
-                available_groups = list(set(ch.get('group', 'No Group') for ch in all_channels))
-                missing_groups = [g for g in selected_groups if g not in available_groups]
-                
-                if not filtered_channels:
-                    return {"status": "error", "message": f"No channels found in selected groups: {', '.join(selected_groups)}.\n\nAvailable groups: {', '.join(sorted(available_groups))}\n\nPlease check your group names and try again."}
-                
-                if missing_groups:
-                    logger.warning(f"Groups not found: {', '.join(missing_groups)}")
-                    
-                group_info = f"{len(selected_groups)} selected groups ({', '.join(selected_groups)})"
+            all_groups = self._get_api_data("/api/channels/groups/", token, settings)
+            dest_group = next((g for g in all_groups if g['name'] == move_to_group_name), None)
+
+            if dest_group:
+                new_group_id = dest_group['id']
+                logger.info(f"Destination group '{move_to_group_name}' found with ID: {new_group_id}")
             else:
-                filtered_channels = all_channels
-                selected_groups = list(set(ch.get('group', 'No Group') for ch in all_channels))
-                group_info = f"all {len(selected_groups)} groups"
+                logger.info(f"Destination group '{move_to_group_name}' not found. Creating it...")
+                new_group = self._post_api_data("/api/channels/groups/", token, {'name': move_to_group_name}, settings)
+                new_group_id = new_group['id']
+                logger.info(f"Group '{move_to_group_name}' created with ID: {new_group_id}")
             
-            self.channels = filtered_channels
+            payload = [{'id': cid, 'channel_group_id': new_group_id} for cid in dead_channel_ids]
+            moved_count = self._perform_bulk_patch(token, settings, logger, payload)
+            self._trigger_m3u_refresh(token, settings, logger)
+            return {"status": "success", "message": f"Successfully moved {moved_count} dead channels to group '{move_to_group_name}'. GUI refresh triggered."}
+
+        except Exception as e: return {"status": "error", "message": str(e)}
+        
+    def rename_low_framerate_channels_action(self, settings, logger):
+        """Rename channels with low framerate streams."""
+        prefix = settings.get("low_framerate_prefix", "")
+        suffix = settings.get("low_framerate_suffix", " [Slow]")
+        
+        if not prefix.strip() and not suffix.strip():
+            return {"status": "error", "message": "Please configure a Low Framerate Prefix or Suffix."}
+
+        if not os.path.exists(self.results_file):
+            return {"status": "error", "message": "No check results found. Please run 'Check Streams' first."}
             
-            # Log what we're about to check
-            logger.info(f"Will check {len(filtered_channels)} channels in {group_info}")
+        with open(self.results_file, 'r') as f: results = json.load(f)
             
-            # Start checking
-            config = {
-                "timeout": settings.get("timeout", 10)
-            }
+        low_fps_channels = {r['channel_id']: r['channel_name'] for r in results if 0 < r.get('framerate_num', 0) < 30}
+        if not low_fps_channels: return {"status": "success", "message": "No low framerate channels found."}
             
-            # Run synchronously for better user feedback
-            results = self.check_all_streams_sync(config, logger)
+        payload = []
+        for cid, name in low_fps_channels.items():
+            new_name = name
+            if prefix and not name.startswith(prefix):
+                new_name = f"{prefix}{new_name}"
+            if suffix and not new_name.endswith(suffix):
+                new_name = f"{new_name}{suffix}"
+
+            if new_name != name:
+                payload.append({'id': cid, 'name': new_name})
+        
+        if not payload: return {"status": "success", "message": "No channels needed renaming."}
             
-            return {
-                "status": "success",
-                "message": f"Completed checking {len(self.channels)} channels in {group_info}.\n\nResults:\n• Alive: {results['alive']}\n• Dead: {results['dead']}\n• Low framerate (≤30fps): {results['low_framerate']}\n• Mislabeled resolution: {results['mislabeled']}\n\nUse 'View Last Results' for detailed breakdown or 'Export Results to CSV' to download the data.",
-                "results": results
-            }
+        try:
+            token, error = self._get_api_token(settings, logger)
+            if error: return {"status": "error", "message": error}
+            count = self._perform_bulk_patch(token, settings, logger, payload)
+            self._trigger_m3u_refresh(token, settings, logger)
+            return {"status": "success", "message": f"Successfully renamed {count} low framerate channels. GUI refresh triggered."}
+        except Exception as e: return {"status": "error", "message": str(e)}
+
+    def move_low_framerate_channels_action(self, settings, logger):
+        """Move channels with low framerate streams to a new group."""
+        group_name = settings.get("move_low_framerate_group", "Slow").strip()
+        if not group_name:
+            return {"status": "error", "message": "Please enter a destination group name."}
+
+        if not os.path.exists(self.results_file):
+            return {"status": "error", "message": "No check results found. Please run 'Check Streams' first."}
+
+        with open(self.results_file, 'r') as f: results = json.load(f)
+        
+        low_fps_channel_ids = {r['channel_id'] for r in results if 0 < r.get('framerate_num', 0) < 30}
+        if not low_fps_channel_ids: return {"status": "success", "message": "No low framerate channels found to move."}
+        
+        try:
+            token, error = self._get_api_token(settings, logger)
+            if error: return {"status": "error", "message": error}
             
-        except requests.RequestException as e:
-            LOGGER.error(f"Network error checking streams: {str(e)}")
-            return {"status": "error", "message": f"Network error loading M3U playlist: {str(e)}"}
-        except Exception as e:
-            LOGGER.error(f"Error checking streams: {str(e)}")
-            return {"status": "error", "message": f"Error during stream check: {str(e)}"}
-    
+            all_groups = self._get_api_data("/api/channels/groups/", token, settings)
+            dest_group = next((g for g in all_groups if g['name'] == group_name), None)
+
+            if dest_group:
+                new_group_id = dest_group['id']
+            else:
+                logger.info(f"Destination group '{group_name}' not found. Creating it...")
+                new_group = self._post_api_data("/api/channels/groups/", token, {'name': group_name}, settings)
+                new_group_id = new_group['id']
+            
+            payload = [{'id': cid, 'channel_group_id': new_group_id} for cid in low_fps_channel_ids]
+            moved_count = self._perform_bulk_patch(token, settings, logger, payload)
+            self._trigger_m3u_refresh(token, settings, logger)
+            return {"status": "success", "message": f"Successfully moved {moved_count} low framerate channels to group '{group_name}'. GUI refresh triggered."}
+        except Exception as e: return {"status": "error", "message": str(e)}
+
+    def add_video_format_suffix_action(self, settings, logger):
+        """Adds a format suffix like [HD] to channel names."""
+        suffixes_to_add_str = settings.get("video_format_suffixes", "4k, FHD, HD, SD, Unknown").strip().lower()
+        if not suffixes_to_add_str:
+            return {"status": "error", "message": "Please specify which video formats should have a suffix added."}
+        
+        suffixes_to_add = {s.strip() for s in suffixes_to_add_str.split(',')}
+        
+        if not os.path.exists(self.results_file):
+            return {"status": "error", "message": "No check results found. Please run 'Check Streams' first."}
+
+        with open(self.results_file, 'r') as f: results = json.load(f)
+        
+        channel_formats = {}
+        for r in results:
+            if r['status'] == 'Alive':
+                channel_formats[r['channel_id']] = r.get('format', 'Unknown')
+
+        if not channel_formats: return {"status": "success", "message": "No alive channels found to update."}
+
+        try:
+            token, error = self._get_api_token(settings, logger)
+            if error: return {"status": "error", "message": error}
+            
+            all_channels = self._get_api_data("/api/channels/channels/", token, settings)
+            channel_id_to_name = {c['id']: c['name'] for c in all_channels}
+
+            payload = []
+            for cid, fmt in channel_formats.items():
+                if fmt.lower() in suffixes_to_add:
+                    current_name = channel_id_to_name.get(cid)
+                    suffix = f" [{fmt.upper()}]"
+                    if current_name and not current_name.endswith(suffix):
+                        payload.append({'id': cid, 'name': current_name + suffix})
+
+            if not payload: return {"status": "success", "message": "No channels needed a format suffix added."}
+            
+            updated_count = self._perform_bulk_patch(token, settings, logger, payload)
+            self._trigger_m3u_refresh(token, settings, logger)
+            return {"status": "success", "message": f"Successfully added format suffixes to {updated_count} channels. GUI refresh triggered."}
+
+        except Exception as e: return {"status": "error", "message": str(e)}
+
+    def remove_tags_action(self, settings, logger):
+        """Removes all text within square brackets from channel names."""
+        if not os.path.exists(self.loaded_channels_file):
+            return {"status": "error", "message": "No channels loaded. Please run 'Load Group(s)' first."}
+
+        with open(self.loaded_channels_file, 'r') as f: loaded_channels = json.load(f)
+
+        if not loaded_channels: return {"status": "success", "message": "No channels loaded to process."}
+
+        payload = []
+        for channel in loaded_channels:
+            current_name = channel.get('name')
+            if not current_name: continue
+            
+            new_name = re.sub(r'\s*\[.*?\]', '', current_name).strip()
+
+            if new_name != current_name:
+                payload.append({'id': channel['id'], 'name': new_name})
+
+        if not payload:
+            return {"status": "success", "message": "No channels with [] tags were found to update."}
+            
+        try:
+            token, error = self._get_api_token(settings, logger)
+            if error: return {"status": "error", "message": error}
+            
+            updated_count = self._perform_bulk_patch(token, settings, logger, payload)
+            self._trigger_m3u_refresh(token, settings, logger)
+            return {"status": "success", "message": f"Successfully removed tags from {updated_count} channels. GUI refresh triggered."}
+
+        except Exception as e: return {"status": "error", "message": str(e)}
+
     def view_table_action(self, settings, logger):
         """Display results in table format"""
-        if not os.path.exists(self.results_file):
-            return {"status": "error", "message": "No results available. Run 'Check Streams' first."}
-        
-        try:
-            with open(self.results_file, 'r') as f:
-                results = json.load(f)
-            
-            channels = results.get('channels', [])
-            if not channels:
-                return {"status": "error", "message": "No channel data found in results."}
-            
-            # Create table header
-            table_lines = []
-            table_lines.append("=" * 120)
-            table_lines.append(f"{'Channel Name':<35} {'Group':<15} {'Status':<8} {'Resolution':<12} {'FPS':<8} {'Codec':<8} {'Issues':<15}")
-            table_lines.append("=" * 120)
-            
-            # Process each channel
-            for channel in channels:
-                name = channel.get('name', 'Unknown')[:34]
-                group = channel.get('group', 'None')[:14]
-                status = channel.get('status', 'Unknown')
-                resolution = channel.get('resolution', 'N/A')[:11]
-                framerate = channel.get('framerate', 'N/A')[:7]
-                codec = channel.get('codec', 'N/A')[:7]
-                
-                # Build issues list
-                issues = []
-                if channel.get('low_framerate'):
-                    issues.append('Low FPS')
-                if channel.get('mislabeled'):
-                    issues.append('Mislabeled')
-                if channel.get('status') == 'Dead':
-                    issues.append('Dead')
-                issues_str = ','.join(issues)[:14]
-                
-                # Format status with indicators
-                if status == 'Alive':
-                    status_display = '✓ Alive'
-                elif status == 'Dead':
-                    status_display = '✗ Dead'
-                else:
-                    status_display = status
-                
-                table_lines.append(f"{name:<35} {group:<15} {status_display:<8} {resolution:<12} {framerate:<8} {codec:<8} {issues_str:<15}")
-            
-            table_lines.append("=" * 120)
-            
-            # Add summary
-            summary = results.get('summary', {})
-            table_lines.append(f"Summary: {summary.get('total', 0)} total | {summary.get('alive', 0)} alive | {summary.get('dead', 0)} dead | {summary.get('low_framerate', 0)} low FPS | {summary.get('mislabeled', 0)} mislabeled")
-            
-            # Add error details for dead streams (first 5 errors)
-            dead_channels = [ch for ch in channels if ch.get('status') == 'Dead']
-            if dead_channels:
-                table_lines.append("")
-                table_lines.append("Dead Stream Errors:")
-                table_lines.append("-" * 80)
-                for i, channel in enumerate(dead_channels[:5]):
-                    error = channel.get('error', 'Unknown error')[:60]
-                    table_lines.append(f"{i+1}. {channel.get('name', 'Unknown')[:30]}: {error}")
-                if len(dead_channels) > 5:
-                    table_lines.append(f"... and {len(dead_channels) - 5} more dead streams")
-            
-            return {
-                "status": "success",
-                "message": "\n".join(table_lines)
-            }
-            
-        except Exception as e:
-            return {"status": "error", "message": f"Error creating table: {str(e)}"}
+        if not os.path.exists(self.results_file): return {"status": "error", "message": "No results available."}
+        with open(self.results_file, 'r') as f: results = json.load(f)
+        lines = ["="*100, f"{'Channel Name':<40} {'Status':<8} {'Format':<8} {'FPS':<8} {'Error Details':<30}", "="*100]
+        for r in results:
+            fps = r.get('framerate_num', 0)
+            fps_str = f"{fps:.1f}" if fps > 0 else "N/A"
+            lines.append(f"{r.get('channel_name', 'N/A')[:39]:<40} {r.get('status', 'N/A'):<8} {r.get('format', 'N/A'):<8} {fps_str:<8} {r.get('error', '')[:29]:<30}")
+        lines.append("="*100)
+        return {"status": "success", "message": "\n".join(lines)}
 
     def get_results_action(self, settings, logger):
-        """Display results summary"""
-        if not os.path.exists(self.results_file):
-            return {"status": "error", "message": "No results available. Run 'Check Streams' first."}
-        
-        try:
-            with open(self.results_file, 'r') as f:
-                results = json.load(f)
-            
-            channels = results.get('channels', [])
-            summary = results.get('summary', {})
-            
-            # Create detailed summary
-            alive_channels = [ch for ch in channels if ch.get('status') == 'Alive']
-            dead_channels = [ch for ch in channels if ch.get('status') == 'Dead']
-            low_fps_channels = [ch for ch in channels if ch.get('low_framerate')]
-            mislabeled_channels = [ch for ch in channels if ch.get('mislabeled')]
-            
-            # Top issues
-            error_summary = {}
-            for ch in dead_channels:
-                error = ch.get('error', 'Unknown error')
-                error_summary[error] = error_summary.get(error, 0) + 1
-            
-            message_parts = [
-                f"Last check results ({summary.get('total', 0)} channels):",
-                f"• Alive: {summary.get('alive', 0)}",
-                f"• Dead: {summary.get('dead', 0)}",
-                f"• Low framerate (<30fps): {summary.get('low_framerate', 0)}",
-                f"• Mislabeled resolution: {summary.get('mislabeled', 0)}"
-            ]
-            
-            if error_summary:
-                message_parts.append("\nTop errors:")
-                for error, count in sorted(error_summary.items(), key=lambda x: x[1], reverse=True)[:3]:
-                    message_parts.append(f"• {error}: {count} channels")
-            
-            if low_fps_channels:
-                message_parts.append(f"\nLow framerate channels: {', '.join([ch['name'][:30] for ch in low_fps_channels[:5]])}")
-                
-            if mislabeled_channels:
-                message_parts.append(f"\nMislabeled channels: {', '.join([ch['name'][:30] for ch in mislabeled_channels[:5]])}")
-            
-            return {
-                "status": "success", 
-                "message": '\n'.join(message_parts),
-                "results": summary
-            }
-        except Exception as e:
-            return {"status": "error", "message": f"Error reading results: {str(e)}"}
-    
+        """Display summary of last check or live progress."""
+        if self.check_progress['status'] == 'running':
+            current, total = self.check_progress['current'], self.check_progress['total']
+            percent = (current / total * 100) if total > 0 else 0
+            return {"status": "success", "message": f"Check in progress: {current}/{total} ({percent:.0f}%)"}
+
+        if not os.path.exists(self.results_file): return {"status": "error", "message": "No results available."}
+        with open(self.results_file, 'r') as f: results = json.load(f)
+        alive = sum(1 for r in results if r.get('status') == 'Alive')
+        formats = {r.get('format', 'Unknown'): 0 for r in results if r.get('status') == 'Alive'}
+        for r in results:
+            if r.get('status') == 'Alive': formats[r.get('format', 'Unknown')] += 1
+        summary = [f"Check Summary ({len(results)} streams):", f"• Alive: {alive}", f"• Dead: {len(results) - alive}\n", "Alive Stream Formats:"]
+        for fmt, count in sorted(formats.items()):
+            if count > 0: summary.append(f"• {fmt}: {count}")
+        return {"status": "success", "message": "\n".join(summary)}
+
     def export_results_action(self, settings, logger):
         """Export results to CSV"""
-        if not os.path.exists(self.results_file):
-            return {"status": "error", "message": "No results to export. Run 'Check Streams' first."}
-        
+        if not os.path.exists(self.results_file): return {"status": "error", "message": "No results to export."}
+        with open(self.results_file, 'r') as f: results = json.load(f)
+        filepath = f"/data/exports/iptv_check_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        os.makedirs("/data/exports", exist_ok=True)
+        with open(filepath, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=['channel_name', 'stream_url', 'status', 'format', 'framerate_num', 'error'], extrasaction='ignore')
+            writer.writeheader()
+            writer.writerows(results)
+        return {"status": "success", "message": f"Results exported to {filepath}"}
+
+    def _perform_bulk_patch(self, token, settings, logger, payload):
+        """Send a bulk PATCH request to the Dispatcharr API."""
+        if not payload: return 0
+        dispatcharr_url = settings.get("dispatcharr_url", "").strip().rstrip('/')
+        url = f"{dispatcharr_url}/api/channels/channels/edit/bulk/"
+        headers = {'Authorization': f"Bearer {token}", 'Content-Type': 'application/json'}
+        logger.info(f"Sending bulk patch for {len(payload)} channels.")
+        response = requests.patch(url, headers=headers, json=payload, timeout=60)
+        response.raise_for_status()
+        logger.info(f"Successfully patched {len(payload)} channels.")
+        return len(payload)
+
+    def _get_stream_format(self, resolution_str):
+        """Determine video format from a resolution string."""
+        if 'x' not in resolution_str: return "Unknown"
         try:
-            with open(self.results_file, 'r') as f:
-                results = json.load(f)
-            
-            channels = results.get('channels', [])
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"iptv_check_results_{timestamp}.csv"
-            filepath = os.path.join("/data/exports", filename)
-            
-            # Ensure export directory exists
-            os.makedirs("/data/exports", exist_ok=True)
-            
-            with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
-                fieldnames = [
-                    'name', 'group', 'url', 'status', 'error', 'codec',
-                    'resolution', 'framerate', 'bitrate', 'low_framerate',
-                    'mislabeled', 'checked_at'
-                ]
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                
-                writer.writeheader()
-                for channel in channels:
-                    row = {field: channel.get(field, '') for field in fieldnames}
-                    writer.writerow(row)
-            
-            return {
-                "status": "success", 
-                "message": f"Results exported to {filepath}",
-                "file_path": filepath,
-                "total_channels": len(channels)
-            }
-        except Exception as e:
-            LOGGER.error(f"Error exporting CSV: {str(e)}")
-            return {"status": "error", "message": str(e)}
-    
-    def parse_m3u(self, content):
-        """Parse M3U playlist content"""
-        channels = []
-        lines = content.split('\n')
-        current_info = {}
+            width = int(resolution_str.split('x')[0])
+            if width >= 3800: return "4K"
+            if width >= 1900: return "FHD"
+            if width >= 1200: return "HD"
+            if width > 0: return "SD"
+            return "Unknown"
+        except: return "Unknown"
         
-        for line in lines:
-            line = line.strip()
-            if line.startswith('#EXTINF:'):
-                # Parse channel info
-                info_match = re.search(r'#EXTINF:.*?,(.*)', line)
-                if info_match:
-                    current_info['name'] = info_match.group(1).strip()
-                
-                # Extract group
-                group_match = re.search(r'group-title="([^"]*)"', line)
-                current_info['group'] = group_match.group(1) if group_match else 'No Group'
-                
-                # Extract logo
-                logo_match = re.search(r'tvg-logo="([^"]*)"', line)
-                current_info['logo'] = logo_match.group(1) if logo_match else ''
-                
-            elif line and not line.startswith('#') and current_info:
-                # This is the stream URL
-                current_info['url'] = line
-                channels.append(current_info.copy())
-                current_info = {}
-        
-        return channels
-    
-    def check_all_streams_sync(self, config, logger):
-        """Check all streams synchronously and return summary"""
-        try:
-            timeout = config.get("timeout", 10)
-            
-            alive_count = 0
-            dead_count = 0
-            low_framerate_count = 0
-            mislabeled_count = 0
-            
-            for i, channel in enumerate(self.channels):
-                logger.info(f"Checking channel {i+1}/{len(self.channels)}: {channel['name']}")
-                
-                # Check stream status and get info
-                stream_info = self.check_stream(channel['url'], timeout)
-                
-                if stream_info['status'] == 'Alive':
-                    alive_count += 1
-                else:
-                    dead_count += 1
-                
-                # Detect quality issues
-                low_framerate = stream_info.get('framerate_num', 0) < 30 and stream_info.get('framerate_num', 0) > 0
-                mislabeled = self.detect_mislabeled(channel['name'], stream_info.get('resolution', ''))
-                
-                if low_framerate:
-                    low_framerate_count += 1
-                if mislabeled:
-                    mislabeled_count += 1
-                
-                # Update channel with results
-                channel.update({
-                    'status': stream_info['status'],
-                    'error': stream_info.get('error', ''),
-                    'codec': stream_info.get('codec', ''),
-                    'resolution': stream_info.get('resolution', ''),
-                    'framerate': stream_info.get('framerate', ''),
-                    'bitrate': stream_info.get('bitrate', ''),
-                    'low_framerate': low_framerate,
-                    'mislabeled': mislabeled,
-                    'checked_at': datetime.now().isoformat()
-                })
-            
-            # Save results
-            summary = {
-                "total": len(self.channels),
-                "alive": alive_count,
-                "dead": dead_count,
-                "low_framerate": low_framerate_count,
-                "mislabeled": mislabeled_count,
-                "checked_at": datetime.now().isoformat()
-            }
-            
-            results = {
-                "channels": self.channels,
-                "summary": summary
-            }
-            
-            with open(self.results_file, 'w') as f:
-                json.dump(results, f, indent=2)
-            
-            logger.info("Stream checking completed")
-            return summary
-            
-        except Exception as e:
-            logger.error(f"Error during stream checking: {str(e)}")
-            return {"total": 0, "alive": 0, "dead": 0, "low_framerate": 0, "mislabeled": 0}
-    
-    def check_stream(self, url, timeout):
-        """Check individual stream status and get info"""
-        try:
-            # Use ffprobe to get stream info
-            cmd = [
-                '/usr/local/bin/ffprobe',
-                '-v', 'quiet',
-                '-print_format', 'json',
-                '-show_streams',
-                '-show_format',
-                '-user_agent', 'IPTVChecker 1.0',
-                '-timeout', str(timeout * 1000000),  # ffprobe uses microseconds
-                url
-            ]
-            
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
-            
-            if result.returncode != 0:
-                return {
-                    'status': 'Dead',
-                    'error': result.stderr or 'Stream not accessible'
-                }
-            
-            # Parse ffprobe output
-            probe_data = json.loads(result.stdout)
-            video_stream = next((s for s in probe_data.get('streams', []) 
-                               if s['codec_type'] == 'video'), None)
-            audio_stream = next((s for s in probe_data.get('streams', []) 
-                               if s['codec_type'] == 'audio'), None)
-            
-            if not video_stream:
-                return {
-                    'status': 'Dead',
-                    'error': 'No video stream found'
-                }
-            
-            # Extract stream info
-            resolution = f"{video_stream.get('width', 0)}x{video_stream.get('height', 0)}"
-            framerate = video_stream.get('r_frame_rate', '0/1')
-            framerate_num = self.parse_framerate(framerate)
-            
-            return {
-                'status': 'Alive',
-                'codec': video_stream.get('codec_name', ''),
-                'resolution': resolution,
-                'framerate': f"{framerate_num:.2f} fps" if framerate_num > 0 else '',
-                'framerate_num': framerate_num,
-                'bitrate': audio_stream.get('bit_rate', '') if audio_stream else ''
-            }
-            
-        except subprocess.TimeoutExpired:
-            return {'status': 'Dead', 'error': 'Connection timeout'}
-        except Exception as e:
-            return {'status': 'Dead', 'error': str(e)}
-    
     def parse_framerate(self, framerate_str):
-        """Parse framerate string to float"""
+        """Parse framerate string like '30000/1001' to a float."""
         try:
             if '/' in framerate_str:
-                num, den = framerate_str.split('/')
-                return float(num) / float(den) if float(den) != 0 else 0
+                num, den = map(float, framerate_str.split('/'))
+                return num / den if den != 0 else 0
             return float(framerate_str)
-        except:
-            return 0
-    
-    def detect_mislabeled(self, channel_name, resolution):
-        """Detect mislabeled channels"""
-        if not resolution or 'x' not in resolution:
-            return False
-            
-        try:
-            width, height = map(int, resolution.split('x'))
-            
-            # Common resolution labels in channel names
-            if '4K' in channel_name.upper():
-                return width < 3840 or height < 2160
-            elif '1080P' in channel_name.upper() or 'FHD' in channel_name.upper():
-                return width < 1920 or height < 1080
-            elif '720P' in channel_name.upper() or 'HD' in channel_name.upper():
-                return width < 1280 or height < 720
-            
-            return False
-        except:
-            return False
+        except (ValueError, ZeroDivisionError): return 0
 
-# Export fields and actions for Dispatcharr plugin system
+    def check_stream(self, stream_data, timeout, retries, logger):
+        """Check individual stream status with retries."""
+        url, channel_name = stream_data.get('stream_url'), stream_data.get('channel_name')
+        last_error = "Unknown error"
+        default_return = {'status': 'Dead', 'error': '', 'format': 'N/A', 'framerate_num': 0}
+
+        for attempt in range(retries + 1):
+            try:
+                cmd = ['/usr/local/bin/ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_streams', '-user_agent', 'IPTVChecker 1.0', '-timeout', str(timeout * 1000000), url]
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 2)
+                
+                if result.returncode == 0:
+                    probe_data = json.loads(result.stdout)
+                    video_stream = next((s for s in probe_data.get('streams', []) if s['codec_type'] == 'video'), None)
+                    if video_stream:
+                        resolution = f"{video_stream.get('width', 0)}x{video_stream.get('height', 0)}"
+                        framerate_num = self.parse_framerate(video_stream.get('r_frame_rate', '0/1'))
+                        return {'status': 'Alive', 'error': '', 'format': self._get_stream_format(resolution), 'framerate_num': framerate_num}
+                    else: last_error = 'No video stream found'
+                else: last_error = result.stderr.strip() or 'Stream not accessible'
+            except subprocess.TimeoutExpired: last_error = 'Connection timeout'
+            except Exception as e: last_error = str(e)
+
+            if attempt < retries:
+                logger.info(f"Channel '{channel_name}' stream check failed. Retrying ({attempt+1}/{retries})...")
+                time.sleep(1)
+        
+        default_return['error'] = last_error
+        return default_return
+
+# Export for Dispatcharr plugin system
 fields = Plugin.fields
 actions = Plugin.actions
