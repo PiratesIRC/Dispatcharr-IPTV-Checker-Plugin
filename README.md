@@ -1,26 +1,23 @@
-# Dispatcharr-IPTV-Checker-Plugin
-A Dispatcharr Plugin that goes through a playlist to check IPTV channels.
-Based on https://github.com/NewsGuyTor/IPTVChecker
+# Dispatcharr IPTV Checker Plugin
 
-**Description:** Check IPTV streams' status and analyze each stream's quality
+**Description:** Check IPTV stream status, analyze stream quality, and manage channels based on results
 
 ## Features
-- **Stream Status Checking:** Verify if IPTV streams are alive or dead
-- **Technical Analysis:** Extract codec, resolution, framerate, and bitrate information
-- **Quality Detection:** Identify low framerate streams (<30fps) and mislabeled channels
-- **Group Filtering:** Check specific groups within M3U8 playlists
-- **Multiple Output Formats:** View results as a summary, a table, or export to CSV
-- **Preview Mode:** See what will be checked before running analysis
+
+- **Stream Status Checking:** Verify if IPTV streams are alive or dead with retry logic
+- **Technical Analysis:** Extract resolution, framerate, and video format information
+- **Dispatcharr Integration:** Direct API communication with automatic authentication
+- **Channel Management:** Automated renaming and moving of channels based on analysis results
+- **Group-Based Operations:** Work with existing Dispatcharr channel groups
 
 ## Requirements
+
 ### System Dependencies
 This plugin requires **ffmpeg** and **ffprobe** to be installed in the Dispatcharr container for stream analysis.
 
 **Default Locations:**
 - **ffprobe:** `/usr/local/bin/ffprobe` (plugin default)
-- **ffmpeg:** `/usr/local/bin/ffmpeg` (used for future features)
-
-The plugin assumes these tools are available at the standard Dispatcharr installation paths. If ffprobe is installed in a different location, the plugin will fail with "ffprobe not found" errors.
+- **ffmpeg:** `/usr/local/bin/ffmpeg`
 
 **Verify Installation:**
 ```bash
@@ -28,162 +25,189 @@ docker exec dispatcharr which ffprobe
 docker exec dispatcharr which ffmpeg
 ```
 
-Both commands should return the full path to the respective tools.
+### Dispatcharr Setup
+- Active Dispatcharr installation with configured channels and groups
+- Valid Dispatcharr username and password for API access
+- Channel groups containing IPTV streams to analyze
 
 ## Installation
-1. Log on to Dispatcharr's web UI
-2. Go to **Plugins**
-3. In the upper right, click **Import Plugin** and upload the zip file
 
-
-## Usage Guide
-### Current Best Practice Workflow
-Even with the UI limitations of Dispatcharr's plugin system, users should follow this step-by-step pattern for best results:
-1. **Enter M3U8 URL** in settings → **Save Settings**
-2. **Load Playlist** → **Run** (shows available groups)  
-3. **Enter desired groups** in settings → **Save Settings**
-4. **Preview Check** → **Run** (verify what will be checked)
-5. **Check Streams** → **Run** (perform analysis)
-6. **View Results** using preferred format
-
-Full Guide
-### Step 1: Configure Settings
-1. Navigate to **Plugins > IPTV Checker**
-2. Enter your **M3U8 Playlist URL**
-3. Set **Connection Timeout** (default: 10 seconds)
-4. Optionally specify **Groups to Check** (comma-separated)
-5. Click **Save Settings**
-
-### Step 2: Load Playlist
-1. Click **Run** on **Load Playlist**
-2. Review the success message showing available groups
-3. Copy desired group names to the "Groups to Check" setting if needed
-4. Save settings again if you made changes
-
-### Step 3: Preview Check (Optional)
-1. Click **Run** on **Preview Check**
-2. Review what channels will be checked
-3. Verify the estimated time and channel counts
-
-### Step 4: Check Streams
-1. Click **Run** on **Check Streams**
-2. Confirm the action when prompted
-3. Wait for completion (monitor container logs for progress)
-
-### Step 5: View Results
-Choose your preferred result format:
-- **View Results Table:** Formatted text table with stream details
-- **View Last Results:** Summary with error breakdown
-- **Export Results to CSV:** Download detailed data file
+1. Log in to Dispatcharr's web UI
+2. Navigate to **Plugins**
+3. Click **Import Plugin** and upload the plugin zip file
+4. Enable the plugin after installation
 
 ## Settings Reference
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| M3U8 Playlist URL | string | - | URL to your M3U8 playlist file |
-| Connection Timeout | number | 10 | Seconds to wait for stream connection |
+| Dispatcharr Username | string | - | Username for API authentication |
+| Dispatcharr Password | password | - | Password for API authentication |
 | Groups to Check | string | - | Comma-separated group names, empty = all groups |
+| Connection Timeout | number | 10 | Seconds to wait for stream connection |
+| Dead Connection Retries | number | 2 | Number of retry attempts for failed streams |
+| Dead Channel Prefix | string | "[DEAD] " | Prefix to add to dead channel names |
+| Dead Channel Suffix | string | "" | Suffix to add to dead channel names |
+| Dead Channel Target Group | string | "Graveyard" | Group to move dead channels to |
+| Low FPS Prefix | string | "[SLOW] " | Prefix to add to low framerate channel names |
+| Low FPS Suffix | string | "" | Suffix to add to low framerate channel names |
+| Low FPS Target Group | string | "Slow" | Group to move low framerate channels to |
+
+## Usage Guide
+
+### Step-by-Step Workflow
+
+1. **Configure Authentication**
+   - Enter your **Dispatcharr Username** and **Password**
+   - Optionally specify **Groups to Check** (leave empty to check all)
+   - Configure retry and timeout settings
+   - Click **Save Settings**
+
+2. **Load Channel Groups**
+   - Click **Run** on **Load Group(s)**
+   - Review available groups and channel counts
+   - Note the estimated checking time
+
+3. **Preview Check (Optional)**
+   - Click **Run** on **Preview Check** 
+   - Verify which channels will be analyzed
+   - Check estimated completion time
+
+4. **Check Streams**
+   - Click **Run** on **Check Streams**
+   - Monitor live progress with **Check Status/View Last Results**
+   - Wait for analysis completion
+
+5. **Manage Results**
+   - Use channel management actions based on results
+   - Export data to CSV if needed
+
+## Channel Management Features
+
+### Dead Channel Management
+- **Rename Dead Channels:** Add configurable prefix/suffix to dead streams
+- **Move Dead Channels:** Automatically relocate dead channels to specified group
+
+### Low Framerate Management (<30fps)
+- **Rename Low FPS Channels:** Add configurable prefix/suffix to slow streams  
+- **Move Low FPS Channels:** Automatically relocate slow channels to specified group
+
+### Video Format Management
+- **Add Format Suffixes:** Add [4K], [FHD], [HD], [SD] tags based on resolution
+- **Remove Existing Tags:** Clean up channels by removing text within square brackets []
+
+### Smart Features
+- **Duplicate Prevention:** Avoids adding prefixes/suffixes that already exist
+- **Auto Group Creation:** Creates target groups if they don't exist
+- **GUI Refresh:** Automatically updates Dispatcharr interface after changes
 
 ## Output Data
-### Stream Analysis Fields
-- **Name:** Channel name from playlist
-- **Group:** Channel group/category
-- **URL:** Stream URL
-- **Status:** Alive or Dead
-- **Error:** Error message for dead streams
-- **Codec:** Video codec (h264, h265, etc.)
-- **Resolution:** Video resolution (1920x1080, etc.)
+
+### Stream Analysis Results
+- **Name:** Channel name from Dispatcharr
+- **Group:** Current channel group
+- **Status:** Alive or Dead (with retry attempts)
+- **Resolution:** Video resolution (e.g., 1920x1080)
+- **Format:** Detected format (4K/FHD/HD/SD)
 - **Framerate:** Frames per second
-- **Bitrate:** Audio bitrate
-- **Low Framerate:** Boolean, true if <30fps
-- **Mislabeled:** Boolean, true if resolution doesn't match channel name
-- **Checked At:** Timestamp of analysis
+- **Error Details:** Specific failure reasons for dead streams
+- **Checked At:** Analysis timestamp
 
 ### Quality Detection Rules
-**Low Framerate Detection:**
-- Identifies streams with <30fps
-- Useful for finding poor quality feeds
-
-**Mislabeled Channel Detection:**
-- **4K channels:** Should be 3840x2160 or higher
-- **1080p/FHD channels:** Should be 1920x1080 or higher  
-- **720p/HD channels:** Should be 1280x720 or higher
+- **Low Framerate:** Streams with <30fps
+- **Format Detection:** 
+  - **4K:** 3840x2160+
+  - **FHD:** 1920x1080+
+  - **HD:** 1280x720+
+  - **SD:** Below HD resolution
 
 ## File Locations
+
 - **Results:** `/data/iptv_checker_results.json`
-- **Groups Cache:** `/data/iptv_checker_groups.json`
 - **CSV Exports:** `/data/exports/iptv_check_results_YYYYMMDD_HHMMSS.csv`
 
 ## Troubleshooting
+
 ### First Step: Restart Container
-**For any plugin issues, always try restarting the Dispatcharr container first:**
+**For any plugin issues, always try refreshing your browser (F5) and then restarting the Dispatcharr container:**
 ```bash
 docker restart dispatcharr
 ```
-This resolves most plugin loading, configuration, and caching issues.
 
 ### Common Issues
-**"No connection adapters" Error:**
-- Verify M3U URL starts with `http://` or `https://`
-- Check the URL is accessible from the container
-- Ensure settings are saved before running actions
+
+**Authentication Errors:**
+- Verify Dispatcharr username and password are correct
+- Ensure user has appropriate API access permissions
 - Restart container: `docker restart dispatcharr`
 
-**"ffprobe not found" Error:**
-- Plugin uses `/usr/local/bin/ffprobe` (standard Dispatcharr location)
-- Verify ffprobe is installed: `docker exec dispatcharr which ffprobe`
+**"No Groups Found" Error:**
+- Check that channel groups exist in Dispatcharr
+- Verify group names are spelled correctly (case-sensitive)
 - Restart container: `docker restart dispatcharr`
 
-**No Groups Found:**
-- Check the M3U file contains `group-title` attributes
-- Verify playlist loads successfully with the Load Playlist action
-- Clear browser cache and restart container: `docker restart dispatcharr`
-
-**Timeout Errors:**
+**Stream Check Failures:**
 - Increase timeout setting for slow streams
-- Check network connectivity from the container
+- Adjust retry count for unstable connections
+- Check network connectivity from container
 - Restart container: `docker restart dispatcharr`
 
-**Plugin Not Appearing:**
-- Check plugin files are in the correct location: `/data/plugins/iptv_checker/`
-- Verify file permissions are correct
+**Channel Management Not Working:**
+- Verify channels exist in specified groups
+- Check for API permission issues
+- Ensure group names don't contain special characters
 - Restart container: `docker restart dispatcharr`
 
-**Settings Not Saving:**
-- Click the "Save Settings" button after making changes
-- Refresh browser page
+**Progress Not Updating:**
+- Refresh browser page during long operations
+- Check container logs for processing status
 - Restart container: `docker restart dispatcharr`
 
-**Actions Not Working:**
-- Verify plugin loaded successfully in logs
-- Check for JavaScript errors in the browser console
-- Restart container: `docker restart dispatcharr`
-
-**General Plugin Issues:**
-- Always restart the container first: `docker restart dispatcharr`
-- Wait 30-60 seconds for full startup
-- Refresh browser page
-- Check container logs for errors
-
-### Debugging
-**Enable Verbose Logging:**
-```bash
-docker logs dispatcharr | grep -i iptv
-```
+### Debugging Commands
 
 **Check Plugin Status:**
 ```bash
 docker exec dispatcharr ls -la /data/plugins/iptv_checker/
 ```
 
-**Test Stream Manually:**
+**Monitor Plugin Activity:**
 ```bash
-docker exec dispatcharr /usr/local/bin/ffprobe -v quiet -print_format json -show_streams "http://your-stream-url"
+docker logs dispatcharr | grep -i iptv
 ```
 
-## Limitations
-- No custom UI components (uses text-based results)
-- Single-threaded checking (processes streams sequentially)
-- Limited to ffprobe-supported stream formats
-- No persistent stream history
+**Test ffprobe Installation:**
+```bash
+docker exec dispatcharr /usr/local/bin/ffprobe -version
+```
 
+## Version History
+
+**v0.2** (Major Update)
+- Direct Dispatcharr API integration with automatic authentication
+- Channel group-based input instead of M3U URLs  
+- Comprehensive channel management features (rename, move, format tagging)
+- Live progress tracking and time estimation
+- Connection retry logic for improved reliability
+- Smart duplicate prevention and auto-group creation
+- Automatic GUI refresh after channel modifications
+
+**v0.1** (Initial Release)  
+- Basic stream status checking
+- M3U playlist parsing
+- Technical analysis and CSV export
+- Group filtering and preview mode
+
+## Limitations
+
+- Single-threaded stream checking (sequential processing)
+- Requires valid Dispatcharr authentication
+- Limited to ffprobe-supported stream formats
+- Channel management operations are permanent (backup recommended)
+
+## Contributing
+
+This plugin integrates deeply with Dispatcharr's API and channel management system. When reporting issues:
+1. Include Dispatcharr version information
+2. Provide relevant container logs
+3. Test with small channel groups first
+4. Document specific API error messages
