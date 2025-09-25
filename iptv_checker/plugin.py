@@ -11,6 +11,7 @@ import os
 import re
 import csv
 import time
+import threading
 from datetime import datetime
 
 # Setup logging using Dispatcharr's format
@@ -25,8 +26,10 @@ LOGGER.setLevel(logging.INFO)
 class Plugin:
     """Dispatcharr IPTV Checker Plugin"""
     
+    # Explicitly set the plugin key
+    key = "iptv_checker"
     name = "IPTV Checker"
-    version = "0.2"
+    version = "0.2.1"
     description = "Check stream status and quality for channels in specified Dispatcharr groups."
     
     fields = [
@@ -138,8 +141,13 @@ class Plugin:
             "confirm": { "required": True, "title": "Check Streams?", "message": "This will check all streams from the previously loaded groups. Continue?" }
         },
         {
+            "id": "get_status_update",
+            "label": "Get Status Update",
+            "description": "Internal action for retrieving periodic status updates during stream checking.",
+        },
+        {
             "id": "get_results",
-            "label": "Check Status/View Last Results",
+            "label": "View Last Results",
             "description": "Display live progress if a check is running or summary of the last check.",
         },
         {
@@ -193,12 +201,18 @@ class Plugin:
     def __init__(self):
         self.results_file = "/data/iptv_checker_results.json"
         self.loaded_channels_file = "/data/iptv_checker_loaded_channels.json"
-        self.check_progress = {"current": 0, "total": 0, "status": "idle"}
+        self.check_progress = {"current": 0, "total": 0, "status": "idle", "start_time": None}
+        self.status_thread = None
+        self.stop_status_updates = False
+        self.pending_status_message = None
+        self.completion_message = None
+        self.timeout_retry_queue = []  # Queue for streams that timed out and need retry
         LOGGER.info(f"{self.name} Plugin v{self.version} initialized")
 
     def run(self, action, params, context):
         """Main plugin entry point"""
         LOGGER.info(f"IPTV Checker run called with action: {action}")
+        LOGGER.info(f"Plugin key from context: {context.get('plugin_key', 'unknown')}")  # Debug line
         
         try:
             settings = context.get("settings", {})
@@ -208,6 +222,7 @@ class Plugin:
                 "load_groups": self.load_groups_action,
                 "check_streams": self.check_streams_action,
                 "get_results": self.get_results_action,
+                "get_status_update": self.get_status_update_action,
                 "rename_channels": self.rename_channels_action,
                 "move_dead_channels": self.move_dead_channels_action,
                 "rename_low_framerate_channels": self.rename_low_framerate_channels_action,
@@ -218,14 +233,91 @@ class Plugin:
                 "export_results": self.export_results_action,
             }
             
-            if action in action_map:
-                return action_map[action](settings, logger)
-            else:
+            if action not in action_map:
                 return {"status": "error", "message": f"Unknown action: {action}"}
+            
+            # Pass context to actions that need it
+            if action in ["check_streams", "get_status_update"]:
+                return action_map[action](settings, logger, context)
+            else:
+                return action_map[action](settings, logger)
+                
         except Exception as e:
             self.check_progress['status'] = 'idle'
+            self._stop_status_updates()
             LOGGER.error(f"Error in plugin run: {str(e)}")
             return {"status": "error", "message": str(e)}
+
+    def get_status_update_action(self, settings, logger, context):
+        """Return pending status update with ETA if available"""
+        
+        # Check if we have a completion message
+        if self.completion_message:
+            message = self.completion_message
+            self.completion_message = None  # Clear after reading
+            return {"status": "success", "message": message}
+        
+        if self.check_progress['status'] == 'running':
+            current, total = self.check_progress['current'], self.check_progress['total']
+            percent = (current / total * 100) if total > 0 else 0
+            
+            # Calculate ETA
+            if self.check_progress.get('start_time') and current > 0:
+                elapsed_seconds = time.time() - self.check_progress['start_time']
+                avg_time_per_stream = elapsed_seconds / current
+                remaining_streams = total - current
+                eta_seconds = remaining_streams * avg_time_per_stream
+                eta_minutes = eta_seconds / 60
+                
+                if eta_minutes < 1:
+                    eta_str = f"ETA: <1 min"
+                else:
+                    eta_str = f"ETA: {eta_minutes:.0f} min"
+            else:
+                eta_str = "ETA: calculating..."
+            
+            message = f"Checking streams {current}/{total} - {percent:.0f}% complete | {eta_str}"
+            return {"status": "success", "message": message}
+        
+        if self.pending_status_message:
+            message = self.pending_status_message
+            self.pending_status_message = None  # Clear after reading
+            return {"status": "success", "message": message}
+        
+        return {"status": "info", "message": "No status update available"}
+
+    def _start_status_updates(self, context):
+        """Start background thread for status updates"""
+        if self.status_thread and self.status_thread.is_alive():
+            return
+            
+        self.stop_status_updates = False
+        self.status_thread = threading.Thread(target=self._status_update_loop, args=(context,))
+        self.status_thread.daemon = True
+        self.status_thread.start()
+
+    def _stop_status_updates(self):
+        """Stop background status updates"""
+        self.stop_status_updates = True
+        if self.status_thread:
+            self.status_thread.join(timeout=2)
+
+    def _status_update_loop(self, context):
+        """Background loop to generate status updates every minute"""
+        while not self.stop_status_updates and self.check_progress['status'] == 'running':
+            time.sleep(60)  # Wait 60 seconds
+            
+            if self.check_progress['status'] == 'running' and not self.stop_status_updates:
+                current = self.check_progress['current']
+                total = self.check_progress['total']
+                percent = (current / total * 100) if total > 0 else 0
+                
+                # Store the status message for retrieval
+                self.pending_status_message = f"Checking streams {current}/{total} - {percent:.0f}% complete"
+                
+                # Log for debugging
+                logger = context.get("logger", LOGGER)
+                logger.info(f"STATUS UPDATE READY: {self.pending_status_message}")
             
     def _get_api_token(self, settings, logger):
         """Get an API access token using username and password."""
@@ -326,48 +418,136 @@ class Plugin:
             
             timeout = settings.get("timeout", 10)
             retries = settings.get("dead_connection_retries", 3)
-            estimated_seconds = total_streams * (timeout * (retries + 1) + 2)
+            # More realistic estimate: ~8-10 seconds average per stream + 20% buffer
+            estimated_seconds = total_streams * 8.5 * 1.2  # Add 20% extra time
             estimated_minutes = estimated_seconds / 60
             
             message = f"Successfully loaded {len(loaded_channels)} channels with {total_streams} streams from {group_msg}."
             if 'invalid_names' in locals() and invalid_names:
                 message += f"\n\nWarning: Ignored groups not found: {', '.join(invalid_names)}"
             if total_streams > 0:
-                message += f"\n\nNext, run 'Check Streams'. Estimated time: {estimated_minutes:.1f} minutes."
+                message += f"\n\nNext, run 'Check Streams'. Estimated time: {estimated_minutes:.0f} minutes."
 
             return {"status": "success", "message": message}
         except Exception as e: return {"status": "error", "message": str(e)}
 
-    def check_streams_action(self, settings, logger):
-        """Check status and format of all loaded streams."""
+    def check_streams_action(self, settings, logger, context=None):
+        """Check status and format of all loaded streams with auto status updates."""
         if not os.path.exists(self.loaded_channels_file):
             return {"status": "error", "message": "No channels loaded. Please run 'Load Group(s)' first."}
         
-        with open(self.loaded_channels_file, 'r') as f: loaded_channels = json.load(f)
+        with open(self.loaded_channels_file, 'r') as f: 
+            loaded_channels = json.load(f)
         
         all_streams = [
             {"channel_id": ch['id'], "channel_name": ch['name'], "stream_url": s['url'], "stream_id": s['id']}
             for ch in loaded_channels for s in ch.get('streams', []) if s.get('url')
         ]
         
-        if not all_streams: return {"status": "error", "message": "The loaded groups contain no streams to check."}
+        if not all_streams: 
+            return {"status": "error", "message": "The loaded groups contain no streams to check."}
 
-        self.check_progress = {"current": 0, "total": len(all_streams), "status": "running"}
+        self.check_progress = {"current": 0, "total": len(all_streams), "status": "running", "start_time": time.time()}
         logger.info(f"Starting check for {len(all_streams)} streams...")
         
+        # Start background status updates
+        if context:
+            self._start_status_updates(context)
+        
+        # Return immediately to avoid timeout, processing continues in background
+        timeout = settings.get("timeout", 10)
+        estimated_total_time = len(all_streams) * 8.5 * 1.2 / 60  # More realistic estimate with 20% buffer
+        
+        # Start the actual processing in background
+        import threading
+        processing_thread = threading.Thread(
+            target=self._process_streams_background, 
+            args=(all_streams, settings, logger)
+        )
+        processing_thread.daemon = True
+        processing_thread.start()
+        
+        return {"status": "success", "message": f"Stream checking started for {len(all_streams)} streams.\nEstimated completion time: {estimated_total_time:.0f} minutes.\n\nUse 'Get Status Update' or 'View Last Results' to monitor progress."}
+
+    def _process_streams_background(self, all_streams, settings, logger):
+        """Background processing of streams to avoid request timeout"""
         results = []
         timeout = settings.get("timeout", 10)
         retries = settings.get("dead_connection_retries", 3)
+        self.timeout_retry_queue = []
+        streams_processed_since_retry = 0
 
-        for i, stream_data in enumerate(all_streams):
-            self.check_progress["current"] = i + 1
-            results.append({**stream_data, **self.check_stream(stream_data, timeout, retries, logger)})
+        try:
+            for i, stream_data in enumerate(all_streams):
+                if self.stop_status_updates:  # Allow early termination
+                    break
+                    
+                self.check_progress["current"] = i + 1
+                
+                # Check stream - NO immediate retries, we'll handle them in the background queue
+                result = self.check_stream(stream_data, timeout, 0, logger, skip_retries=True)
+                
+                # If stream timed out and we have retries enabled, add to retry queue
+                if result.get('error_type') == 'Timeout' and retries > 0:
+                    self.timeout_retry_queue.append({**stream_data, "retry_count": 0})
+                    logger.info(f"Added '{stream_data.get('channel_name')}' to retry queue due to timeout")
+                
+                results.append({**stream_data, **result})
+                streams_processed_since_retry += 1
+                
+                # Process timeout retry queue every 4 streams
+                if streams_processed_since_retry >= 4 and self.timeout_retry_queue:
+                    retry_stream = self.timeout_retry_queue.pop(0)
+                    retry_stream["retry_count"] += 1
+                    
+                    if retry_stream["retry_count"] <= retries:
+                        logger.info(f"Retrying timeout stream: '{retry_stream.get('channel_name')}' (attempt {retry_stream['retry_count']}/{retries})")
+                        retry_result = self.check_stream(retry_stream, timeout, 0, logger, skip_retries=True)  # No immediate retries
+                        
+                        # Update the original result in the results list
+                        for j, existing_result in enumerate(results):
+                            if (existing_result.get('channel_id') == retry_stream.get('channel_id') and 
+                                existing_result.get('stream_id') == retry_stream.get('stream_id')):
+                                results[j] = {**retry_stream, **retry_result}
+                                break
+                        
+                        # If still timing out, add back to queue for another retry
+                        if retry_result.get('error_type') == 'Timeout' and retry_stream["retry_count"] < retries:
+                            self.timeout_retry_queue.append(retry_stream)
+                    
+                    streams_processed_since_retry = 0
+                
+                # Add 3 second delay between stream checks
+                time.sleep(3)
 
-        with open(self.results_file, 'w') as f: json.dump(results, f, indent=2)
-        self.check_progress['status'] = 'idle'
+            # Process any remaining timeout retries
+            while self.timeout_retry_queue:
+                retry_stream = self.timeout_retry_queue.pop(0)
+                if retry_stream["retry_count"] < retries:
+                    retry_stream["retry_count"] += 1
+                    logger.info(f"Final retry for timeout stream: '{retry_stream.get('channel_name')}' (attempt {retry_stream['retry_count']}/{retries})")
+                    retry_result = self.check_stream(retry_stream, timeout, 0, logger, skip_retries=True)
+                    
+                    # Update the original result in the results list
+                    for j, existing_result in enumerate(results):
+                        if (existing_result.get('channel_id') == retry_stream.get('channel_id') and 
+                            existing_result.get('stream_id') == retry_stream.get('stream_id')):
+                            results[j] = {**retry_stream, **retry_result}
+                            break
+
+            with open(self.results_file, 'w') as f: 
+                json.dump(results, f, indent=2)
+                
+        except Exception as e:
+            logger.error(f"Background stream processing error: {e}")
+        finally:
+            self.check_progress['status'] = 'idle'
+            self._stop_status_updates()
             
-        alive = sum(1 for r in results if r['status'] == 'Alive')
-        return {"status": "success", "message": f"Stream check completed successfully.\nFound {alive} alive and {len(results) - alive} dead streams."}
+            # Set completion message
+            processed_count = len(results)
+            self.completion_message = f"Stream checking completed. Processed {processed_count} streams."
+            logger.info(f"Stream checking completed. Processed {processed_count} streams.")
 
     def rename_channels_action(self, settings, logger):
         """Rename channels that were marked as dead in the last check."""
@@ -592,12 +772,14 @@ class Plugin:
         """Display results in table format"""
         if not os.path.exists(self.results_file): return {"status": "error", "message": "No results available."}
         with open(self.results_file, 'r') as f: results = json.load(f)
-        lines = ["="*100, f"{'Channel Name':<40} {'Status':<8} {'Format':<8} {'FPS':<8} {'Error Details':<30}", "="*100]
+        lines = ["="*120, f"{'Channel Name':<35} {'Status':<8} {'Format':<8} {'FPS':<8} {'Error Type':<20} {'Error Details':<35}", "="*120]
         for r in results:
             fps = r.get('framerate_num', 0)
             fps_str = f"{fps:.1f}" if fps > 0 else "N/A"
-            lines.append(f"{r.get('channel_name', 'N/A')[:39]:<40} {r.get('status', 'N/A'):<8} {r.get('format', 'N/A'):<8} {fps_str:<8} {r.get('error', '')[:29]:<30}")
-        lines.append("="*100)
+            error_type = r.get('error_type', 'N/A')
+            error_details = r.get('error', '')[:34] if r.get('error') else ''
+            lines.append(f"{r.get('channel_name', 'N/A')[:34]:<35} {r.get('status', 'N/A'):<8} {r.get('format', 'N/A'):<8} {fps_str:<8} {error_type:<20} {error_details:<35}")
+        lines.append("="*120)
         return {"status": "success", "message": "\n".join(lines)}
 
     def get_results_action(self, settings, logger):
@@ -605,7 +787,7 @@ class Plugin:
         if self.check_progress['status'] == 'running':
             current, total = self.check_progress['current'], self.check_progress['total']
             percent = (current / total * 100) if total > 0 else 0
-            return {"status": "success", "message": f"Check in progress: {current}/{total} ({percent:.0f}%)"}
+            return {"status": "success", "message": f"Checking streams {current}/{total} - {percent:.0f}% complete"}
 
         if not os.path.exists(self.results_file): return {"status": "error", "message": "No results available."}
         with open(self.results_file, 'r') as f: results = json.load(f)
@@ -622,10 +804,16 @@ class Plugin:
         """Export results to CSV"""
         if not os.path.exists(self.results_file): return {"status": "error", "message": "No results to export."}
         with open(self.results_file, 'r') as f: results = json.load(f)
+        
+        # Round framerate to 1 decimal place for cleaner CSV
+        for result in results:
+            if 'framerate_num' in result and result['framerate_num'] > 0:
+                result['framerate_num'] = round(result['framerate_num'], 1)
+        
         filepath = f"/data/exports/iptv_check_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         os.makedirs("/data/exports", exist_ok=True)
         with open(filepath, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=['channel_name', 'stream_url', 'status', 'format', 'framerate_num', 'error'], extrasaction='ignore')
+            writer = csv.DictWriter(f, fieldnames=['channel_name', 'stream_url', 'status', 'format', 'framerate_num', 'error_type', 'error'], extrasaction='ignore')
             writer.writeheader()
             writer.writerows(results)
         return {"status": "success", "message": f"Results exported to {filepath}"}
@@ -663,13 +851,17 @@ class Plugin:
             return float(framerate_str)
         except (ValueError, ZeroDivisionError): return 0
 
-    def check_stream(self, stream_data, timeout, retries, logger):
-        """Check individual stream status with retries."""
+    def check_stream(self, stream_data, timeout, retries, logger, skip_retries=False):
+        """Check individual stream status with optional retries."""
         url, channel_name = stream_data.get('stream_url'), stream_data.get('channel_name')
         last_error = "Unknown error"
-        default_return = {'status': 'Dead', 'error': '', 'format': 'N/A', 'framerate_num': 0}
+        last_error_type = "Other"
+        default_return = {'status': 'Dead', 'error': '', 'error_type': 'Other', 'format': 'N/A', 'framerate_num': 0}
 
-        for attempt in range(retries + 1):
+        # Determine how many attempts to make
+        max_attempts = 1 if skip_retries else (retries + 1)
+
+        for attempt in range(max_attempts):
             try:
                 cmd = ['/usr/local/bin/ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_streams', '-user_agent', 'IPTVChecker 1.0', '-timeout', str(timeout * 1000000), url]
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 2)
@@ -680,19 +872,72 @@ class Plugin:
                     if video_stream:
                         resolution = f"{video_stream.get('width', 0)}x{video_stream.get('height', 0)}"
                         framerate_num = self.parse_framerate(video_stream.get('r_frame_rate', '0/1'))
-                        return {'status': 'Alive', 'error': '', 'format': self._get_stream_format(resolution), 'framerate_num': framerate_num}
-                    else: last_error = 'No video stream found'
-                else: last_error = result.stderr.strip() or 'Stream not accessible'
-            except subprocess.TimeoutExpired: last_error = 'Connection timeout'
-            except Exception as e: last_error = str(e)
+                        return {'status': 'Alive', 'error': '', 'error_type': 'N/A', 'format': self._get_stream_format(resolution), 'framerate_num': framerate_num}
+                    else: 
+                        last_error = 'No video stream found'
+                        last_error_type = 'No Video Stream'
+                else: 
+                    error_output = result.stderr.strip() or 'Stream not accessible'
+                    last_error = error_output
+                    
+                    # Categorize the error type based on common ffprobe error patterns
+                    error_lower = error_output.lower()
+                    if 'timed out' in error_lower or 'timeout' in error_lower or 'connection timeout' in error_lower:
+                        last_error_type = 'Timeout'
+                        last_error = 'Connection timeout'
+                    elif '404' in error_output or 'not found' in error_lower or 'no such file' in error_lower:
+                        last_error_type = '404 Not Found'
+                        last_error = '404 Not Found'
+                    elif '403' in error_output or 'forbidden' in error_lower:
+                        last_error_type = '403 Forbidden' 
+                        last_error = '403 Forbidden'
+                    elif '500' in error_output or 'internal server error' in error_lower:
+                        last_error_type = 'Server Error'
+                        last_error = '500 Server Error'
+                    elif 'connection refused' in error_lower:
+                        last_error_type = 'Connection Refused'
+                        last_error = 'Connection refused'
+                    elif 'network unreachable' in error_lower or 'no route to host' in error_lower:
+                        last_error_type = 'Network Unreachable'
+                        last_error = 'Network unreachable'
+                    elif 'invalid data found' in error_lower or 'invalid argument' in error_lower:
+                        last_error_type = 'Invalid Stream'
+                        last_error = 'Invalid stream format'
+                    elif 'protocol not supported' in error_lower:
+                        last_error_type = 'Unsupported Protocol'
+                        last_error = 'Unsupported protocol'
+                    elif result.returncode == 1:
+                        # Common ffprobe return code for unreachable streams
+                        last_error_type = 'Stream Unreachable'
+                        last_error = 'Stream unreachable'
+                    else:
+                        last_error_type = 'Other'
+                        # Keep original error but make it cleaner
+                        if 'stream not accessible' in error_lower:
+                            last_error = 'Stream not accessible'
+                        
+            except subprocess.TimeoutExpired: 
+                last_error = 'Connection timeout'
+                last_error_type = 'Timeout'
+            except Exception as e: 
+                last_error = str(e)
+                last_error_type = 'Other'
 
-            if attempt < retries:
+            # Only do immediate retries if not skipping them and not the last attempt
+            if not skip_retries and attempt < max_attempts - 1:
                 logger.info(f"Channel '{channel_name}' stream check failed. Retrying ({attempt+1}/{retries})...")
                 time.sleep(1)
         
         default_return['error'] = last_error
+        default_return['error_type'] = last_error_type
         return default_return
 
-# Export for Dispatcharr plugin system
+# Export for Dispatcharr plugin system - Multiple export formats for compatibility
+plugin = Plugin()
+plugin_instance = Plugin()
 fields = Plugin.fields
 actions = Plugin.actions
+
+# Additional exports in case Dispatcharr looks for these specific names
+iptv_checker = Plugin()
+IPTV_CHECKER = Plugin()
