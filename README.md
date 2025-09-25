@@ -206,16 +206,6 @@ docker exec dispatcharr which ffmpeg
 - **Error Details:** Specific failure reasons for dead streams
 - **Checked At:** Analysis timestamp
 
-### Error Categories for Dead Streams
-- **Timeout:** Connection timeouts
-- **404 Not Found:** Stream URL not found
-- **403 Forbidden:** Access denied
-- **Connection Refused:** Server refusing connection
-- **Network Unreachable:** Network connectivity issues
-- **Invalid Stream:** Stream format problems
-- **Server Error:** 500-series HTTP errors
-- **Other:** Miscellaneous errors
-
 ### Quality Detection Rules
 - **Low Framerate:** Streams with <30fps
 - **Format Detection:** 
