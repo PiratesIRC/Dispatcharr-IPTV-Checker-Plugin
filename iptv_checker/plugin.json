@@ -119,7 +119,7 @@
       "label": "\ud83d\udd17 Webhook URL",
       "type": "string",
       "default": "",
-      "placeholder": "http://localhost:9191/api/swagger/",
+      "placeholder": "http://localhost:9000/api/some/endpoint",
       "help_text": "URL to send an HTTP POST request to after stream checks complete. Payload includes check summary (total, alive, dead counts). Leave blank to disable."
     },
     {
@@ -1445,10 +1445,10 @@
     },
     {
       "id": "scheduler_fire_webhook",
-      "label": "\ud83d\udd17 Fire Webhook After Scheduled Checks",
+      "label": "\ud83d\udd17 Send Webhook Notification After Scheduled Checks",
       "type": "boolean",
       "default": false,
-      "help_text": "Automatically fire the configured webhook after scheduled checks complete."
+      "help_text": "Send an HTTP POST notification to the Webhook URL above after each scheduled check finishes. The payload includes total, alive, and dead channel counts. Useful for alerting Discord, Slack, or other external services. Requires a Webhook URL to be configured."
     }
   ],
   "actions": [
