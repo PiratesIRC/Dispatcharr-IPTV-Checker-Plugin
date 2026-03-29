@@ -66,333 +66,9 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    name = "IPTV Checker"
-    version = "0.6.0c"
-    description = "Check stream status and quality for channels in specified Dispatcharr groups."
+    version = "0.7.0"
 
-    @staticmethod
-    def _load_timezones_from_file():
-        """Load timezone list from zone1970.tab file"""
-        try:
-            # Try system location first
-            timezone_file = "/usr/share/zoneinfo/zone1970.tab"
-            if not os.path.exists(timezone_file):
-                # Fall back to plugin directory
-                timezone_file = os.path.join(os.path.dirname(__file__), 'zone1970.tab')
-            
-            timezones = []
-            
-            with open(timezone_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    # Skip comments and empty lines
-                    if line.startswith('#') or not line.strip():
-                        continue
-                    
-                    # Parse the tab-delimited format
-                    parts = line.strip().split('\t')
-                    if len(parts) >= 3:
-                        timezone_name = parts[2]
-                        timezones.append({"label": timezone_name, "value": timezone_name})
-            
-            # Sort alphabetically by timezone name
-            timezones.sort(key=lambda x: x['label'])
-            return timezones
-        
-        except Exception as e:
-            LOGGER.warning(f"Could not load timezones from zone1970.tab: {e}, using fallback list")
-            # Fallback to a minimal list if file cannot be read
-            return [
-                {"label": "America/New_York", "value": "America/New_York"},
-                {"label": "America/Los_Angeles", "value": "America/Los_Angeles"},
-                {"label": "America/Chicago", "value": "America/Chicago"},
-                {"label": "America/Denver", "value": "America/Denver"},
-                {"label": "Europe/London", "value": "Europe/London"},
-                {"label": "Europe/Paris", "value": "Europe/Paris"},
-                {"label": "Europe/Berlin", "value": "Europe/Berlin"},
-                {"label": "Asia/Tokyo", "value": "Asia/Tokyo"},
-                {"label": "Asia/Shanghai", "value": "Asia/Shanghai"},
-                {"label": "Australia/Sydney", "value": "Australia/Sydney"}
-            ]
-
-    @property
-    def fields(self):
-        """
-        Dynamically generate fields including version check status.
-        This property is called every time the user opens the plugin settings page.
-        """
-        # Perform version check (uses cache if checked within last 24 hours)
-        _, version_message = self._get_latest_version()
-
-        return [
-            {
-                "id": "version_status",
-                "label": "📦 Plugin Version",
-                "type": "info",
-                "help_text": version_message,
-            },
-            {
-                "id": "group_names",
-                "label": "📂 Group(s) to Check (comma-separated)",
-                "type": "string",
-                "default": "",
-                "help_text": "The name of the Dispatcharr Channel Group(s) to check. Leave blank to check all groups.",
-            },
-            {
-                "id": "check_alternative_streams",
-                "label": "🔄 Check Alternative Streams",
-                "type": "boolean",
-                "default": True,
-                "help_text": "Check all alternative/backup streams for each channel in addition to the primary stream. This will significantly increase check time.",
-            },
-            {
-                "id": "timeout",
-                "label": "⏱️ Connection Timeout (seconds)",
-                "type": "number",
-                "default": 10,
-                "help_text": "Network connection timeout. Use for detecting dead streams that refuse connections. Default: 10",
-            },
-            {
-                "id": "probe_timeout",
-                "label": "🔍 Probe Timeout (seconds)",
-                "type": "number",
-                "default": 20,
-                "help_text": "Maximum time to wait for stream to start delivering data after connection. Increase this for streams with slow startup (5+ seconds). Default: 20",
-            },
-            {
-                "id": "dead_connection_retries",
-                "label": "🔄 Dead Connection Retries",
-                "type": "number",
-                "default": 3,
-                "help_text": "Number of times to retry checking a stream if it appears to be dead. Default: 3",
-            },
-            {
-                "id": "dead_rename_format",
-                "label": "💀 Dead Channel Rename Format",
-                "type": "string",
-                "default": "{name} [DEAD]",
-                "placeholder": "[DEAD] {name}",
-                "help_text": "Format for renaming dead channels. Use {name} as placeholder for the original channel name. Examples: '[DEAD] {name}', '{name} [DEAD]', '[X] {name} [DEAD]'",
-            },
-            {
-                "id": "move_to_group_name",
-                "label": "⚰️ Move Dead Channels to Group",
-                "type": "string",
-                "default": "Graveyard",
-                "help_text": "Enter the name for the group to move dead channels into.",
-            },
-            {
-                "id": "low_framerate_rename_format",
-                "label": "🐌 Low Framerate Rename Format - Less than 30fps",
-                "type": "string",
-                "default": "{name} [Slow]",
-                "placeholder": "[SLOW] {name}",
-                "help_text": "Format for renaming low framerate channels. Use {name} as placeholder for the original channel name. Examples: '[SLOW] {name}', '{name} [Slow]'",
-            },
-            {
-                "id": "move_low_framerate_group",
-                "label": "📁 Move Low Framerate Channels to Group",
-                "type": "string",
-                "default": "Slow",
-                "help_text": "Enter the name for the group to move low framerate channels into.",
-            },
-            {
-                "id": "video_format_suffixes",
-                "label": "🎬 Add Video Format Suffixes - [UHD], [FHD], [HD], [SD], [Unknown]",
-                "type": "string",
-                "default": "UHD, FHD, HD, SD, Unknown",
-                "help_text": "A comma-separated list of formats to add as a suffix (e.g., [HD]) to channel names.",
-            },
-            {
-                "id": "enable_parallel_checking",
-                "label": "⚡ Enable Parallel Stream Checking",
-                "type": "boolean",
-                "default": True,
-                "help_text": "Check multiple streams simultaneously for significantly faster processing. Recommended for large channel lists.",
-            },
-            {
-                "id": "parallel_workers",
-                "label": "👷 Number of Parallel Workers",
-                "type": "number",
-                "default": 2,
-                "help_text": "Number of streams to check simultaneously when parallel checking is enabled. Default: 2. Higher values = faster but more resource-intensive.",
-            },
-            {
-                "id": "ffprobe_flags",
-                "label": "🔍 FFprobe Analysis Flags",
-                "type": "string",
-                "default": "-show_streams,-show_frames,-show_packets,-loglevel error",
-                "placeholder": "-show_streams, -show_frames, -show_packets",
-                "help_text": "Comma-separated ffprobe flags for stream analysis. Options: -show_streams (basic validation), -show_frames (GOP/timestamps), -show_packets (bitrate), -loglevel error (errors only). Default: -show_streams,-show_frames,-show_packets,-loglevel error",
-            },
-            {
-                "id": "ffprobe_analysis_duration",
-                "label": "⏱️ FFprobe Analysis Duration (seconds)",
-                "type": "number",
-                "default": 5,
-                "help_text": "Duration to analyze stream when using -show_frames or -show_packets. Longer duration = more accurate bitrate/GOP analysis but slower checks. Default: 5 seconds",
-            },
-            {
-                "id": "ffprobe_path",
-                "label": "📍 FFprobe Path",
-                "type": "string",
-                "default": "/usr/local/bin/ffprobe",
-                "placeholder": "/usr/local/bin/ffprobe",
-                "help_text": "Full path to the ffprobe executable. Default: /usr/local/bin/ffprobe (Dispatcharr's default location)",
-            },
-            {
-                "id": "scheduled_times",
-                "label": "⏰ Scheduled Check Times (Cron Format)",
-                "type": "string",
-                "default": "",
-                "placeholder": "0 4 * * *,0 3 1 * *",
-                "help_text": "Comma-separated cron expressions. Format: 'minute hour day month weekday' (weekday: 0=Sunday, 6=Saturday). Examples: '0 4 * * *' (daily at 4 AM), '0 3 * * 0' (Sundays at 3 AM), '0 2 */2 * *' (every 2 days at 2 AM), '0 4 1 * *' (1st of month at 4 AM), '0 4 * * 1-5' (weekdays at 4 AM), '0 4 * * *,0 16 * * *' (4 AM and 4 PM daily). Leave blank to disable scheduling.",
-            },
-            {
-                "id": "scheduler_timezone",
-                "label": "🌍 Scheduler Timezone",
-                "type": "select",
-                "default": "America/Chicago",
-                "options": self._load_timezones_from_file(),
-                "help_text": "Timezone for scheduled checks. All IANA timezone names are supported.",
-            },
-            {
-                "id": "scheduler_export_csv",
-                "label": "💾 Export CSV for Scheduled Checks",
-                "type": "boolean",
-                "default": False,
-                "help_text": "Automatically export results to CSV after scheduled checks complete.",
-            },
-            {
-                "id": "scheduler_rename_dead_channels",
-                "label": "💀 Rename Dead Channels After Scheduled Checks",
-                "type": "boolean",
-                "default": False,
-                "help_text": "Automatically rename dead channels after scheduled checks complete.",
-            },
-            {
-                "id": "scheduler_rename_low_framerate_channels",
-                "label": "🐌 Rename Low Framerate Channels After Scheduled Checks",
-                "type": "boolean",
-                "default": False,
-                "help_text": "Automatically rename low framerate channels after scheduled checks complete.",
-            },
-            {
-                "id": "scheduler_add_video_format_suffix",
-                "label": "🎬 Add Video Format Suffix After Scheduled Checks",
-                "type": "boolean",
-                "default": False,
-                "help_text": "Automatically add video format suffixes to channels after scheduled checks complete.",
-            },
-            {
-                "id": "scheduler_move_dead_channels",
-                "label": "⚰️ Move Dead Channels After Scheduled Checks",
-                "type": "boolean",
-                "default": False,
-                "help_text": "Automatically move dead channels to the configured group after scheduled checks complete.",
-            },
-            {
-                "id": "scheduler_move_low_framerate_channels",
-                "label": "📁 Move Low Framerate Channels After Scheduled Checks",
-                "type": "boolean",
-                "default": False,
-                "help_text": "Automatically move low framerate channels to the configured group after scheduled checks complete.",
-            }
-        ]
-
-    actions = [
-        {
-            "id": "validate_settings",
-            "label": "✅ Validate Settings",
-            "description": "Validate all plugin settings (database connectivity, groups, etc.).",
-        },
-        {
-            "id": "update_schedule",
-            "label": "📅 Update Schedule",
-            "description": "Apply the current schedule settings. If scheduled times are empty, the schedule will be cleared and scheduler will be stopped.",
-        },
-        {
-            "id": "check_scheduler_status",
-            "label": "🔍 Check Scheduler Status",
-            "description": "Display scheduler thread status and diagnostic information.",
-        },
-        {
-            "id": "load_groups",
-            "label": "📥 Load Group(s)",
-            "description": "Load channels from the specified Dispatcharr group(s) (or all groups if blank).",
-        },
-        {
-            "id": "check_streams",
-            "label": "▶️ Start Stream Check",
-            "description": "Start checking stream status and quality for all loaded channels.",
-        },
-        {
-            "id": "view_progress",
-            "label": "📊 View Check Progress",
-            "description": "View the current progress and ETA of the running stream check.",
-        },
-        {
-            "id": "cancel_check",
-            "label": "🛑 Cancel Stream Check",
-            "description": "Cancel the currently running stream check.",
-        },
-        {
-            "id": "view_results",
-            "label": "📋 View Last Results",
-            "description": "View summary of the last completed stream check.",
-        },
-        {
-            "id": "rename_channels",
-            "label": "✏️ Rename Dead Channels",
-            "description": "Rename all channels marked as 'Dead' in the last check using the configured rename format.",
-            "confirm": { "required": True, "title": "Rename Dead Channels?", "message": "This action is irreversible. Continue?" }
-        },
-        {
-            "id": "move_dead_channels",
-            "label": "⚰️ Move Dead Channels to Group",
-            "description": "Moves all channels marked as 'Dead' in the last check to the specified group.",
-            "confirm": { "required": True, "title": "Move Dead Channels?", "message": "This action is irreversible. Continue?" }
-        },
-        {
-            "id": "rename_low_framerate_channels",
-            "label": "🐌 Rename Low Framerate Channels",
-            "description": "Rename channels with streams under 30fps using the configured rename format.",
-            "confirm": { "required": True, "title": "Rename Low Framerate Channels?", "message": "This action is irreversible. Continue?" }
-        },
-        {
-            "id": "move_low_framerate_channels",
-            "label": "📁 Move Low Framerate Channels to Group",
-            "description": "Moves channels with streams under 30fps to the specified group.",
-            "confirm": { "required": True, "title": "Move Low Framerate Channels?", "message": "This action is irreversible. Continue?" }
-        },
-        {
-            "id": "add_video_format_suffix",
-            "label": "🎬 Add Video Format Suffix to Channels",
-            "description": "Adds a format suffix like [HD] or [FHD] to alive channel names.",
-            "confirm": { "required": True, "title": "Add Video Format Suffixes?", "message": "This will rename channels based on the last check. This action is irreversible. Continue?" }
-        },
-        {
-            "id": "view_table",
-            "label": "📊 View Results Table",
-            "description": "Display detailed results in table format. (Copy/paste into text editor for better formatting."
-        },
-        {
-            "id": "export_results",
-            "label": "💾 Export Results to CSV",
-            "description": "Export the last check results to a CSV file. Will be saved in Docker container: /data/exports/"
-        },
-        {
-            "id": "cleanup_orphaned_tasks",
-            "label": "🧹 Cleanup Orphaned Tasks",
-            "description": "Remove any orphaned Celery periodic tasks from old plugin versions.",
-        },
-        {
-            "id": "clear_csv_exports",
-            "label": "🗑️ Clear CSV Exports",
-            "description": "Delete all CSV export files created by this plugin.",
-            "confirm": { "required": True, "title": "Clear All CSV Exports?", "message": "This will delete all CSV files in /data/exports/. This action cannot be undone. Continue?" }
-        }
-    ]
-    
+    # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
         self.results_file = "/data/iptv_checker_results.json"
         self.loaded_channels_file = "/data/iptv_checker_loaded_channels.json"
@@ -457,13 +133,9 @@ class Plugin:
                 except OSError:
                     pass
 
-    def on_load(self, context):
-        """Called when plugin is loaded or reloaded."""
-        LOGGER.info("Plugin loaded")
-    
-    def on_unload(self):
-        """Called when plugin is unloaded or disabled."""
-        LOGGER.info("Plugin unloading - stopping scheduler")
+    def stop(self, context):
+        logger = context.get("logger", LOGGER)
+        logger.info("Plugin unloading - stopping scheduler")
         self._stop_background_scheduler()
     
     def _parse_scheduled_times(self, scheduled_times_str):
@@ -701,7 +373,7 @@ class Plugin:
             LOGGER.info("⏰ SCHEDULED: Loading groups...")
             load_result = self.load_groups_action(settings, scheduled_logger)
             
-            if load_result.get('status') != 'success':
+            if load_result.get('status') != 'ok':
                 LOGGER.error(f"⏰ SCHEDULED: Load groups failed: {load_result.get('message')}")
                 return
             
@@ -711,7 +383,7 @@ class Plugin:
             LOGGER.info("⏰ SCHEDULED: Starting stream check...")
             check_result = self.check_streams_action(settings, scheduled_logger, context={'scheduled': True})
             
-            if check_result.get('status') != 'success':
+            if check_result.get('status') != 'ok':
                 LOGGER.error(f"⏰ SCHEDULED: Stream check failed to start: {check_result.get('message')}")
                 return
             
@@ -759,7 +431,25 @@ class Plugin:
                 LOGGER.info("⏰ SCHEDULED: Moving low framerate channels to group...")
                 move_low_fps_result = self.move_low_framerate_channels_action(settings, scheduled_logger)
                 LOGGER.info(f"⏰ SCHEDULED: {move_low_fps_result.get('message')}")
-            
+
+            # Step 9: Delete dead channels if enabled
+            if settings.get('scheduler_delete_dead_channels', False):
+                LOGGER.info("⏰ SCHEDULED: Deleting dead channels...")
+                delete_result = self.delete_dead_channels_action(settings, scheduled_logger)
+                if delete_result.get('status') == 'ok':
+                    LOGGER.info(f"⏰ SCHEDULED: {delete_result.get('message')}")
+                else:
+                    LOGGER.warning(f"⏰ SCHEDULED: {delete_result.get('message')}")
+
+            # Step 10: Fire webhook if enabled
+            if settings.get('scheduler_fire_webhook', False):
+                LOGGER.info("⏰ SCHEDULED: Firing webhook...")
+                webhook_result = self._fire_webhook(settings, scheduled_logger)
+                if webhook_result.get('status') == 'ok':
+                    LOGGER.info(f"⏰ SCHEDULED: {webhook_result.get('message')}")
+                else:
+                    LOGGER.warning(f"⏰ SCHEDULED: {webhook_result.get('message')}")
+
             LOGGER.info("⏰ SCHEDULED: Check sequence completed successfully")
             
         except Exception as e:
@@ -864,9 +554,7 @@ class Plugin:
             logger = context.get("logger", LOGGER)
             
             # Restart scheduler if scheduling settings may have changed
-            # Skip if action is status update to avoid overhead
-            if action not in ["get_status_update"]:
-                self._start_background_scheduler(settings)
+            self._start_background_scheduler(settings)
 
             # Add our filter to context logger to ensure all logs are prefixed
             if logger is not LOGGER and not any(isinstance(f, PluginNameFilter) for f in logger.filters):
@@ -890,14 +578,14 @@ class Plugin:
                 "update_schedule": self.update_schedule_action,
                 "cleanup_orphaned_tasks": self.cleanup_orphaned_tasks_action,
                 "check_scheduler_status": self.check_scheduler_status_action,
-                "get_status_update": self.get_status_update_action,
+                "delete_dead_channels": self.delete_dead_channels_action,
             }
 
             if action not in action_map:
                 return {"status": "error", "message": f"Unknown action: {action}"}
 
             # Pass context to actions that need it
-            if action in ["check_streams", "get_status_update"]:
+            if action == "check_streams":
                 return action_map[action](settings, logger, context)
             else:
                 return action_map[action](settings, logger)
@@ -908,44 +596,6 @@ class Plugin:
             self._stop_status_updates()
             LOGGER.error(f"Error in plugin run: {str(e)}")
             return {"status": "error", "message": str(e)}
-
-    def get_status_update_action(self, settings, logger, context):
-        """Return pending status update with ETA if available"""
-        
-        # Check if we have a completion message
-        if self.completion_message:
-            message = self.completion_message
-            self.completion_message = None  # Clear after reading
-            return {"status": "success", "message": message}
-        
-        if self.check_progress['status'] == 'running':
-            current, total = self.check_progress['current'], self.check_progress['total']
-            percent = (current / total * 100) if total > 0 else 0
-            
-            # Calculate ETA
-            if self.check_progress.get('start_time') and current > 0:
-                elapsed_seconds = time.time() - self.check_progress['start_time']
-                avg_time_per_stream = elapsed_seconds / current
-                remaining_streams = total - current
-                eta_seconds = remaining_streams * avg_time_per_stream
-                eta_minutes = eta_seconds / 60
-                
-                if eta_minutes < 1:
-                    eta_str = f"ETA: <1 min"
-                else:
-                    eta_str = f"ETA: {eta_minutes:.0f} min"
-            else:
-                eta_str = "ETA: calculating..."
-            
-            message = f"Checking streams {current}/{total} - {percent:.0f}% complete | {eta_str}"
-            return {"status": "success", "message": message}
-        
-        if self.pending_status_message:
-            message = self.pending_status_message
-            self.pending_status_message = None  # Clear after reading
-            return {"status": "success", "message": message}
-        
-        return {"status": "info", "message": "No status update available"}
 
     def _start_status_updates(self, context):
         """Start background thread for status updates"""
@@ -1057,8 +707,23 @@ class Plugin:
             else:
                 validation_results.append("⚠️ pytz not available - scheduler timezone cannot be validated")
 
+        # Validate auto-delete settings
+        if settings.get('scheduler_delete_dead_channels', False):
+            confirmation = settings.get('auto_delete_confirmation', '').strip()
+            if confirmation != 'DELETE':
+                validation_results.append("❌ Auto-delete dead channels is enabled but confirmation field does not contain 'DELETE'. Deletion will not run.")
+                has_errors = True
+            else:
+                validation_results.append("⚠️ Auto-delete dead channels is ENABLED. Dead channels will be PERMANENTLY DELETED after scheduled checks.")
+            if settings.get('scheduler_rename_dead_channels', False) or settings.get('scheduler_move_dead_channels', False):
+                validation_results.append("⚠️ Rename/move dead channels is enabled alongside delete. Rename and move operations are unnecessary if channels will be deleted afterward.")
+
+        # Check for plugin updates
+        _, version_message = self._get_latest_version()
+        validation_results.append(f"\n{version_message}")
+
         # Return results
-        status = "error" if has_errors else "success"
+        status = "error" if has_errors else "ok"
         message = "\n".join(validation_results)
 
         if has_errors:
@@ -1070,10 +735,16 @@ class Plugin:
 
     def view_progress_action(self, settings, logger):
         """View the current progress of a running operation (load groups or stream check)."""
-        
+
+        # Check if we have a completion message from a finished operation
+        if self.completion_message:
+            message = self.completion_message
+            self.completion_message = None
+            return {"status": "ok", "message": message}
+
         # Reload progress from file to get latest state
         self.check_progress = self._load_progress()
-        
+
         # Check if loading groups is in progress
         if self.load_progress.get('status') == 'loading':
             current, total = self.load_progress['current'], self.load_progress['total']
@@ -1095,32 +766,38 @@ class Plugin:
                 eta_str = "ETA: calculating..."
 
             message = f"📥 Loading channels {current}/{total} - {percent:.0f}% complete | {eta_str}"
-            return {"status": "success", "message": message}
-        
+            return {"status": "ok", "message": message}
+
         # Check if stream check is in progress
-        if self.check_progress['status'] != 'running':
-            return {"status": "info", "message": "No operation is currently running.\n\nUse '📥 Load Group(s)' to load channels or '▶️ Start Stream Check' to begin checking streams."}
+        if self.check_progress['status'] == 'running':
+            current, total = self.check_progress['current'], self.check_progress['total']
+            percent = (current / total * 100) if total > 0 else 0
 
-        current, total = self.check_progress['current'], self.check_progress['total']
-        percent = (current / total * 100) if total > 0 else 0
+            # Calculate ETA
+            if self.check_progress.get('start_time') and current > 0:
+                elapsed_seconds = time.time() - self.check_progress['start_time']
+                avg_time_per_stream = elapsed_seconds / current
+                remaining_streams = total - current
+                eta_seconds = remaining_streams * avg_time_per_stream
+                eta_minutes = eta_seconds / 60
 
-        # Calculate ETA
-        if self.check_progress.get('start_time') and current > 0:
-            elapsed_seconds = time.time() - self.check_progress['start_time']
-            avg_time_per_stream = elapsed_seconds / current
-            remaining_streams = total - current
-            eta_seconds = remaining_streams * avg_time_per_stream
-            eta_minutes = eta_seconds / 60
-
-            if eta_minutes < 1:
-                eta_str = f"ETA: <1 min"
+                if eta_minutes < 1:
+                    eta_str = f"ETA: <1 min"
+                else:
+                    eta_str = f"ETA: {eta_minutes:.0f} min"
             else:
-                eta_str = f"ETA: {eta_minutes:.0f} min"
-        else:
-            eta_str = "ETA: calculating..."
+                eta_str = "ETA: calculating..."
 
-        message = f"🔄 Checking streams {current}/{total} - {percent:.0f}% complete | {eta_str}"
-        return {"status": "success", "message": message}
+            message = f"🔄 Checking streams {current}/{total} - {percent:.0f}% complete | {eta_str}"
+            return {"status": "ok", "message": message}
+
+        # Check for pending status messages from background threads
+        if self.pending_status_message:
+            message = self.pending_status_message
+            self.pending_status_message = None
+            return {"status": "ok", "message": message}
+
+        return {"status": "ok", "message": "No operation is currently running.\n\nUse '📥 Load Group(s)' to load channels or '▶️ Start Stream Check' to begin checking streams."}
 
     def cancel_check_action(self, settings, logger):
         """Cancel the currently running stream check."""
@@ -1128,7 +805,7 @@ class Plugin:
         self.check_progress = self._load_progress()
         
         if self.check_progress['status'] != 'running':
-            return {"status": "info", "message": "No stream check is currently running."}
+            return {"status": "ok", "message": "No stream check is currently running."}
 
         # Signal the background thread to stop
         self._stop_status_updates()
@@ -1143,7 +820,7 @@ class Plugin:
 
         logger.info(f"Stream check cancelled by user. Processed {current}/{total} streams before cancellation.")
 
-        return {"status": "success", "message": f"✅ Stream check cancelled.\n\nProcessed {current}/{total} streams before cancellation.\n\nPartial results have been saved and can be viewed with '📋 View Last Results'."}
+        return {"status": "ok", "message": f"✅ Stream check cancelled.\n\nProcessed {current}/{total} streams before cancellation.\n\nPartial results have been saved and can be viewed with '📋 View Last Results'."}
 
     def view_results_action(self, settings, logger):
         """View summary of the last completed stream check."""
@@ -1151,11 +828,11 @@ class Plugin:
         self.check_progress = self._load_progress()
         
         if self.check_progress['status'] == 'running':
-            return {"status": "info", "message": "A stream check is currently running.\n\nUse '📊 View Check Progress' to see the current status."}
+            return {"status": "ok", "message": "A stream check is currently running.\n\nUse '📊 View Check Progress' to see the current status."}
 
         results = self._load_json_file(self.results_file)
         if results is None:
-            return {"status": "info", "message": "No results available yet.\n\nUse '▶️ Start Stream Check' to begin checking streams."}
+            return {"status": "ok", "message": "No results available yet.\n\nUse '▶️ Start Stream Check' to begin checking streams."}
 
         # Show results summary
         alive = sum(1 for r in results if r.get('status') == 'Alive')
@@ -1174,14 +851,14 @@ class Plugin:
             if count > 0:
                 summary.append(f"  • {fmt}: {count}")
 
-        return {"status": "success", "message": "\n".join(summary)}
+        return {"status": "ok", "message": "\n".join(summary)}
 
     def _trigger_frontend_refresh(self, settings, logger):
         """Trigger frontend channel list refresh via WebSocket"""
         try:
             send_websocket_update('updates', 'update', {
                 "type": "plugin",
-                "plugin": self.name,
+                "plugin": self.key,
                 "message": "Channels updated"
             })
             logger.info("Frontend refresh triggered via WebSocket")
@@ -1189,6 +866,50 @@ class Plugin:
         except Exception as e:
             logger.warning(f"Could not trigger frontend refresh: {e}")
         return False
+
+    def _fire_webhook(self, settings, logger):
+        """Send check results summary to the configured webhook URL via HTTP POST."""
+        webhook_url = settings.get('webhook_url', '').strip()
+        if not webhook_url:
+            return {"status": "error", "message": "No webhook URL configured. Set the 'Webhook URL' field in plugin settings."}
+
+        if not webhook_url.startswith(('http://', 'https://')):
+            return {"status": "error", "message": "Webhook URL must start with http:// or https://"}
+
+        results = self._load_json_file(self.results_file)
+        if not results:
+            return {"status": "ok", "message": "No results available to send. Run a stream check first."}
+
+        alive = sum(1 for r in results if r.get('status') == 'Alive')
+        dead = sum(1 for r in results if r.get('status') == 'Dead')
+
+        payload = json.dumps({
+            "plugin": self.key,
+            "event": "check_complete",
+            "total": len(results),
+            "alive": alive,
+            "dead": dead,
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        }).encode('utf-8')
+
+        req = urllib.request.Request(
+            webhook_url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                status_code = resp.status
+                logger.info(f"Webhook fired successfully: {webhook_url} (HTTP {status_code})")
+                return {"status": "ok", "message": f"Webhook sent to {webhook_url} (HTTP {status_code}). Payload: {alive} alive, {dead} dead out of {len(results)} streams."}
+        except urllib.error.HTTPError as e:
+            logger.error(f"Webhook HTTP error: {webhook_url} returned HTTP {e.code}")
+            return {"status": "error", "message": f"Webhook failed: HTTP {e.code} from {webhook_url}"}
+        except Exception as e:
+            logger.error(f"Webhook error: {e}")
+            return {"status": "error", "message": f"Webhook failed: {e}"}
 
     def _get_all_groups(self, logger):
         """Fetch all channel groups via Django ORM."""
@@ -1349,7 +1070,7 @@ class Plugin:
             if not parallel_enabled and total_streams > 50:
                 message += f"\n\nTip: Enable 'Parallel Stream Checking' in settings to speed up processing significantly!"
 
-        return {"status": "success", "message": message}
+        return {"status": "ok", "message": message}
 
     def check_streams_action(self, settings, logger, context=None):
         """Check status and format of all loaded streams with auto status updates."""
@@ -1362,7 +1083,7 @@ class Plugin:
             if self.check_progress['status'] == 'running':
                 current, total = self.check_progress['current'], self.check_progress['total']
                 percent = (current / total * 100) if total > 0 else 0
-                return {"status": "info", "message": f"A stream check is already running ({percent:.0f}% complete).\n\nUse '📊 View Check Progress' to monitor the current check."}
+                return {"status": "ok", "message": f"A stream check is already running ({percent:.0f}% complete).\n\nUse '📊 View Check Progress' to monitor the current check."}
 
             loaded_channels = self._load_json_file(self.loaded_channels_file)
             if loaded_channels is None:
@@ -1406,7 +1127,7 @@ class Plugin:
         processing_thread.daemon = True
         processing_thread.start()
 
-        return {"status": "success", "message": f"✅ Stream checking started for {len(all_streams)} streams\nEstimated time: ~{estimated_total_time} minutes ({mode_info})\n\nUse '📊 View Check Progress' to monitor progress."}
+        return {"status": "ok", "message": f"✅ Stream checking started for {len(all_streams)} streams\nEstimated time: ~{estimated_total_time} minutes ({mode_info})\n\nUse '📊 View Check Progress' to monitor progress."}
 
     def _process_streams_background(self, all_streams, settings, logger):
         """Background processing of streams to avoid request timeout"""
@@ -1711,7 +1432,7 @@ class Plugin:
             return {"status": "error", "message": "No check results found (or data corrupted). Please run 'Check Streams' first."}
 
         dead_channels = {r['channel_id']: r['channel_name'] for r in results if r['status'] == 'Dead'}
-        if not dead_channels: return {"status": "success", "message": "No dead channels found in the last check."}
+        if not dead_channels: return {"status": "ok", "message": "No dead channels found in the last check."}
 
         payload = []
         for cid, name in dead_channels.items():
@@ -1720,12 +1441,12 @@ class Plugin:
             if new_name != name:
                 payload.append({'id': cid, 'name': new_name})
 
-        if not payload: return {"status": "success", "message": "No channels needed renaming."}
+        if not payload: return {"status": "ok", "message": "No channels needed renaming."}
 
         try:
             count = self._bulk_update_channels(payload, ['name'], logger)
             self._trigger_frontend_refresh(settings, logger)
-            return {"status": "success", "message": f"Successfully renamed {count} dead channels. GUI refresh triggered."}
+            return {"status": "ok", "message": f"Successfully renamed {count} dead channels. GUI refresh triggered."}
         except Exception as e: return {"status": "error", "message": str(e)}
 
     def move_dead_channels_action(self, settings, logger):
@@ -1739,7 +1460,7 @@ class Plugin:
             return {"status": "error", "message": "No check results found (or data corrupted). Please run 'Check Streams' first."}
         
         dead_channel_ids = {r['channel_id'] for r in results if r['status'] == 'Dead'}
-        if not dead_channel_ids: return {"status": "success", "message": "No dead channels were found in the last check."}
+        if not dead_channel_ids: return {"status": "ok", "message": "No dead channels were found in the last check."}
         
         try:
             dest_group = self._get_or_create_group(move_to_group_name, logger)
@@ -1748,10 +1469,48 @@ class Plugin:
             payload = [{'id': cid, 'channel_group_id': new_group_id} for cid in dead_channel_ids]
             moved_count = self._bulk_update_channels(payload, ['channel_group_id'], logger)
             self._trigger_frontend_refresh(settings, logger)
-            return {"status": "success", "message": f"Successfully moved {moved_count} dead channels to group '{move_to_group_name}'. GUI refresh triggered."}
+            return {"status": "ok", "message": f"Successfully moved {moved_count} dead channels to group '{move_to_group_name}'. GUI refresh triggered."}
 
         except Exception as e: return {"status": "error", "message": str(e)}
         
+    def delete_dead_channels_action(self, settings, logger):
+        """Permanently delete channels marked as dead from the database."""
+        # Safety gate: require confirmation string
+        confirmation = settings.get('auto_delete_confirmation', '').strip()
+        if confirmation != 'DELETE':
+            return {
+                "status": "error",
+                "message": "Auto-delete safety gate: You must type DELETE (all caps) in the "
+                           "'Auto-Delete Confirmation' settings field to enable this feature."
+            }
+
+        results = self._load_json_file(self.results_file)
+        if results is None:
+            return {"status": "error", "message": "No check results found (or data corrupted). Please run 'Check Streams' first."}
+
+        dead_channel_ids = {r['channel_id'] for r in results if r['status'] == 'Dead'}
+        if not dead_channel_ids:
+            return {"status": "ok", "message": "No dead channels were found in the last check."}
+
+        logger.warning(f"WARNING: About to PERMANENTLY DELETE {len(dead_channel_ids)} dead channels. This cannot be undone!")
+        logger.warning(f"Channel IDs to be deleted: {sorted(dead_channel_ids)}")
+
+        try:
+            with transaction.atomic():
+                deleted_count, _ = Channel.objects.filter(id__in=dead_channel_ids).delete()
+
+            logger.warning(f"DELETED {deleted_count} dead channels permanently from the database.")
+            if deleted_count != len(dead_channel_ids):
+                logger.warning(f"Expected to delete {len(dead_channel_ids)} channels but only {deleted_count} were found in the database.")
+            self._trigger_frontend_refresh(settings, logger)
+            return {
+                "status": "ok",
+                "message": f"Permanently deleted {deleted_count} dead channels from the database. "
+                           f"This action cannot be undone. GUI refresh triggered."
+            }
+        except Exception as e:
+            return {"status": "error", "message": f"Error deleting channels: {str(e)}"}
+
     def rename_low_framerate_channels_action(self, settings, logger):
         """Rename channels with low framerate streams."""
         rename_format = settings.get("low_framerate_rename_format", "{name} [Slow]").strip()
@@ -1767,7 +1526,7 @@ class Plugin:
             return {"status": "error", "message": "No check results found (or data corrupted). Please run 'Check Streams' first."}
 
         low_fps_channels = {r['channel_id']: r['channel_name'] for r in results if 0 < r.get('framerate_num', 0) < 30}
-        if not low_fps_channels: return {"status": "success", "message": "No low framerate channels found."}
+        if not low_fps_channels: return {"status": "ok", "message": "No low framerate channels found."}
 
         payload = []
         for cid, name in low_fps_channels.items():
@@ -1776,12 +1535,12 @@ class Plugin:
             if new_name != name:
                 payload.append({'id': cid, 'name': new_name})
 
-        if not payload: return {"status": "success", "message": "No channels needed renaming."}
+        if not payload: return {"status": "ok", "message": "No channels needed renaming."}
 
         try:
             count = self._bulk_update_channels(payload, ['name'], logger)
             self._trigger_frontend_refresh(settings, logger)
-            return {"status": "success", "message": f"Successfully renamed {count} low framerate channels. GUI refresh triggered."}
+            return {"status": "ok", "message": f"Successfully renamed {count} low framerate channels. GUI refresh triggered."}
         except Exception as e: return {"status": "error", "message": str(e)}
 
     def move_low_framerate_channels_action(self, settings, logger):
@@ -1795,7 +1554,7 @@ class Plugin:
             return {"status": "error", "message": "No check results found (or data corrupted). Please run 'Check Streams' first."}
         
         low_fps_channel_ids = {r['channel_id'] for r in results if 0 < r.get('framerate_num', 0) < 30}
-        if not low_fps_channel_ids: return {"status": "success", "message": "No low framerate channels found to move."}
+        if not low_fps_channel_ids: return {"status": "ok", "message": "No low framerate channels found to move."}
         
         try:
             dest_group = self._get_or_create_group(group_name, logger)
@@ -1804,7 +1563,7 @@ class Plugin:
             payload = [{'id': cid, 'channel_group_id': new_group_id} for cid in low_fps_channel_ids]
             moved_count = self._bulk_update_channels(payload, ['channel_group_id'], logger)
             self._trigger_frontend_refresh(settings, logger)
-            return {"status": "success", "message": f"Successfully moved {moved_count} low framerate channels to group '{group_name}'. GUI refresh triggered."}
+            return {"status": "ok", "message": f"Successfully moved {moved_count} low framerate channels to group '{group_name}'. GUI refresh triggered."}
         except Exception as e: return {"status": "error", "message": str(e)}
 
     def add_video_format_suffix_action(self, settings, logger):
@@ -1834,7 +1593,7 @@ class Plugin:
                 format_counts[fmt] = format_counts.get(fmt, 0) + 1
             logger.info(f"DEBUG: Format distribution: {format_counts}")
 
-        if not channel_formats: return {"status": "success", "message": "No alive channels found to update."}
+        if not channel_formats: return {"status": "ok", "message": "No alive channels found to update."}
 
         try:
             all_channels = self._get_all_channels(logger)
@@ -1890,11 +1649,11 @@ class Plugin:
                     reason_parts.append(f"{skipped_channel_not_found} not found in DB")
 
                 reason = " • ".join(reason_parts) if reason_parts else "All channels already up to date"
-                return {"status": "success", "message": f"No channels needed a format suffix added.\n\nReason: {reason}"}
+                return {"status": "ok", "message": f"No channels needed a format suffix added.\n\nReason: {reason}"}
 
             updated_count = self._bulk_update_channels(payload, ['name'], logger)
             self._trigger_frontend_refresh(settings, logger)
-            return {"status": "success", "message": f"Successfully added format suffixes to {updated_count} channels. GUI refresh triggered."}
+            return {"status": "ok", "message": f"Successfully added format suffixes to {updated_count} channels. GUI refresh triggered."}
 
         except Exception as e: return {"status": "error", "message": str(e)}
 
@@ -1910,7 +1669,7 @@ class Plugin:
             error_details = r.get('error', '')[:34] if r.get('error') else ''
             lines.append(f"{r.get('channel_name', 'N/A')[:34]:<35} {r.get('status', 'N/A'):<8} {r.get('format', 'N/A'):<8} {fps_str:<8} {error_type:<20} {error_details:<35}")
         lines.append("="*120)
-        return {"status": "success", "message": "\n".join(lines)}
+        return {"status": "ok", "message": "\n".join(lines)}
 
     def _generate_csv_header_comments(self, settings, results):
         """Generate CSV header comments with settings and statistics"""
@@ -2056,20 +1815,20 @@ class Plugin:
             writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
             writer.writeheader()
             writer.writerows(results)
-        return {"status": "success", "message": f"Results exported to {filepath}"}
+        return {"status": "ok", "message": f"Results exported to {filepath}"}
 
     def clear_csv_exports_action(self, settings, logger):
         """Delete all CSV export files created by this plugin."""
         exports_dir = "/data/exports"
 
         if not os.path.exists(exports_dir):
-            return {"status": "info", "message": "No exports directory found. No CSV files to delete."}
+            return {"status": "ok", "message": "No exports directory found. No CSV files to delete."}
 
         # Find all CSV files that match our naming pattern
         csv_files = [f for f in os.listdir(exports_dir) if f.startswith('iptv_checker_results_') and f.endswith('.csv')]
 
         if not csv_files:
-            return {"status": "info", "message": "No CSV export files found in /data/exports/."}
+            return {"status": "ok", "message": "No CSV export files found in /data/exports/."}
 
         # Delete all matching CSV files
         deleted_count = 0
@@ -2085,9 +1844,9 @@ class Plugin:
         if deleted_count == 0:
             return {"status": "error", "message": "Failed to delete any CSV files."}
         elif deleted_count < len(csv_files):
-            return {"status": "success", "message": f"⚠️ Partially cleared: Deleted {deleted_count} of {len(csv_files)} CSV files.\n\nSome files could not be deleted. Check logs for details."}
+            return {"status": "ok", "message": f"⚠️ Partially cleared: Deleted {deleted_count} of {len(csv_files)} CSV files.\n\nSome files could not be deleted. Check logs for details."}
         else:
-            return {"status": "success", "message": f"✅ Successfully deleted {deleted_count} CSV export file(s) from /data/exports/."}
+            return {"status": "ok", "message": f"✅ Successfully deleted {deleted_count} CSV export file(s) from /data/exports/."}
 
     def update_schedule_action(self, settings, logger):
         """Update the scheduler configuration and restart the scheduler."""
@@ -2100,7 +1859,7 @@ class Plugin:
                 logger.info("Scheduled times empty - stopping scheduler")
                 self._stop_background_scheduler()
                 return {
-                    "status": "success",
+                    "status": "ok",
                     "message": "✅ Schedule cleared. Scheduler has been stopped.\n\nTo enable scheduling, configure scheduled times in cron format."
                 }
             
@@ -2140,7 +1899,7 @@ class Plugin:
             message += f"Status: Enabled ✓\n\n"
             message += f"The scheduler will run checks at the configured times."
             
-            return {"status": "success", "message": message}
+            return {"status": "ok", "message": message}
             
         except Exception as e:
             logger.error(f"Error updating schedule: {e}", exc_info=True)
@@ -2176,7 +1935,7 @@ class Plugin:
             
             if task_count == 0:
                 return {
-                    "status": "success",
+                    "status": "ok",
                     "message": "✅ No orphaned tasks found.\n\nThe database is clean."
                 }
             
@@ -2189,7 +1948,7 @@ class Plugin:
             logger.info(f"Cleaned up {deleted_count} orphaned periodic tasks: {task_names}")
             
             return {
-                "status": "success",
+                "status": "ok",
                 "message": f"✅ Cleaned up {deleted_count} orphaned task(s):\n\n" + "\n".join(f"  • {name}" for name in task_names)
             }
             
@@ -2288,7 +2047,7 @@ class Plugin:
                 status_lines.append("  ✅ Scheduler is configured and running properly")
             
             return {
-                "status": "success",
+                "status": "ok",
                 "message": "\n".join(status_lines)
             }
             
