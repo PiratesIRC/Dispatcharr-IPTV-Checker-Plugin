@@ -14,7 +14,7 @@
 ![License](https://img.shields.io/github/license/PiratesIRC/Dispatcharr-IPTV-Checker-Plugin)
 
 
-## ⚠️ Important: Backup Your Database
+## Warning: Backup Your Database
 Before installing or using this plugin, it is **highly recommended** that you create a backup of your Dispatcharr database. This plugin makes significant changes to your channel and stream assignments.
 
 **[Click here for instructions on how to back up your database.](https://dispatcharr.github.io/Dispatcharr-Docs/troubleshooting/?h=backup#how-can-i-make-a-backup-of-the-database)**
@@ -22,20 +22,24 @@ Before installing or using this plugin, it is **highly recommended** that you cr
 ## Features
 
 - **Stream Status Checking:** Verify if IPTV streams are alive or dead with smart retry logic
+- **Wildcard Group Matching:** Target groups using patterns like `US-*`, `*Sports*`, or `Movies-??`
 - **Automated Scheduler:** Schedule stream checks using cron expressions with timezone support
+- **Post-Check Automation:** Automatically rename, move, delete, export, and webhook after scheduled checks
 - **Metadata Synchronization:** Sync technical stream data (codecs, bitrate, sample rate) back to Dispatcharr
-- **Background Processing:** Stream checks run in background threads to prevent browser timeouts
+- **Background Processing:** Stream checks run in background threads with cancellation support
 - **Alternative Streams:** Option to check backup/alternative streams associated with channels
 - **Technical Analysis:** Extract resolution, framerate, and video format information
-- **Configurable Analysis:** Custom FFprobe path and analysis duration settings
-- **Dispatcharr Integration:** Direct API communication with automatic authentication
-- **Channel Management:** Automated renaming and moving of channels based on analysis results
+- **Configurable FFprobe:** Custom path, analysis flags, and analysis duration settings
+- **Direct ORM Integration:** Runs inside Dispatcharr with direct database access — no API credentials needed
+- **Channel Management:** Automated renaming, moving, and deletion of channels based on results
 - **Group-Based Operations:** Work with existing Dispatcharr channel groups
 - **Smart Loading:** Asynchronous loading for large channel lists to prevent interface timeouts
-- **Real-Time Progress Tracking:** Live ETA calculations based on actual processing speed
+- **Real-Time Progress Tracking:** Live ETA calculations with adaptive WebSocket notifications
 - **Smart Retry System:** Timeout streams queued and retried after other streams for better success rates
 - **Enhanced Error Categorization:** Detailed error types (Timeout, 404, 403, Connection Refused, etc.)
-- **Enhanced CSV Exports:** Includes error types and rounded framerate values
+- **Webhook Notifications:** Send HTTP POST notifications after scheduled checks complete
+- **Auto-Delete Dead Channels:** Permanently remove dead channels with safety confirmation gate
+- **CSV Exports:** Export results with comprehensive statistics and URL masking
 
 ## Requirements
 
@@ -53,9 +57,10 @@ docker exec dispatcharr which ffmpeg
 ```
 
 ### Dispatcharr Setup
-- Active Dispatcharr installation with configured channels and groups
-- Valid Dispatcharr username and password for API access
+- Active Dispatcharr installation (v0.20.0+) with configured channels and groups
 - Channel groups containing IPTV streams to analyze
+
+No API credentials are needed — the plugin runs inside Dispatcharr with direct database access.
 
 ## Installation
 
@@ -92,135 +97,185 @@ To update the plugin:
 
 ## Settings Reference
 
+### Core Settings
+
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| Dispatcharr URL | string | - | Full URL of your Dispatcharr instance |
-| Dispatcharr Username | string | - | Username for API authentication |
-| Dispatcharr Password | password | - | Password for API authentication |
-| Groups to Check | string | - | Comma-separated group names, empty = all groups |
+| Group(s) to Check | string | *(empty = all)* | Comma-separated group names. Supports wildcards: `US-*`, `*Sports*` |
 | Check Alternative Streams | boolean | true | Check all alternative/backup streams for each channel |
 | Connection Timeout | number | 10 | Seconds to wait for stream connection |
+| Probe Timeout | number | 20 | Seconds to wait for FFprobe stream analysis |
 | Dead Connection Retries | number | 3 | Number of retry attempts for failed streams |
-| Dead Channel Rename Format | string | "{name} [DEAD]" | Format for renaming dead channels. Use {name} as placeholder |
-| Move Dead Channels to Group | string | "Graveyard" | Group to move dead channels to |
-| Low Framerate Rename Format | string | "{name} [Slow]" | Format for renaming low FPS channels. Use {name} as placeholder |
-| Move Low Framerate Group | string | "Slow" | Group to move low framerate channels to |
-| Video Format Suffixes | string | "4k, FHD, HD, SD, Unknown" | Formats to add as suffixes |
-| Enable Parallel Checking | boolean | false | Check multiple streams simultaneously for faster processing |
-| Number of Parallel Workers | number | 2 | How many streams to check at once (when parallel enabled) |
-| FFprobe Path | string | /usr/local/bin/ffprobe | Full path to the ffprobe executable |
-| Enable Scheduled Checks | boolean | false | Enable automatic scheduled stream checks |
-| Scheduled Check Times | string | - | Cron expressions (e.g., "0 4 * * *" for daily at 4 AM) |
-| Scheduler Timezone | select | America/Chicago | Timezone for the scheduler |
-| Export CSV for Schedule | boolean | false | Automatically export results to CSV after scheduled checks |
+
+### Channel Management Settings
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| Dead Channel Rename Format | string | `{name} [DEAD]` | Format for renaming dead channels |
+| Move Dead Channels to Group | string | `Graveyard` | Group to move dead channels to |
+| Low Framerate Rename Format | string | `{name} [Slow]` | Format for renaming low FPS channels (<30fps) |
+| Move Low Framerate Group | string | `Slow` | Group to move low framerate channels to |
+| Video Format Suffixes | string | `UHD, FHD, HD, SD, Unknown` | Formats to add as suffixes |
+
+### FFprobe Settings
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| FFprobe Path | string | `/usr/local/bin/ffprobe` | Full path to the ffprobe executable |
+| FFprobe Analysis Flags | string | `-show_streams,-show_frames,...` | Comma-separated FFprobe flags |
+| FFprobe Analysis Duration | number | 5 | Seconds of stream to analyze |
+
+### Parallel Checking
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| Enable Parallel Checking | boolean | true | Check multiple streams simultaneously |
+| Number of Parallel Workers | number | 2 | How many streams to check at once |
+
+### Webhook
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| Webhook URL | string | *(empty)* | HTTP POST URL for notifications after scheduled checks |
+
+### Scheduler Settings
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| Scheduled Check Times | string | *(empty)* | Cron expression (e.g., `0 4 * * *` for daily at 4 AM) |
+| Scheduler Timezone | select | `America/Chicago` | Timezone for the scheduler |
+| Export CSV for Scheduled Checks | boolean | false | Auto-export results to CSV after scheduled checks |
+| Rename Dead Channels | boolean | false | Auto-rename dead channels after scheduled checks |
+| Rename Low Framerate Channels | boolean | false | Auto-rename slow channels after scheduled checks |
+| Add Video Format Suffix | boolean | false | Auto-add format suffix after scheduled checks |
+| Move Dead Channels | boolean | false | Auto-move dead channels after scheduled checks |
+| Move Low Framerate Channels | boolean | false | Auto-move slow channels after scheduled checks |
+| Delete Dead Channels | boolean | false | Auto-delete dead channels after scheduled checks |
+| Send Webhook Notification | boolean | false | Send webhook after scheduled checks |
+
+### Destructive Settings
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| Auto-Delete Confirmation | string | *(empty)* | Type `DELETE` to enable auto-delete of dead channels |
 
 ## Usage Guide
 
 ### Step-by-Step Workflow
 
-1. **Configure Authentication & Preferences**
-   - Enter your **Dispatcharr URL** (e.g., http://127.0.0.1:9191)
-   - Enter your **Dispatcharr Username** and **Password**
-   - Configure checking preferences (Groups, Alternative Streams, Retries)
+1. **Configure Preferences**
+   - Set your **Group(s) to Check** (supports wildcards like `US-*`)
+   - Configure checking preferences (Alternative Streams, Timeouts, Retries)
    - Optionally enable **Parallel Checking** for faster processing
    - Click **Save Settings**
 
 2. **Validate Settings** *(Recommended)*
-   - Click **Run** on **✅ Validate Settings**
-   - Verifies connection, credentials, group names, and tool paths
+   - Click **Run** on **Validate Settings**
+   - Verifies group names, FFprobe path, and configuration
 
 3. **Configure Schedule** *(Optional)*
    - Set **Scheduled Check Times** using cron format
    - Select your **Scheduler Timezone**
-   - Enable **Export CSV for Scheduled Checks** if desired
-   - Click **Run** on **📅 Update Schedule** to activate
+   - Enable post-check automation options as desired
+   - Click **Run** on **Update Schedule** to activate
 
 4. **Load Channel Groups**
-   - Click **Run** on **📥 Load Group(s)**
+   - Click **Run** on **Load Group(s)**
    - Review available groups and channel counts
-   - Large lists (>100 channels) will load in the background to prevent timeouts
+   - Large lists (>100 channels) load in the background
 
 5. **Check Streams**
-   - Click **Run** on **▶️ Start Stream Check**
+   - Click **Run** on **Start Stream Check**
    - Processing runs in the background
    - Returns immediately with estimated completion time
-   - Technical metadata (codecs, bitrate, etc.) is automatically synced to the database during checks
+   - Metadata is automatically synced to the database during checks
 
 6. **Monitor Progress**
-   - Click **📋 View Last Results** (or **📊 View Check Progress**) for real-time status with ETA
-   - Shows format: "Checking streams X/Y - Z% complete | ETA: N min"
+   - Click **View Check Progress** for real-time status with ETA
+   - Use **Cancel Stream Check** to stop a running check
    - Progress updates continue even if browser times out
 
 7. **View Results**
-   - Click **📋 View Last Results** for summary when complete
+   - Click **View Last Results** for summary when complete
    - Shows alive/dead counts and format distribution
-   - Use **📊 View Results Table** for detailed tabular format
+   - Use **View Results Table** for detailed tabular format
 
 8. **Manage Channels**
    - Use channel management actions based on results
-   - All operations include confirmation dialogs
+   - All destructive operations include confirmation dialogs
    - GUI automatically refreshes after changes
 
 9. **Export Data**
-   - Click **💾 Export Results to CSV** to save analysis data
+   - Click **Export Results to CSV** to save analysis data
    - CSV includes comprehensive header comments with settings and stats
 
 ## Action Reference
 
 ### Setup & Validation
-- **✅ Validate Settings:** Verify API connection, credentials, and group names
-- **📅 Update Schedule:** Apply the current schedule settings and restart the scheduler
+- **Validate Settings:** Verify configuration, group names, and FFprobe path
+- **Update Schedule:** Apply schedule settings and restart the scheduler
+- **Check Scheduler Status:** View current scheduler state and next run time
 
 ### Core Stream Checking
-- **📥 Load Group(s):** Load channels from specified groups (async for large lists)
-- **▶️ Start Stream Check:** Begin checking all loaded streams in background thread
-- **📊 View Check Progress:** View the current progress and ETA of the running check
-- **📋 View Last Results:** View summary of the last completed stream check
+- **Load Group(s):** Load channels from specified groups (async for large lists)
+- **Start Stream Check:** Begin checking all loaded streams in background thread
+- **View Check Progress:** View current progress and ETA of the running check
+- **Cancel Stream Check:** Stop the currently running stream check
+- **View Last Results:** View summary of the last completed stream check
 
 ### Channel Management
-- **✏️ Rename Dead Channels:** Apply rename format to dead streams
-- **⚰️ Move Dead Channels to Group:** Relocate dead channels
-- **🐌 Rename Low Framerate Channels:** Apply rename format to slow streams (<30fps)
-- **📁 Move Low Framerate Channels to Group:** Relocate slow channels
-- **🎬 Add Video Format Suffix to Channels:** Apply format tags ([4K], [FHD], [HD], [SD])
+- **Rename Dead Channels:** Apply rename format to dead streams
+- **Move Dead Channels to Group:** Relocate dead channels
+- **Delete Dead Channels:** Permanently remove dead channels (requires confirmation)
+- **Rename Low Framerate Channels:** Apply rename format to slow streams (<30fps)
+- **Move Low Framerate Channels:** Relocate slow channels
+- **Add Video Format Suffix:** Apply format tags ([UHD], [FHD], [HD], [SD])
 
-### Data Export
-- **📊 View Results Table:** Detailed tabular format for copy/paste
-- **💾 Export Results to CSV:** Save analysis data with comprehensive statistics
-- **🗑️ Clear CSV Exports:** Delete all CSV files in /data/exports/
+### Data & Maintenance
+- **View Results Table:** Detailed tabular format for copy/paste
+- **Export Results to CSV:** Save analysis data with comprehensive statistics
+- **Clear CSV Exports:** Delete all CSV files in /data/exports/
+- **Cleanup Orphaned Tasks:** Clean up stale background tasks
 
 ## Advanced Features
 
+### Wildcard Group Matching
+Use shell-style wildcards in the Group(s) to Check field:
+- `US-*` — matches US-Movies, US-Sports, US-News, etc.
+- `*Sports*` — matches any group containing "Sports"
+- `Movies-??` — matches Movies-US, Movies-UK, etc.
+- Multiple patterns: `US-*, UK-*, *Sports*` (comma-separated)
+
 ### Automated Scheduling
-- **Cron Support:** Configure checks to run automatically using standard cron syntax (e.g., `0 4 * * *`)
-- **Timezone Aware:** Schedules run according to your local timezone configuration
-- **Auto-Export:** Can automatically generate CSV reports after every scheduled run
-- **Conflict Prevention:** Scheduler intelligently queues jobs if a manual check is already running
+- **Cron Support:** Configure checks using standard cron syntax (e.g., `0 4 * * *`)
+- **Timezone Aware:** Schedules run according to your local timezone
+- **Post-Check Automation:** Chain any combination of rename, move, delete, export, and webhook actions
+- **Conflict Prevention:** Scheduler queues jobs if a manual check is already running
 
 ### Metadata Synchronization
-- **Database Sync:** The plugin automatically updates the Dispatcharr database with technical stream details derived from FFprobe analysis.
-- **Synced Fields:**
-  - Video/Audio Codecs
-  - Resolution (Width/Height)
-  - Bitrates (Video/Audio)
-  - Sample Rates & Audio Channels
-  - Stream Types
+- **Database Sync:** Automatically updates Dispatcharr with technical stream details from FFprobe analysis
+- **Synced Fields:** Video/Audio Codecs, Resolution, Bitrates, Sample Rates, Audio Channels, Stream Types
 
 ### Smart Retry System
 - Timeout streams queued and retried after processing other streams (not immediately)
 - Provides server recovery time between retry attempts
-- Retry queue processes every 4 streams to balance throughput and recovery time
+- Retry queue processes every 4 streams to balance throughput and recovery
 - Multiple retry attempts per stream based on configured retry count
 
-### Background Processing & Loading
-- **Async Loading:** Large channel lists load in a background thread to prevent UI locking or timeouts.
-- **Stream Checks:** Run entirely in background threads; browser connection loss does not stop the check.
-- **Real-Time ETA:** Calculated dynamically based on actual processing speed.
+### Auto-Delete Dead Channels
+- Permanently deletes channels with dead streams from the database
+- **Safety gates:** Requires typing `DELETE` in the confirmation field AND confirming via dialog
+- Can be automated via scheduler with the same confirmation gate
+
+### Webhook Notifications
+- Sends HTTP POST with JSON payload after scheduled checks complete
+- Configure any URL — works with Discord, Slack, custom endpoints
+- No additional dependencies (uses Python's built-in `urllib`)
 
 ## Troubleshooting
 
 ### First Step: Restart Container
-**For any plugin issues, always try refreshing your browser (F5) and then restarting the Dispatcharr container:**
+**For any plugin issues, try refreshing your browser (F5) and then restarting the Dispatcharr container:**
 ```bash
 docker restart dispatcharr
 ```
@@ -233,24 +288,20 @@ docker restart dispatcharr
 
 **Scheduler Not Running:**
 - Verify `pytz` is installed in the container
-- Check cron syntax in settings (5 fields required: minute hour day month weekday)
-- Ensure "Enable Scheduled Checks" is set to True
+- Check cron syntax (5 fields required: minute hour day month weekday)
+- Use **Check Scheduler Status** to verify state
 - Check logs: `docker logs dispatcharr | grep -i scheduler`
 
-**Authentication Errors:**
-- Use **✅ Validate Settings** to test configuration
-- Verify Dispatcharr URL is accessible from the browser
-- Restart container: `docker restart dispatcharr`
-
 **Stream Check Failures:**
-- Increase timeout setting for slow streams
+- Increase connection timeout and/or probe timeout for slow streams
 - Adjust retry count for unstable connections
 - Try enabling parallel mode for better timeout handling
 - Restart container: `docker restart dispatcharr`
 
 **Progress Stuck or Not Updating:**
-- Stream checking runs in background thread and continues even if browser times out
-- Use **📊 View Check Progress** to check current status
+- Stream checking runs in background and continues even if browser times out
+- Use **View Check Progress** to check current status
+- Use **Cancel Stream Check** if needed
 - Check container logs for actual processing status
 
 ## File Locations
@@ -263,9 +314,9 @@ docker restart dispatcharr
 
 ## Contributing
 
-This plugin integrates deeply with Dispatcharr's API and channel management system. When reporting issues:
+When reporting issues:
 1. Include Dispatcharr version information
-2. Provide relevant container logs
+2. Provide relevant container logs (`docker logs dispatcharr | grep "IPTV Checker"`)
 3. Test with small channel groups first
-4. Document specific API error messages and error types
-5. Note current progress from **📋 View Last Results** including ETA information
+4. Document specific error messages and error types
+5. Note current progress from **View Last Results**
