@@ -31,3 +31,15 @@ wheels/
 # OS
 .DS_Store
 Thumbs.db
+
+# AI/Tool config
+.claude/
+.serena/
+CLAUDE.md
+GEMINI.md
+
+# Local docs/files
+BUG_FIX*.md
+SCHEDULING_LOGIC.md
+*.zip
+C--Users-*

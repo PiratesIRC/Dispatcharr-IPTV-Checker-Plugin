@@ -1,16 +1,19 @@
 {
   "name": "IPTV Checker",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "A Dispatcharr Plugin that goes through a playlist to check IPTV channels",
-  "author": "community",
+  "author": "PiratesIRC",
+  "license": "MIT",
+  "repo_url": "https://github.com/PiratesIRC/Dispatcharr-IPTV-Checker-Plugin",
+  "min_dispatcharr_version": "v0.20.0",
   "help_url": "https://github.com/PiratesIRC/Dispatcharr-IPTV-Checker-Plugin",
   "fields": [
     {
       "id": "group_names",
-      "label": "\ud83d\udcc2 Group(s) to Check (comma-separated)",
+      "label": "\ud83d\udcc2 Group(s) to Check (comma-separated, wildcards supported)",
       "type": "string",
       "default": "",
-      "help_text": "The name of the Dispatcharr Channel Group(s) to check. Leave blank to check all groups."
+      "help_text": "The name of the Dispatcharr Channel Group(s) to check. Supports wildcards: US-* matches US-Movies, US-Sports, etc. Leave blank to check all groups."
     },
     {
       "id": "check_alternative_streams",

@@ -9,6 +9,7 @@ import json
 import os
 import re
 import csv
+import fnmatch
 import time
 import threading
 import urllib.request
@@ -53,38 +54,116 @@ _bg_scheduler_thread = None
 _scheduler_stop_event = threading.Event()
 _scheduler_pending_run = False  # Flag to queue a run if check already in progress
 
-# --- Scheduler Configuration ---
-class SchedulerConfig:
+LOG_PREFIX = "[IPTV Checker]"
+
+
+class PluginConfig:
+    # --- File Paths ---
+    DATA_DIR = "/data"
+    EXPORTS_DIR = "/data/exports"
+    RESULTS_FILE = "/data/iptv_checker_results.json"
+    LOADED_CHANNELS_FILE = "/data/iptv_checker_loaded_channels.json"
+    PROGRESS_FILE = "/data/iptv_checker_progress.json"
+
+    # --- Scheduler ---
     DEFAULT_TIMEZONE = "America/Chicago"
     SCHEDULER_CHECK_INTERVAL = 30  # Check every 30 seconds
     SCHEDULER_TIME_WINDOW = 30  # ±30 second window to trigger
     SCHEDULER_ERROR_WAIT = 60  # Wait 60s if error occurs
     SCHEDULER_STOP_TIMEOUT = 5  # Max wait for thread to stop
 
+    # --- ETA Estimation ---
+    ESTIMATED_SECONDS_PER_STREAM = 10  # Average time per stream check
+
+    # --- Version Check ---
+    VERSION_CHECK_DURATION = 86400  # Cache version check for 24 hours
+
+
+class ProgressTracker:
+    """Tracks operation progress with periodic WebSocket notifications."""
+
+    def __init__(self, total_items, action_id, logger):
+        self.total_items = max(total_items, 1)
+        self.action_id = action_id
+        self.logger = logger
+        self.start_time = time.time()
+        self.last_update_time = self.start_time
+        # Adaptive interval: shorter for smaller jobs so they still show progress
+        self.update_interval = 3 if total_items <= 50 else 5 if total_items <= 200 else 10
+        self.processed_items = 0
+        logger.info(f"{LOG_PREFIX} [{action_id}] Starting: {total_items} items to process")
+        send_websocket_update('updates', 'update', {
+            "type": "plugin", "plugin": "IPTV Checker",
+            "message": f"🔄 {action_id}: Starting ({total_items} items)"
+        })
+
+    def update(self, items_processed=1):
+        self.processed_items += items_processed
+        now = time.time()
+        if now - self.last_update_time >= self.update_interval:
+            self.last_update_time = now
+            elapsed = now - self.start_time
+            pct = (self.processed_items / self.total_items) * 100
+            remaining = (elapsed / self.processed_items) * (self.total_items - self.processed_items) if self.processed_items > 0 else 0
+            eta_str = ProgressTracker.format_eta(remaining)
+            self.logger.info(f"{LOG_PREFIX} [{self.action_id}] {pct:.0f}% ({self.processed_items}/{self.total_items}) - ETA: {eta_str}")
+            send_websocket_update('updates', 'update', {
+                "type": "plugin", "plugin": "IPTV Checker",
+                "message": f"🔄 {self.action_id}: {pct:.0f}% ({self.processed_items}/{self.total_items}) - ⏱️ ETA: {eta_str}"
+            })
+
+    def finish(self):
+        elapsed = time.time() - self.start_time
+        eta_str = ProgressTracker.format_eta(elapsed)
+        self.logger.info(f"{LOG_PREFIX} [{self.action_id}] Complete: {self.processed_items}/{self.total_items} in {eta_str}")
+        send_websocket_update('updates', 'update', {
+            "type": "plugin", "plugin": "IPTV Checker",
+            "message": f"✅ {self.action_id}: Complete ({self.processed_items}/{self.total_items}) in {eta_str}"
+        })
+
+    @staticmethod
+    def format_eta(seconds):
+        if seconds < 60:
+            return f"{int(seconds)}s"
+        elif seconds < 3600:
+            return f"{int(seconds // 60)}m {int(seconds % 60)}s"
+        else:
+            h = int(seconds // 3600)
+            m = int((seconds % 3600) // 60)
+            return f"{h}h {m}m"
+
 class Plugin:
     """Dispatcharr IPTV Checker Plugin"""
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "0.7.0"
+    version = "0.8.0"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
-        self.results_file = "/data/iptv_checker_results.json"
-        self.loaded_channels_file = "/data/iptv_checker_loaded_channels.json"
-        self.progress_file = "/data/iptv_checker_progress.json"
+        self.results_file = PluginConfig.RESULTS_FILE
+        self.loaded_channels_file = PluginConfig.LOADED_CHANNELS_FILE
+        self.progress_file = PluginConfig.PROGRESS_FILE
         self.check_progress = self._load_progress()
         self.load_progress = {"current": 0, "total": 0, "status": "idle"}  # Track load groups progress
-        self.check_lock = threading.Lock()  # Lock to prevent duplicate checks
-        self.status_thread = None
-        self.stop_status_updates = False
-        self.pending_status_message = None
-        self.completion_message = None
+        self._thread = None
+        self._thread_lock = threading.Lock()
+        self._stop_event = threading.Event()
         self.timeout_retry_queue = []  # Queue for streams that timed out and need retry
         self.version_check_cache = None  # Cached version check result
         self.version_check_time = None  # Time when version was last checked
-        self.version_check_duration = 86400  # Check version once per day (24 hours)
         LOGGER.info(f"Plugin v{self.version} initialized")
+
+    def _try_start_thread(self, target, args):
+        """Atomically check if a thread is running and start a new one.
+        Returns True if started, False if another operation is running."""
+        with self._thread_lock:
+            if self._thread and self._thread.is_alive():
+                return False
+            self._stop_event.clear()
+            self._thread = threading.Thread(target=target, args=args, daemon=True)
+            self._thread.start()
+            return True
 
     def _load_progress(self):
         """Load check progress from persistent storage"""
@@ -135,8 +214,11 @@ class Plugin:
 
     def stop(self, context):
         logger = context.get("logger", LOGGER)
-        logger.info("Plugin unloading - stopping scheduler")
+        logger.info("Plugin unloading - stopping scheduler and active threads")
         self._stop_background_scheduler()
+        self._stop_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=5)
     
     def _parse_scheduled_times(self, scheduled_times_str):
         """
@@ -271,12 +353,12 @@ class Plugin:
             return
         
         # Get timezone
-        tz_str = settings.get('scheduler_timezone', SchedulerConfig.DEFAULT_TIMEZONE)
+        tz_str = settings.get('scheduler_timezone', PluginConfig.DEFAULT_TIMEZONE)
         try:
             local_tz = pytz.timezone(tz_str)
         except pytz.exceptions.UnknownTimeZoneError:
-            LOGGER.error(f"Unknown timezone: {tz_str}, using default: {SchedulerConfig.DEFAULT_TIMEZONE}")
-            tz_str = SchedulerConfig.DEFAULT_TIMEZONE
+            LOGGER.error(f"Unknown timezone: {tz_str}, using default: {PluginConfig.DEFAULT_TIMEZONE}")
+            tz_str = PluginConfig.DEFAULT_TIMEZONE
             local_tz = pytz.timezone(tz_str)
         
         # Define the scheduler loop
@@ -328,11 +410,11 @@ class Plugin:
                             LOGGER.error(f"Queued scheduled check failed: {e}", exc_info=True)
                     
                     # Sleep efficiently
-                    _scheduler_stop_event.wait(SchedulerConfig.SCHEDULER_CHECK_INTERVAL)
+                    _scheduler_stop_event.wait(PluginConfig.SCHEDULER_CHECK_INTERVAL)
                 
                 except Exception as e:
                     LOGGER.error(f"Scheduler loop error: {e}", exc_info=True)
-                    _scheduler_stop_event.wait(SchedulerConfig.SCHEDULER_ERROR_WAIT)
+                    _scheduler_stop_event.wait(PluginConfig.SCHEDULER_ERROR_WAIT)
             
             LOGGER.info("Scheduler stopped")
         
@@ -352,7 +434,7 @@ class Plugin:
         if _bg_scheduler_thread and _bg_scheduler_thread.is_alive():
             LOGGER.info("Stopping scheduler thread...")
             _scheduler_stop_event.set()
-            _bg_scheduler_thread.join(timeout=SchedulerConfig.SCHEDULER_STOP_TIMEOUT)
+            _bg_scheduler_thread.join(timeout=PluginConfig.SCHEDULER_STOP_TIMEOUT)
             _scheduler_stop_event.clear()
             _scheduler_pending_run = False
             _bg_scheduler_thread = None
@@ -391,7 +473,7 @@ class Plugin:
             
             # Wait for check to complete
             LOGGER.info("⏰ SCHEDULED: Waiting for stream check to complete...")
-            while self.check_progress.get('status') == 'running':
+            while self.check_progress.get('status') == 'running' and not _scheduler_stop_event.is_set():
                 time.sleep(5)
             
             LOGGER.info("⏰ SCHEDULED: Stream check completed")
@@ -464,7 +546,7 @@ class Plugin:
         # Check if we have a valid cached result
         if self.version_check_cache and self.version_check_time:
             time_elapsed = time.time() - self.version_check_time
-            if time_elapsed < self.version_check_duration:
+            if time_elapsed < PluginConfig.VERSION_CHECK_DURATION:
                 LOGGER.debug(f"Using cached version check (age: {time_elapsed:.0f}s)")
                 return self.version_check_cache
 
@@ -547,19 +629,17 @@ class Plugin:
 
     def run(self, action, params, context):
         """Main plugin entry point"""
-        LOGGER.info(f"Run called with action: {action}")
+        settings = context.get("settings", {})
+        logger = context.get("logger", LOGGER)
 
         try:
-            settings = context.get("settings", {})
-            logger = context.get("logger", LOGGER)
-            
             # Restart scheduler if scheduling settings may have changed
             self._start_background_scheduler(settings)
 
             # Add our filter to context logger to ensure all logs are prefixed
             if logger is not LOGGER and not any(isinstance(f, PluginNameFilter) for f in logger.filters):
                 logger.addFilter(PluginNameFilter())
-            
+
             action_map = {
                 "validate_settings": self.validate_settings_action,
                 "load_groups": self.load_groups_action,
@@ -581,54 +661,44 @@ class Plugin:
                 "delete_dead_channels": self.delete_dead_channels_action,
             }
 
-            if action not in action_map:
+            handler = action_map.get(action)
+            if not handler:
+                logger.warning(f"{LOG_PREFIX} Unknown action: {action}")
                 return {"status": "error", "message": f"Unknown action: {action}"}
+
+            logger.info(f"{LOG_PREFIX} ▶ Action triggered: {action}")
 
             # Pass context to actions that need it
             if action == "check_streams":
-                return action_map[action](settings, logger, context)
+                result = handler(settings, logger, context)
             else:
-                return action_map[action](settings, logger)
-                
+                result = handler(settings, logger)
+
+            status = result.get("status", "?") if isinstance(result, dict) else "ok"
+            msg = result.get("message", "")[:200] if isinstance(result, dict) else ""
+            is_bg = result.get("background", False) if isinstance(result, dict) else False
+            logger.info(f"{LOG_PREFIX} ◀ Action complete: {action} → {status} | {msg}")
+
+            # Send GUI notification for non-background actions
+            if not is_bg:
+                emoji = "✅" if status == "ok" else "❌"
+                notify_msg = msg.split("\n")[0] if msg else action
+                send_websocket_update('updates', 'update', {
+                    "type": "plugin", "plugin": "IPTV Checker",
+                    "message": f"{emoji} {notify_msg}"
+                })
+
+            return result
+
         except Exception as e:
             self.check_progress['status'] = 'idle'
             self._save_progress()
-            self._stop_status_updates()
             LOGGER.error(f"Error in plugin run: {str(e)}")
+            send_websocket_update('updates', 'update', {
+                "type": "plugin", "plugin": "IPTV Checker",
+                "message": f"❌ Error: {str(e)[:100]}"
+            })
             return {"status": "error", "message": str(e)}
-
-    def _start_status_updates(self, context):
-        """Start background thread for status updates"""
-        if self.status_thread and self.status_thread.is_alive():
-            return
-            
-        self.stop_status_updates = False
-        self.status_thread = threading.Thread(target=self._status_update_loop, args=(context,))
-        self.status_thread.daemon = True
-        self.status_thread.start()
-
-    def _stop_status_updates(self):
-        """Stop background status updates"""
-        self.stop_status_updates = True
-        if self.status_thread:
-            self.status_thread.join(timeout=2)
-
-    def _status_update_loop(self, context):
-        """Background loop to generate status updates every minute"""
-        while not self.stop_status_updates and self.check_progress['status'] == 'running':
-            time.sleep(60)  # Wait 60 seconds
-
-            if self.check_progress['status'] == 'running' and not self.stop_status_updates:
-                current = self.check_progress['current']
-                total = self.check_progress['total']
-                percent = (current / total * 100) if total > 0 else 0
-
-                # Store the status message for retrieval
-                self.pending_status_message = f"Checking streams {current}/{total} - {percent:.0f}% complete"
-
-                # Log for debugging
-                logger = context.get("logger", LOGGER)
-                logger.info(f"STATUS UPDATE READY: {self.pending_status_message}")
 
     def validate_settings_action(self, settings, logger):
         """Validate all plugin settings including database connectivity and groups."""
@@ -649,15 +719,27 @@ class Plugin:
             if group_names_str:
                 try:
                     all_groups = self._get_all_groups(logger)
-                    group_name_to_id = {g['name']: g['id'] for g in all_groups}
-                    input_names = {name.strip() for name in group_names_str.split(',') if name.strip()}
-                    valid_names = {n for n in input_names if n in group_name_to_id}
-                    invalid_names = input_names - valid_names
+                    all_group_names = {g['name'] for g in all_groups}
+                    input_names = [name.strip() for name in group_names_str.split(',') if name.strip()]
+                    matched_names = set()
+                    unmatched = []
 
-                    if valid_names:
-                        validation_results.append(f"✅ Groups: {', '.join(valid_names)}")
-                    if invalid_names:
-                        validation_results.append(f"⚠️ Invalid groups: {', '.join(invalid_names)}")
+                    for pattern in input_names:
+                        if any(c in pattern for c in '*?['):
+                            matches = {g for g in all_group_names if fnmatch.fnmatchcase(g, pattern)}
+                            if matches:
+                                matched_names.update(matches)
+                            else:
+                                unmatched.append(pattern)
+                        elif pattern in all_group_names:
+                            matched_names.add(pattern)
+                        else:
+                            unmatched.append(pattern)
+
+                    if matched_names:
+                        validation_results.append(f"✅ Groups ({len(matched_names)}): {', '.join(sorted(matched_names))}")
+                    if unmatched:
+                        validation_results.append(f"⚠️ No groups matched: {', '.join(unmatched)}")
                         has_errors = True
                 except Exception as e:
                     validation_results.append(f"❌ Failed to validate groups: {str(e)}")
@@ -696,7 +778,7 @@ class Plugin:
                 validation_results.append(f"✅ Cron schedule(s) valid: {', '.join(scheduled_times)}")
                 
             # Validate timezone
-            scheduler_timezone = settings.get("scheduler_timezone", SchedulerConfig.DEFAULT_TIMEZONE)
+            scheduler_timezone = settings.get("scheduler_timezone", PluginConfig.DEFAULT_TIMEZONE)
             if PYTZ_AVAILABLE:
                 try:
                     pytz.timezone(scheduler_timezone)
@@ -735,13 +817,6 @@ class Plugin:
 
     def view_progress_action(self, settings, logger):
         """View the current progress of a running operation (load groups or stream check)."""
-
-        # Check if we have a completion message from a finished operation
-        if self.completion_message:
-            message = self.completion_message
-            self.completion_message = None
-            return {"status": "ok", "message": message}
-
         # Reload progress from file to get latest state
         self.check_progress = self._load_progress()
 
@@ -749,53 +824,25 @@ class Plugin:
         if self.load_progress.get('status') == 'loading':
             current, total = self.load_progress['current'], self.load_progress['total']
             percent = (current / total * 100) if total > 0 else 0
-
-            # Calculate ETA
             if self.load_progress.get('start_time') and current > 0:
-                elapsed_seconds = time.time() - self.load_progress['start_time']
-                avg_time_per_channel = elapsed_seconds / current
-                remaining_channels = total - current
-                eta_seconds = remaining_channels * avg_time_per_channel
-                eta_minutes = eta_seconds / 60
-
-                if eta_minutes < 1:
-                    eta_str = f"ETA: <1 min"
-                else:
-                    eta_str = f"ETA: {eta_minutes:.0f} min"
+                elapsed = time.time() - self.load_progress['start_time']
+                remaining = (elapsed / current) * (total - current)
+                eta_str = f"ETA: {ProgressTracker.format_eta(remaining)}"
             else:
                 eta_str = "ETA: calculating..."
-
-            message = f"📥 Loading channels {current}/{total} - {percent:.0f}% complete | {eta_str}"
-            return {"status": "ok", "message": message}
+            return {"status": "ok", "message": f"📥 Loading channels {current}/{total} - {percent:.0f}% complete | {eta_str}"}
 
         # Check if stream check is in progress
         if self.check_progress['status'] == 'running':
             current, total = self.check_progress['current'], self.check_progress['total']
             percent = (current / total * 100) if total > 0 else 0
-
-            # Calculate ETA
             if self.check_progress.get('start_time') and current > 0:
-                elapsed_seconds = time.time() - self.check_progress['start_time']
-                avg_time_per_stream = elapsed_seconds / current
-                remaining_streams = total - current
-                eta_seconds = remaining_streams * avg_time_per_stream
-                eta_minutes = eta_seconds / 60
-
-                if eta_minutes < 1:
-                    eta_str = f"ETA: <1 min"
-                else:
-                    eta_str = f"ETA: {eta_minutes:.0f} min"
+                elapsed = time.time() - self.check_progress['start_time']
+                remaining = (elapsed / current) * (total - current)
+                eta_str = f"ETA: {ProgressTracker.format_eta(remaining)}"
             else:
                 eta_str = "ETA: calculating..."
-
-            message = f"🔄 Checking streams {current}/{total} - {percent:.0f}% complete | {eta_str}"
-            return {"status": "ok", "message": message}
-
-        # Check for pending status messages from background threads
-        if self.pending_status_message:
-            message = self.pending_status_message
-            self.pending_status_message = None
-            return {"status": "ok", "message": message}
+            return {"status": "ok", "message": f"🔄 Checking streams {current}/{total} - {percent:.0f}% complete | {eta_str}"}
 
         return {"status": "ok", "message": "No operation is currently running.\n\nUse '📥 Load Group(s)' to load channels or '▶️ Start Stream Check' to begin checking streams."}
 
@@ -803,12 +850,12 @@ class Plugin:
         """Cancel the currently running stream check."""
         # Reload progress from file to get latest state
         self.check_progress = self._load_progress()
-        
+
         if self.check_progress['status'] != 'running':
             return {"status": "ok", "message": "No stream check is currently running."}
 
         # Signal the background thread to stop
-        self._stop_status_updates()
+        self._stop_event.set()
 
         # Get current progress for the message
         current = self.check_progress['current']
@@ -996,16 +1043,35 @@ class Plugin:
                 target_group_names, target_group_ids = set(group_name_to_id.keys()), set(group_name_to_id.values())
                 if not target_group_ids: return {"status": "error", "message": "No groups found in Dispatcharr."}
             else:
-                input_names = {name.strip() for name in group_names_str.split(',') if name.strip()}
-                valid_names, invalid_names = {n for n in input_names if n in group_name_to_id}, input_names - {n for n in input_names if n in group_name_to_id}
-                target_group_ids, target_group_names = {group_name_to_id[name] for name in valid_names}, valid_names
+                input_names = [name.strip() for name in group_names_str.split(',') if name.strip()]
+                all_group_names = set(group_name_to_id.keys())
+                target_group_names = set()
+                unmatched_patterns = []
+
+                for pattern in input_names:
+                    if any(c in pattern for c in '*?['):
+                        # Wildcard pattern — match against all group names
+                        matched = {g for g in all_group_names if fnmatch.fnmatchcase(g, pattern)}
+                        if matched:
+                            logger.info(f"✓ Pattern '{pattern}' matched {len(matched)} group(s): {', '.join(sorted(matched))}")
+                            target_group_names.update(matched)
+                        else:
+                            unmatched_patterns.append(pattern)
+                    elif pattern in group_name_to_id:
+                        target_group_names.add(pattern)
+                    else:
+                        unmatched_patterns.append(pattern)
+
+                target_group_ids = {group_name_to_id[name] for name in target_group_names}
 
                 # Log which groups are being loaded
-                logger.info(f"✓ Loading specified groups: {', '.join(sorted(target_group_names))}")
-                if invalid_names:
-                    logger.warning(f"⚠️ Groups not found: {', '.join(invalid_names)}")
+                if target_group_names:
+                    logger.info(f"✓ Loading specified groups: {', '.join(sorted(target_group_names))}")
+                if unmatched_patterns:
+                    logger.warning(f"⚠️ No groups matched: {', '.join(unmatched_patterns)}")
 
-                if not target_group_ids: return {"status": "error", "message": f"None of the specified groups could be found: {', '.join(invalid_names)}"}
+                if not target_group_ids:
+                    return {"status": "error", "message": f"No groups matched: {', '.join(unmatched_patterns)}"}
 
             channels_in_groups = self._get_all_channels(logger, group_ids=target_group_ids)
 
@@ -1053,11 +1119,12 @@ class Plugin:
         check_alternative_streams = settings.get("check_alternative_streams", True)
 
         # Estimate time based on mode
+        sps = PluginConfig.ESTIMATED_SECONDS_PER_STREAM
         if parallel_enabled:
-            estimated_seconds = (total_streams / parallel_workers) * 10  # 10 seconds per stream
+            estimated_seconds = (total_streams / parallel_workers) * sps
             mode_info = f"parallel mode with {parallel_workers} workers"
         else:
-            estimated_seconds = total_streams * 10  # 10 seconds per stream sequential
+            estimated_seconds = total_streams * sps
             mode_info = "sequential mode"
 
         estimated_minutes = int(estimated_seconds / 60)
@@ -1074,60 +1141,40 @@ class Plugin:
 
     def check_streams_action(self, settings, logger, context=None):
         """Check status and format of all loaded streams with auto status updates."""
-        # Use lock to prevent race condition when starting multiple checks
-        with self.check_lock:
-            # Reload progress from file to get latest state
-            self.check_progress = self._load_progress()
-            
-            # Check if a check is already running
-            if self.check_progress['status'] == 'running':
-                current, total = self.check_progress['current'], self.check_progress['total']
-                percent = (current / total * 100) if total > 0 else 0
-                return {"status": "ok", "message": f"A stream check is already running ({percent:.0f}% complete).\n\nUse '📊 View Check Progress' to monitor the current check."}
+        loaded_channels = self._load_json_file(self.loaded_channels_file)
+        if loaded_channels is None:
+            return {"status": "error", "message": "No channels loaded (or data corrupted). Please run '📥 Load Group(s)' first."}
 
-            loaded_channels = self._load_json_file(self.loaded_channels_file)
-            if loaded_channels is None:
-                return {"status": "error", "message": "No channels loaded (or data corrupted). Please run '📥 Load Group(s)' first."}
+        all_streams = [
+            {"channel_id": ch['id'], "channel_name": ch['name'], "stream_url": s['url'], "stream_id": s['id']}
+            for ch in loaded_channels for s in ch.get('streams', []) if s.get('url')
+        ]
 
-            all_streams = [
-                {"channel_id": ch['id'], "channel_name": ch['name'], "stream_url": s['url'], "stream_id": s['id']}
-                for ch in loaded_channels for s in ch.get('streams', []) if s.get('url')
-            ]
+        if not all_streams:
+            return {"status": "error", "message": "The loaded groups contain no streams to check."}
 
-            if not all_streams:
-                return {"status": "error", "message": "The loaded groups contain no streams to check."}
+        # Set status to running before starting thread
+        self.check_progress = {"current": 0, "total": len(all_streams), "status": "running", "start_time": time.time()}
+        self._save_progress()
 
-            # Set status to running atomically within the lock
-            self.check_progress = {"current": 0, "total": len(all_streams), "status": "running", "start_time": time.time()}
-            self._save_progress()
-            logger.info(f"Starting check for {len(all_streams)} streams...")
+        # Try to start background thread atomically
+        if not self._try_start_thread(self._process_streams_background, (all_streams, settings, logger)):
+            return {"status": "ok", "message": "A stream check is already running.\n\nUse '📊 View Check Progress' to monitor the current check."}
 
-            # Start background status updates
-            if context:
-                self._start_status_updates(context)
-        
-        # Return immediately to avoid timeout, processing continues in background
-        timeout = settings.get("timeout", 10)
+        logger.info(f"Starting check for {len(all_streams)} streams...")
+
+        # Calculate estimated time for the response message
         parallel_enabled = settings.get("enable_parallel_checking", False)
         parallel_workers = settings.get("parallel_workers", 2)
-
-        # Calculate estimated time based on mode
+        sps = PluginConfig.ESTIMATED_SECONDS_PER_STREAM
         if parallel_enabled:
-            estimated_total_time = int((len(all_streams) / parallel_workers) * 10 / 60)  # 10 seconds per stream
+            estimated_total_time = int((len(all_streams) / parallel_workers) * sps / 60)
             mode_info = f"parallel mode with {parallel_workers} workers"
         else:
-            estimated_total_time = int(len(all_streams) * 10 / 60)  # 10 seconds per stream sequential
+            estimated_total_time = int(len(all_streams) * sps / 60)
             mode_info = "sequential mode"
 
-        # Start the actual processing in background
-        processing_thread = threading.Thread(
-            target=self._process_streams_background,
-            args=(all_streams, settings, logger)
-        )
-        processing_thread.daemon = True
-        processing_thread.start()
-
-        return {"status": "ok", "message": f"✅ Stream checking started for {len(all_streams)} streams\nEstimated time: ~{estimated_total_time} minutes ({mode_info})\n\nUse '📊 View Check Progress' to monitor progress."}
+        return {"status": "ok", "message": f"✅ Stream checking started for {len(all_streams)} streams\nEstimated time: ~{estimated_total_time} minutes ({mode_info})\n\nUse '📊 View Check Progress' to monitor progress.", "background": True}
 
     def _process_streams_background(self, all_streams, settings, logger):
         """Background processing of streams to avoid request timeout"""
@@ -1145,7 +1192,8 @@ class Plugin:
         retries = settings.get("dead_connection_retries", 3)
         self.timeout_retry_queue = []
         streams_processed_since_retry = 0
-        
+        tracker = ProgressTracker(len(all_streams), "Stream Check", logger)
+
         # Load channel data for metadata updates
         channel_map = {}
         loaded_channels = self._load_json_file(self.loaded_channels_file)
@@ -1155,7 +1203,7 @@ class Plugin:
 
         try:
             for i, stream_data in enumerate(all_streams):
-                if self.stop_status_updates:  # Allow early termination
+                if self._stop_event.is_set():  # Allow early termination
                     break
 
                 self.check_progress["current"] = i + 1
@@ -1187,6 +1235,7 @@ class Plugin:
 
                 results.append({**stream_data, **result})
                 streams_processed_since_retry += 1
+                tracker.update()
 
                 # Process timeout retry queue every 4 streams
                 if streams_processed_since_retry >= 4 and self.timeout_retry_queue:
@@ -1261,15 +1310,8 @@ class Plugin:
             self.check_progress['status'] = 'idle'
             self.check_progress['end_time'] = time.time()
             self._save_progress()
-            self._stop_status_updates()
-
-            # Trigger frontend refresh after metadata updates
+            tracker.finish()
             self._trigger_frontend_refresh(settings, logger)
-
-            # Set completion message
-            processed_count = len(results)
-            self.completion_message = f"Stream checking completed. Processed {processed_count} streams."
-            logger.info(f"Stream checking completed. Processed {processed_count} streams.")
 
     def _process_streams_parallel(self, all_streams, settings, logger):
         """Parallel stream processing using ThreadPoolExecutor"""
@@ -1277,12 +1319,12 @@ class Plugin:
         timeout = settings.get("timeout", 10)
         retries = settings.get("dead_connection_retries", 3)
         workers = settings.get("parallel_workers", 2)
+        tracker = ProgressTracker(len(all_streams), "Stream Check (Parallel)", logger)
 
         # Thread-safe data structures
-        import threading
         results_lock = threading.Lock()
         results_dict = {}  # Use dict to track results by stream index
-        
+
         # Load channel data for metadata updates
         channel_map = {}
         loaded_channels = self._load_json_file(self.loaded_channels_file)
@@ -1303,7 +1345,7 @@ class Plugin:
 
                 # Process results as they complete
                 for future in as_completed(future_to_index):
-                    if self.stop_status_updates:
+                    if self._stop_event.is_set():
                         executor.shutdown(wait=False)
                         break
 
@@ -1331,6 +1373,7 @@ class Plugin:
                             results_dict[index] = {**stream_data, **result}
                             self.check_progress["current"] = len(results_dict)
                             self._save_progress()
+                            tracker.update()
 
                     except Exception as e:
                         logger.error(f"Error checking stream '{stream_data.get('channel_name')}': {e}")
@@ -1346,6 +1389,7 @@ class Plugin:
                             }
                             self.check_progress["current"] = len(results_dict)
                             self._save_progress()
+                            tracker.update()
 
             # Rebuild results list in original order
             results = [results_dict[i] for i in range(len(all_streams)) if i in results_dict]
@@ -1408,15 +1452,8 @@ class Plugin:
             self.check_progress['status'] = 'idle'
             self.check_progress['end_time'] = time.time()
             self._save_progress()
-            self._stop_status_updates()
-
-            # Trigger frontend refresh after metadata updates
+            tracker.finish()
             self._trigger_frontend_refresh(settings, logger)
-
-            # Set completion message
-            processed_count = len(results)
-            self.completion_message = f"Stream checking completed. Processed {processed_count} streams (parallel mode with {workers} workers)."
-            logger.info(f"Stream checking completed. Processed {processed_count} streams.")
 
     def rename_channels_action(self, settings, logger):
         """Rename channels that were marked as dead in the last check."""
@@ -1804,7 +1841,7 @@ class Plugin:
         fieldnames = base_fieldnames + sorted(list(ffprobe_fieldnames))
 
         filepath = f"/data/exports/iptv_checker_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        os.makedirs("/data/exports", exist_ok=True)
+        os.makedirs(PluginConfig.EXPORTS_DIR, exist_ok=True)
         with open(filepath, 'w', newline='', encoding='utf-8') as f:
             # Write header comments
             header_comments = self._generate_csv_header_comments(settings, results)
@@ -1819,7 +1856,7 @@ class Plugin:
 
     def clear_csv_exports_action(self, settings, logger):
         """Delete all CSV export files created by this plugin."""
-        exports_dir = "/data/exports"
+        exports_dir = PluginConfig.EXPORTS_DIR
 
         if not os.path.exists(exports_dir):
             return {"status": "ok", "message": "No exports directory found. No CSV files to delete."}
@@ -1852,7 +1889,7 @@ class Plugin:
         """Update the scheduler configuration and restart the scheduler."""
         try:
             scheduled_times_str = settings.get("scheduled_times", "").strip()
-            scheduler_timezone = settings.get("scheduler_timezone", SchedulerConfig.DEFAULT_TIMEZONE)
+            scheduler_timezone = settings.get("scheduler_timezone", PluginConfig.DEFAULT_TIMEZONE)
             
             # If scheduled times are empty, stop the scheduler
             if not scheduled_times_str:
@@ -1996,7 +2033,7 @@ class Plugin:
             else:
                 status_lines.append("  • Cron Expressions: Not configured")
             
-            scheduler_timezone = settings.get("scheduler_timezone", SchedulerConfig.DEFAULT_TIMEZONE)
+            scheduler_timezone = settings.get("scheduler_timezone", PluginConfig.DEFAULT_TIMEZONE)
             status_lines.append(f"  • Timezone: {scheduler_timezone}")
             
             if PYTZ_AVAILABLE:
