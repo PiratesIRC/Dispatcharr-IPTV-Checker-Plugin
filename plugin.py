@@ -137,7 +137,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.1081717"
+    version = "1.26.1081724"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -1340,10 +1340,13 @@ class Plugin:
         tracker = ProgressTracker(len(all_streams), "Stream Check (Parallel)", logger)
 
         def check_with_cooldown(stream_data, retry_attempt=0):
+            if self._stop_event.is_set():
+                return {'status': 'Dead', 'error': 'Cancelled by user', 'error_type': 'Cancelled',
+                        'format': 'N/A', 'framerate_num': 0, 'ffprobe_data': {}}
             try:
                 return self.check_stream(stream_data, timeout, 0, logger, skip_retries=True, settings=settings, retry_attempt=retry_attempt)
             finally:
-                if delay > 0:
+                if delay > 0 and not self._stop_event.is_set():
                     time.sleep(delay)
 
         # Thread-safe data structures
@@ -1371,7 +1374,7 @@ class Plugin:
                 # Process results as they complete
                 for future in as_completed(future_to_index):
                     if self._stop_event.is_set():
-                        executor.shutdown(wait=False)
+                        executor.shutdown(wait=False, cancel_futures=True)
                         break
 
                     index = future_to_index[future]
@@ -1428,14 +1431,15 @@ class Plugin:
                     logger.info(f"Found {len(retry_streams)} streams with retryable errors, retrying...")
 
                     for retry_pass in range(retries):
-                        if not retry_streams:
+                        if not retry_streams or self._stop_event.is_set():
                             break
 
                         # Backoff between retry passes so the provider can release slots
                         backoff = delay * 3
                         if backoff > 0:
                             logger.info(f"Waiting {backoff:.1f}s before retry pass to let provider release connection slots")
-                            time.sleep(backoff)
+                            if self._stop_event.wait(backoff):
+                                break
 
                         logger.info(f"Retry attempt {retry_pass + 1}/{retries} for {len(retry_streams)} streams")
 
@@ -1450,6 +1454,9 @@ class Plugin:
                             }
 
                             for future in as_completed(future_to_result_index):
+                                if self._stop_event.is_set():
+                                    executor.shutdown(wait=False, cancel_futures=True)
+                                    break
                                 result_index = future_to_result_index[future]
                                 try:
                                     retry_result = future.result()
