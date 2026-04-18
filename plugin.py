@@ -73,7 +73,12 @@ class PluginConfig:
     SCHEDULER_STOP_TIMEOUT = 5  # Max wait for thread to stop
 
     # --- ETA Estimation ---
-    ESTIMATED_SECONDS_PER_STREAM = 10  # Average time per stream check
+    # Fallback only; _estimate_check_seconds models a realistic mix.
+    ESTIMATED_SECONDS_PER_STREAM = 10
+    # Assume 20% of streams fail and burn the full probe_timeout * (1+retries).
+    ESTIMATED_DEAD_RATE = 0.2
+    # Per-stream overhead on top of ffprobe analysis (TCP connect, teardown).
+    ESTIMATED_PROBE_OVERHEAD_SECONDS = 2
 
     # --- Version Check ---
     VERSION_CHECK_DURATION = 86400  # Cache version check for 24 hours
@@ -137,7 +142,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.1081725"
+    version = "1.26.1081815"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -1123,25 +1128,33 @@ class Plugin:
 
         return self._build_load_success_message(loaded_channels, settings, group_names_str, target_group_names)
     
+    def _estimate_check_seconds(self, total_streams, settings):
+        """Wall-clock estimate for a full check, including cooldown, retries, and an assumed dead rate."""
+        workers = max(1, int(settings.get("parallel_workers", 2) or 1)) if settings.get("enable_parallel_checking", False) else 1
+        analysis = float(settings.get("ffprobe_analysis_duration", 5) or 0)
+        probe_timeout = float(settings.get("probe_timeout", 20) or 0)
+        retries = max(0, int(settings.get("dead_connection_retries", 3) or 0))
+        delay = max(0, float(settings.get("stream_check_delay", 2) or 0))
+        overhead = PluginConfig.ESTIMATED_PROBE_OVERHEAD_SECONDS
+        dead_rate = PluginConfig.ESTIMATED_DEAD_RATE
+
+        per_alive = analysis + overhead
+        per_dead = probe_timeout * (1 + retries)
+        avg_per_stream = ((1 - dead_rate) * per_alive) + (dead_rate * per_dead) + delay
+        return (avg_per_stream * total_streams) / workers
+
     def _build_load_success_message(self, loaded_channels, settings, group_names_str, target_group_names):
         """Build success message for load groups action"""
         total_streams = sum(len(c.get('streams', [])) for c in loaded_channels)
         group_msg = "all groups" if not group_names_str else f"group(s): {', '.join(target_group_names)}"
-        
+
         parallel_enabled = settings.get("enable_parallel_checking", False)
         parallel_workers = settings.get("parallel_workers", 2)
         check_alternative_streams = settings.get("check_alternative_streams", True)
 
-        # Estimate time based on mode
-        sps = PluginConfig.ESTIMATED_SECONDS_PER_STREAM
-        if parallel_enabled:
-            estimated_seconds = (total_streams / parallel_workers) * sps
-            mode_info = f"parallel mode with {parallel_workers} workers"
-        else:
-            estimated_seconds = total_streams * sps
-            mode_info = "sequential mode"
-
-        estimated_minutes = int(estimated_seconds / 60)
+        mode_info = f"parallel mode with {parallel_workers} workers" if parallel_enabled else "sequential mode"
+        estimated_seconds = self._estimate_check_seconds(total_streams, settings)
+        estimated_minutes = max(1, int(estimated_seconds / 60))
         stream_type_msg = "streams (including alternatives)" if check_alternative_streams else "streams (primary only)"
         
         if total_streams > 0:
@@ -1181,13 +1194,8 @@ class Plugin:
         # Calculate estimated time for the response message
         parallel_enabled = settings.get("enable_parallel_checking", False)
         parallel_workers = settings.get("parallel_workers", 2)
-        sps = PluginConfig.ESTIMATED_SECONDS_PER_STREAM
-        if parallel_enabled:
-            estimated_total_time = int((len(all_streams) / parallel_workers) * sps / 60)
-            mode_info = f"parallel mode with {parallel_workers} workers"
-        else:
-            estimated_total_time = int(len(all_streams) * sps / 60)
-            mode_info = "sequential mode"
+        mode_info = f"parallel mode with {parallel_workers} workers" if parallel_enabled else "sequential mode"
+        estimated_total_time = max(1, int(self._estimate_check_seconds(len(all_streams), settings) / 60))
 
         return {"status": "ok", "message": f"Stream check started for {len(all_streams)} streams. Estimated time: ~{estimated_total_time} min ({mode_info}). Use View Check Progress to monitor.", "background": True}
 
@@ -1430,6 +1438,11 @@ class Plugin:
                 if retry_streams:
                     logger.info(f"Found {len(retry_streams)} streams with retryable errors, retrying...")
 
+                    # Expose retry work to the ETA: grow total so progress doesn't hit 100% prematurely.
+                    with results_lock:
+                        self.check_progress["total"] = len(all_streams) + (len(retry_streams) * retries)
+                        self._save_progress()
+
                     for retry_pass in range(retries):
                         if not retry_streams or self._stop_event.is_set():
                             break
@@ -1478,9 +1491,19 @@ class Plugin:
                                     results[result_index] = {**results[result_index], **retry_result}
                                 except Exception as e:
                                     logger.error(f"Error during retry: {e}")
+                                finally:
+                                    with results_lock:
+                                        self.check_progress["current"] += 1
+                                        self._save_progress()
 
                         # Find remaining streams with retryable errors for next retry
                         retry_streams = [(i, r) for i, r in enumerate(results) if r.get('error_type') in retryable_errors]
+
+                    # If fewer retries ran than budgeted (early success / cancel), snap progress to total.
+                    with results_lock:
+                        if self.check_progress["current"] < self.check_progress["total"]:
+                            self.check_progress["current"] = self.check_progress["total"]
+                            self._save_progress()
 
             self._save_json_file(self.results_file, results, indent=2)
 
