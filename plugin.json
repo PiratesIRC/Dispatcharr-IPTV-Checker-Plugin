@@ -1,6 +1,6 @@
 {
   "name": "IPTV Checker",
-  "version": "0.8.1",
+  "version": "1.26.1081703",
   "description": "A Dispatcharr Plugin that goes through a playlist to check IPTV channels",
   "author": "PiratesIRC",
   "logo": "logo.png",
