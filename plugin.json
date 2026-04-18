@@ -1,6 +1,6 @@
 {
   "name": "IPTV Checker",
-  "version": "1.26.1081724",
+  "version": "1.26.1081725",
   "description": "A Dispatcharr Plugin that goes through a playlist to check IPTV channels",
   "author": "PiratesIRC",
   "logo": "logo.png",
@@ -1566,7 +1566,10 @@
       "description": "Cancel the currently running stream check.",
       "button_color": "orange",
       "button_variant": "outline",
-      "button_label": "\ud83d\uded1 Cancel Check"
+      "button_label": "\ud83d\uded1 Cancel Check",
+      "confirm": {
+        "message": "Cancel the in-progress stream check? Streams already probed are kept; queued and in-flight streams are aborted (ffprobe currently running may take a few seconds to exit)."
+      }
     },
     {
       "id": "view_results",
