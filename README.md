@@ -130,7 +130,8 @@ To update the plugin:
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | Enable Parallel Checking | boolean | true | Check multiple streams simultaneously |
-| Number of Parallel Workers | number | 2 | How many streams to check at once |
+| Number of Parallel Workers | number | 2 | How many streams to check at once. **Keep below your provider's concurrent-connection limit.** |
+| Per-Stream Cooldown (seconds) | number | 2 | Each worker waits this long after finishing a check before picking up the next. Prevents provider rate-limiting / slot-reuse errors. Retry passes wait 3× this value. |
 
 ### Webhook
 
@@ -220,7 +221,7 @@ To update the plugin:
 - **Load Group(s):** Load channels from specified groups (async for large lists)
 - **Start Stream Check:** Begin checking all loaded streams in background thread
 - **View Check Progress:** View current progress and ETA of the running check
-- **Cancel Stream Check:** Stop the currently running stream check
+- **Cancel Stream Check:** Stop the currently running stream check (confirmation dialog; queued and in-flight streams abort, already-probed results are kept)
 - **View Last Results:** View summary of the last completed stream check
 
 ### Channel Management
@@ -261,6 +262,15 @@ Use shell-style wildcards in the Group(s) to Check field:
 - Provides server recovery time between retry attempts
 - Retry queue processes every 4 streams to balance throughput and recovery
 - Multiple retry attempts per stream based on configured retry count
+- **Retry-aware ETA:** `View Check Progress` keeps the percentage and ETA honest through retry passes — it no longer snaps to 100% at the end of the first pass.
+
+### Provider Concurrency Limits
+Most IPTV providers cap concurrent connections per account (often 1–4). Two settings let you stay under the cap while still running checks in parallel:
+
+- **Number of Parallel Workers** — keep this **below** your account's cap. For a 4-stream account, 2 workers leaves headroom for viewing while a check runs.
+- **Per-Stream Cooldown** — 2 s by default. Each worker waits this long after finishing before picking up the next stream, so the upstream slot has time to release. Retry passes wait `3×` this value.
+
+If you see a lot of "Server Error" or "Stream Unreachable" results that turn alive on retry, raise the cooldown or drop the worker count.
 
 ### Auto-Delete Dead Channels
 - Permanently deletes channels with dead streams from the database
@@ -287,10 +297,12 @@ docker restart dispatcharr
 - Restart Dispatcharr container
 
 **Scheduler Not Running:**
+- The scheduler starts automatically on container boot — no UI action needed
 - Verify `pytz` is installed in the container
 - Check cron syntax (5 fields required: minute hour day month weekday)
 - Use **Check Scheduler Status** to verify state
 - Check logs: `docker logs dispatcharr | grep -i scheduler`
+- Confirm scheduler started on boot: `docker logs dispatcharr | grep "Background scheduler thread started"`
 
 **Stream Check Failures:**
 - Increase connection timeout and/or probe timeout for slow streams
@@ -311,6 +323,10 @@ docker restart dispatcharr
 - **Progress State:** `/data/iptv_checker_progress.json`
 - **Settings:** `/data/iptv_checker_settings.json`
 - **CSV Exports:** `/data/exports/iptv_checker_results_YYYYMMDD_HHMMSS.csv`
+
+## Versioning
+
+This plugin uses calver `1.26.{DDD}{HHMM}` (UTC day-of-year + UTC hour-minute), matching the Lineuparr / Channel-Mapparr / EPG-Janitor cohort. Releases prior to `1.26.1081815` used semver (`0.X.Y`). See the [release notes](https://github.com/PiratesIRC/Dispatcharr-IPTV-Checker-Plugin/releases) for full changelogs.
 
 ## Contributing
 
