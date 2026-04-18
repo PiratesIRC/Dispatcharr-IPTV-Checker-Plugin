@@ -1,6 +1,6 @@
 {
   "name": "IPTV Checker",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "A Dispatcharr Plugin that goes through a playlist to check IPTV channels",
   "author": "PiratesIRC",
   "logo": "logo.png",
@@ -94,7 +94,14 @@
       "label": "\ud83d\udc77 Number of Parallel Workers",
       "type": "number",
       "default": 2,
-      "help_text": "Number of streams to check simultaneously when parallel checking is enabled. Default: 2. Higher values = faster but more resource-intensive."
+      "help_text": "Number of streams to check simultaneously when parallel checking is enabled. Default: 2. Higher values = faster but more resource-intensive. Keep BELOW your provider's max concurrent connection limit."
+    },
+    {
+      "id": "stream_check_delay",
+      "label": "\u23f3 Per-Stream Cooldown (seconds)",
+      "type": "number",
+      "default": 2,
+      "help_text": "Cooldown each worker waits after finishing a stream check, before picking up the next. Prevents provider rate-limiting / slot-reuse errors when your account has a concurrent-connection limit. Default: 2. Retry passes use 3x this value."
     },
     {
       "id": "ffprobe_flags",

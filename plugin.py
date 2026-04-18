@@ -137,7 +137,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "0.8.0"
+    version = "0.8.1"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -1205,6 +1205,7 @@ class Plugin:
         results = []
         timeout = settings.get("timeout", 10)
         retries = settings.get("dead_connection_retries", 3)
+        delay = max(0, float(settings.get("stream_check_delay", 2) or 0))
         self.timeout_retry_queue = []
         streams_processed_since_retry = 0
         tracker = ProgressTracker(len(all_streams), "Stream Check", logger)
@@ -1287,8 +1288,9 @@ class Plugin:
 
                     streams_processed_since_retry = 0
 
-                # Add 3 second delay between stream checks
-                time.sleep(3)
+                # Cooldown between stream checks (configurable)
+                if delay > 0:
+                    time.sleep(delay)
 
             # Process any remaining timeout retries
             while self.timeout_retry_queue:
@@ -1334,7 +1336,15 @@ class Plugin:
         timeout = settings.get("timeout", 10)
         retries = settings.get("dead_connection_retries", 3)
         workers = settings.get("parallel_workers", 2)
+        delay = max(0, float(settings.get("stream_check_delay", 2) or 0))
         tracker = ProgressTracker(len(all_streams), "Stream Check (Parallel)", logger)
+
+        def check_with_cooldown(stream_data, retry_attempt=0):
+            try:
+                return self.check_stream(stream_data, timeout, 0, logger, skip_retries=True, settings=settings, retry_attempt=retry_attempt)
+            finally:
+                if delay > 0:
+                    time.sleep(delay)
 
         # Thread-safe data structures
         results_lock = threading.Lock()
@@ -1354,7 +1364,7 @@ class Plugin:
             with ThreadPoolExecutor(max_workers=workers) as executor:
                 # Submit all stream checks
                 future_to_index = {
-                    executor.submit(self.check_stream, stream_data, timeout, 0, logger, skip_retries=True, settings=settings, retry_attempt=0): i
+                    executor.submit(check_with_cooldown, stream_data, 0): i
                     for i, stream_data in enumerate(all_streams)
                 }
 
@@ -1421,14 +1431,20 @@ class Plugin:
                         if not retry_streams:
                             break
 
+                        # Backoff between retry passes so the provider can release slots
+                        backoff = delay * 3
+                        if backoff > 0:
+                            logger.info(f"Waiting {backoff:.1f}s before retry pass to let provider release connection slots")
+                            time.sleep(backoff)
+
                         logger.info(f"Retry attempt {retry_pass + 1}/{retries} for {len(retry_streams)} streams")
 
                         with ThreadPoolExecutor(max_workers=workers) as executor:
                             future_to_result_index = {
                                 executor.submit(
-                                    self.check_stream,
+                                    check_with_cooldown,
                                     {k: v for k, v in result.items() if k in ['channel_id', 'channel_name', 'stream_url', 'stream_id']},
-                                    timeout, 0, logger, skip_retries=True, settings=settings, retry_attempt=retry_pass + 1
+                                    retry_pass + 1
                                 ): result_index
                                 for result_index, result in retry_streams
                             }
