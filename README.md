@@ -124,6 +124,7 @@ To update the plugin:
 | FFprobe Path | string | `/usr/local/bin/ffprobe` | Full path to the ffprobe executable |
 | FFprobe Analysis Flags | string | `-show_streams,-show_frames,...` | Comma-separated FFprobe flags |
 | FFprobe Analysis Duration | number | 5 | Seconds of stream to analyze |
+| Streamlink-Only Hosts | string | `youtube.com, youtu.be, twitch.tv, kick.com` | Comma-separated host suffixes ffprobe cannot validate (served via Streamlink). Streams matching these hosts are marked **Skipped** instead of **Dead**, so rename/move/delete actions leave them alone. Blank falls back to defaults. |
 
 ### Parallel Checking
 
