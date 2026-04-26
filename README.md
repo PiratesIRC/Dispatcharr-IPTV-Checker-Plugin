@@ -336,3 +336,44 @@ When reporting issues:
 3. Test with small channel groups first
 4. Document specific error messages and error types
 5. Note current progress from **View Last Results**
+
+Pull requests welcome. To submit changes:
+
+### To this repo (PiratesIRC/Dispatcharr-IPTV-Checker-Plugin)
+
+1. Bump version: `python3 bump_version.py` (auto-stamps with current UTC day-of-year + HHMM).
+2. Commit, push, tag, and release:
+
+```bash
+git tag <version> && git push origin <version>
+gh release create <version> --title "v<version>" --notes "..."
+gh release upload <version> iptv_checker.zip
+```
+
+### To the upstream marketplace (Dispatcharr/Plugins)
+
+Updates also need to be PR'd to `Dispatcharr/Plugins` so the plugin updates in users' Dispatcharr UIs. The repo's GitHub Actions validator enforces strict rules — failing any blocks the merge:
+
+| Check | Requirement |
+|-------|-------------|
+| PR title | Must match `[iptv-checker]: <description>`. The `validate-title` job fails on any other format. Most common trip-up. |
+| Version bump | `plugin.json` version must be greater than the version on upstream `main` for any code/asset change. Metadata-only edits are exempt. |
+| Required `plugin.json` fields | `name`, `version`, `description`, `author`, `license` (SPDX). |
+| Authorship | PR author's GitHub username must appear in `author` or `maintainers`, or the `close-unauthorized` job auto-closes the PR. |
+| Folder name | `plugins/iptv-checker/` (lowercase-kebab) — note this differs from the `iptv_checker/` snake_case used inside this repo's zip. |
+
+Workflow:
+
+```bash
+# In your fork of Dispatcharr/Plugins:
+git fetch upstream && git checkout main && git merge upstream/main --ff-only && git push origin main
+git checkout -b iptv-checker-v<version>
+cp <this-repo>/plugin.{py,json} plugins/iptv-checker/
+git commit -am "[iptv-checker]: ..."
+git push -u origin iptv-checker-v<version>
+gh pr create --repo Dispatcharr/Plugins --base main \
+    --title "[iptv-checker]: Bump to v<version> — <summary>" \
+    --body "..."
+```
+
+On merge, upstream automation builds the zip + checksums and updates `manifest.json` on the `releases` branch — do not touch that branch manually.

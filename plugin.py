@@ -14,6 +14,7 @@ import time
 import threading
 import urllib.request
 import urllib.error
+import urllib.parse
 from datetime import datetime
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -142,7 +143,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.1081815"
+    version = "1.26.1161403"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -172,6 +173,17 @@ class Plugin:
                 self._start_background_scheduler(cfg.settings)
         except Exception as e:
             LOGGER.warning(f"Could not load settings for scheduler on init: {e}")
+
+    def _fresh_settings(self, fallback):
+        """Re-read settings from DB so cron uses latest values."""
+        try:
+            from apps.plugins.models import PluginConfig as DBPluginConfig
+            cfg = DBPluginConfig.objects.filter(key=self.key).first()
+            if cfg and cfg.settings:
+                return cfg.settings
+        except Exception as e:
+            LOGGER.warning(f"Could not refresh settings from DB; using cached snapshot: {e}")
+        return fallback
 
     def _try_start_thread(self, target, args):
         """Atomically check if a thread is running and start a new one.
@@ -411,20 +423,22 @@ class Plugin:
                                 LOGGER.warning("Scheduled run triggered but a check is already running - queuing for later")
                                 _scheduler_pending_run = True
                             else:
-                                # Execute scheduled task
+                                # Execute scheduled task with the latest persisted settings
+                                # (not the closure's snapshot — settings may have been edited
+                                # since the scheduler started).
                                 try:
-                                    self._execute_scheduled_check(settings)
+                                    self._execute_scheduled_check(self._fresh_settings(settings))
                                 except Exception as e:
                                     LOGGER.error(f"Scheduled check failed: {e}", exc_info=True)
-                            
+
                             break  # Only trigger one schedule per check cycle
-                    
+
                     # Check if there's a pending run and no check is currently running
                     if _scheduler_pending_run and self.check_progress.get('status') != 'running':
                         LOGGER.info("⏰ Executing queued scheduled run")
                         _scheduler_pending_run = False
                         try:
-                            self._execute_scheduled_check(settings)
+                            self._execute_scheduled_check(self._fresh_settings(settings))
                         except Exception as e:
                             LOGGER.error(f"Queued scheduled check failed: {e}", exc_info=True)
                     
@@ -902,6 +916,8 @@ class Plugin:
 
         # Show results summary
         alive = sum(1 for r in results if r.get('status') == 'Alive')
+        skipped = sum(1 for r in results if r.get('status') == 'Skipped')
+        dead = sum(1 for r in results if r.get('status') == 'Dead')
         formats = {r.get('format', 'Unknown'): 0 for r in results if r.get('status') == 'Alive'}
         for r in results:
             if r.get('status') == 'Alive':
@@ -910,7 +926,8 @@ class Plugin:
         summary = [
             f"📊 Last Check Results ({len(results)} streams):",
             f"✅ Alive: {alive}",
-            f"❌ Dead: {len(results) - alive}\n",
+            f"❌ Dead: {dead}",
+            f"⤼ Skipped: {skipped}\n",
             "📺 Alive Stream Formats:"
         ]
         for fmt, count in sorted(formats.items()):
@@ -948,6 +965,7 @@ class Plugin:
 
         alive = sum(1 for r in results if r.get('status') == 'Alive')
         dead = sum(1 for r in results if r.get('status') == 'Dead')
+        skipped = sum(1 for r in results if r.get('status') == 'Skipped')
 
         payload = json.dumps({
             "plugin": self.key,
@@ -955,6 +973,7 @@ class Plugin:
             "total": len(results),
             "alive": alive,
             "dead": dead,
+            "skipped": skipped,
             "timestamp": datetime.utcnow().isoformat() + "Z",
         }).encode('utf-8')
 
@@ -969,7 +988,7 @@ class Plugin:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 status_code = resp.status
                 logger.info(f"Webhook fired successfully: {webhook_url} (HTTP {status_code})")
-                return {"status": "ok", "message": f"Webhook sent to {webhook_url} (HTTP {status_code}). Payload: {alive} alive, {dead} dead out of {len(results)} streams."}
+                return {"status": "ok", "message": f"Webhook sent to {webhook_url} (HTTP {status_code}). Payload: {alive} alive, {dead} dead, {skipped} skipped out of {len(results)} streams."}
         except urllib.error.HTTPError as e:
             logger.error(f"Webhook HTTP error: {webhook_url} returned HTTP {e.code}")
             return {"status": "error", "message": f"Webhook failed: HTTP {e.code} from {webhook_url}"}
@@ -1590,6 +1609,22 @@ class Plugin:
         if not dead_channel_ids:
             return {"status": "ok", "message": "No dead channels were found in the last check."}
 
+        # Safety net: only delete channels that are in the currently loaded scope
+        # (i.e. matched the user's group filter at load time). Defends against
+        # stale results.json or a scheduler running with mismatched settings.
+        loaded_channels = self._load_json_file(self.loaded_channels_file)
+        if loaded_channels:
+            loaded_ids = {ch.get('id') for ch in loaded_channels if ch.get('id') is not None}
+            out_of_scope = dead_channel_ids - loaded_ids
+            if out_of_scope:
+                logger.warning(
+                    f"Refusing to delete {len(out_of_scope)} channel(s) that are outside the "
+                    f"current load scope: {sorted(out_of_scope)}"
+                )
+                dead_channel_ids = dead_channel_ids & loaded_ids
+            if not dead_channel_ids:
+                return {"status": "ok", "message": "No dead channels were found within the loaded scope."}
+
         logger.warning(f"WARNING: About to PERMANENTLY DELETE {len(dead_channel_ids)} dead channels. This cannot be undone!")
         logger.warning(f"Channel IDs to be deleted: {sorted(dead_channel_ids)}")
 
@@ -1819,7 +1854,8 @@ class Plugin:
         # Calculate cumulative statistics
         total_streams = len(results)
         alive_streams = sum(1 for r in results if r.get('status') == 'Alive')
-        dead_streams = total_streams - alive_streams
+        skipped_streams = sum(1 for r in results if r.get('status') == 'Skipped')
+        dead_streams = sum(1 for r in results if r.get('status') == 'Dead')
 
         # Format distribution
         format_counts = {}
@@ -1844,6 +1880,8 @@ class Plugin:
         lines.append(f"#   Total Streams: {total_streams}")
         lines.append(f"#   Alive Streams: {alive_streams} ({(alive_streams/total_streams*100):.1f}%)")
         lines.append(f"#   Dead Streams: {dead_streams} ({(dead_streams/total_streams*100):.1f}%)")
+        if skipped_streams:
+            lines.append(f"#   Skipped Streams: {skipped_streams} ({(skipped_streams/total_streams*100):.1f}%)")
 
         if format_counts:
             lines.append("#")
@@ -2196,6 +2234,27 @@ class Plugin:
 
         return masked_error
 
+    # Default host suffixes that ffprobe cannot validate (served via Streamlink).
+    # Overridable via the 'streamlink_hosts' plugin setting.
+    DEFAULT_STREAMLINK_HOSTS = "youtube.com, youtu.be, twitch.tv, kick.com"
+
+    def _streamlink_host_suffixes(self, settings):
+        raw = (settings or {}).get('streamlink_hosts')
+        if not raw or not raw.strip():
+            raw = self.DEFAULT_STREAMLINK_HOSTS
+        return [h.strip().lower().lstrip('.') for h in raw.split(',') if h.strip()]
+
+    def _is_streamlink_only_url(self, url, settings=None):
+        if not url:
+            return False
+        try:
+            host = urllib.parse.urlparse(url).hostname or ''
+        except Exception:
+            return False
+        host = host.lower()
+        suffixes = self._streamlink_host_suffixes(settings)
+        return any(host == s or host.endswith('.' + s) for s in suffixes)
+
     def check_stream(self, stream_data, timeout, retries, logger, skip_retries=False, settings=None, retry_attempt=0):
         """Check individual stream status with optional retries."""
         url, channel_name = stream_data.get('stream_url'), stream_data.get('channel_name')
@@ -2205,6 +2264,38 @@ class Plugin:
 
         # Get probe timeout early for use in default return
         probe_timeout = settings.get('probe_timeout', 20) if settings else 20
+
+        # Streamlink-only URLs (YouTube, Twitch, etc.) cannot be validated by
+        # ffprobe. Mark them Skipped so dead-channel rename/move/delete actions
+        # do not touch them.
+        if self._is_streamlink_only_url(url, settings):
+            logger.info(f"⤼ '{channel_name}' SKIPPED - Streamlink-only host ({url})")
+            return {
+                'status': 'Skipped',
+                'error': 'Streamlink-only host (ffprobe cannot validate)',
+                'error_type': 'Skipped',
+                'format': 'N/A',
+                'framerate_num': 0,
+                'ffprobe_data': {},
+                'dispatcharr_metadata': {
+                    'video_codec': None,
+                    'resolution': '0x0',
+                    'width': 0,
+                    'height': 0,
+                    'source_fps': None,
+                    'pixel_format': None,
+                    'video_bitrate': None,
+                    'audio_codec': None,
+                    'sample_rate': None,
+                    'audio_channels': None,
+                    'audio_bitrate': None,
+                    'stream_type': None
+                },
+                'retry_count': retry_attempt,
+                'connection_timeout_seconds': timeout,
+                'probe_timeout_seconds': probe_timeout,
+                'ffprobe_monitoring_seconds': 0,
+            }
         
         # Default return for dead streams with null metadata
         default_return = {
@@ -2280,6 +2371,12 @@ class Plugin:
         if '-show_streams' not in cmd:
             cmd.append('-show_streams')
 
+        # Ensure -show_format is always included so we can read the container-level
+        # bit_rate (the standard "bandwidth" metric). Live MPEG-TS / HLS streams
+        # almost never expose bit_rate at the per-stream level.
+        if '-show_format' not in cmd:
+            cmd.append('-show_format')
+
         # If using frame or packet analysis, add duration limit using read_intervals
         analysis_duration = 0
         if any(flag in cmd for flag in ['-show_frames', '-show_packets']):
@@ -2318,11 +2415,19 @@ class Plugin:
                         video_codec = video_stream.get('codec_name', 'unknown')
                         pixel_format = video_stream.get('pix_fmt', 'unknown')
                         
-                        # Extract video bitrate (prefer bit_rate field, fallback to calculated)
+                        # Extract video bitrate. Sources, in order of reliability for live streams:
+                        # 1. video_stream.bit_rate (rare on live MPEG-TS / HLS)
+                        # 2. format.bit_rate (container-level "bandwidth" — usually present)
+                        # 3. packet-based fallback below
                         video_bitrate = None
                         if video_stream.get('bit_rate'):
                             try:
-                                video_bitrate = float(video_stream['bit_rate']) / 1000.0  # Convert to kbps as float
+                                video_bitrate = float(video_stream['bit_rate']) / 1000.0
+                            except (ValueError, TypeError):
+                                pass
+                        if video_bitrate is None and probe_data.get('format', {}).get('bit_rate'):
+                            try:
+                                video_bitrate = float(probe_data['format']['bit_rate']) / 1000.0
                             except (ValueError, TypeError):
                                 pass
 
@@ -2381,12 +2486,15 @@ class Plugin:
                         if probe_data.get('packets'):
                             packets = probe_data['packets']
                             ffprobe_extra_data['packet_count'] = len(packets)
-                            # Calculate average bitrate from packets if not already available
+                            # Calculate average bitrate from packets if not already available.
+                            # Restrict to the video stream so audio packets don't dilute the result.
                             if not video_bitrate:
-                                total_size = sum(int(p.get('size', 0)) for p in packets)
-                                total_duration = sum(float(p.get('duration_time', 0)) for p in packets)
+                                video_idx = video_stream.get('index')
+                                video_packets = [p for p in packets if p.get('stream_index') == video_idx] or packets
+                                total_size = sum(int(p.get('size', 0)) for p in video_packets)
+                                total_duration = sum(float(p.get('duration_time') or 0) for p in video_packets)
                                 if total_duration > 0:
-                                    video_bitrate = (total_size * 8) / (total_duration * 1000)  # Keep as float
+                                    video_bitrate = (total_size * 8) / (total_duration * 1000)
                                     ffprobe_extra_data['calculated_bitrate_kbps'] = video_bitrate
 
                         stream_format = self._get_stream_format(resolution)

@@ -1,6 +1,6 @@
 {
   "name": "IPTV Checker",
-  "version": "1.26.1081815",
+  "version": "1.26.1161403",
   "description": "A Dispatcharr Plugin that goes through a playlist to check IPTV channels",
   "author": "PiratesIRC",
   "logo": "logo.png",
@@ -92,6 +92,14 @@
       "type": "number",
       "default": 5,
       "help_text": "Duration to analyze stream when using -show_frames or -show_packets. Longer duration = more accurate bitrate/GOP analysis but slower checks. Default: 5 seconds"
+    },
+    {
+      "id": "streamlink_hosts",
+      "label": "\u23fc Streamlink-Only Hosts (skip ffprobe)",
+      "type": "string",
+      "default": "youtube.com, youtu.be, twitch.tv, kick.com",
+      "placeholder": "youtube.com, twitch.tv",
+      "help_text": "Comma-separated host suffixes that ffprobe cannot validate (served via Streamlink). Streams on these hosts are marked 'Skipped' instead of 'Dead' so rename/move/delete actions leave them alone. Use full domains (e.g. 'youtube.com', not 'youtube'). Leave blank to use the defaults."
     },
     {
       "id": "_section_dead",
