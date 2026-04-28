@@ -1,6 +1,6 @@
 {
   "name": "IPTV Checker",
-  "version": "1.26.1161403",
+  "version": "1.26.1181126",
   "description": "A Dispatcharr Plugin that goes through a playlist to check IPTV channels",
   "author": "PiratesIRC",
   "logo": "logo.png",
@@ -29,6 +29,13 @@
       "type": "boolean",
       "default": true,
       "help_text": "Check all alternative/backup streams for each channel in addition to the primary stream. This will significantly increase check time."
+    },
+    {
+      "id": "only_visible_channels",
+      "label": "\ud83d\udc41\ufe0f Only Check Visible Channels",
+      "type": "boolean",
+      "default": false,
+      "help_text": "Only check channels that are enabled (visible) in at least one Channel Profile. Channels disabled in every profile (or not assigned to any profile) are skipped. Useful for ignoring hidden/archived channels."
     },
     {
       "id": "_section_check_behavior",
@@ -182,7 +189,7 @@
       "type": "string",
       "default": "",
       "placeholder": "0 4 * * *,0 3 1 * *",
-      "help_text": "Comma-separated cron expressions. Format: 'minute hour day month weekday' (weekday: 0=Sunday, 6=Saturday). Examples: '0 4 * * *' (daily at 4 AM), '0 3 * * 0' (Sundays at 3 AM), '0 2 */2 * *' (every 2 days at 2 AM). Leave blank to disable scheduling."
+      "help_text": "Comma-separated cron expressions. Format: 'minute hour day month weekday' (weekday: 0=Sunday, 6=Saturday). Examples: '0 4 * * *' (daily at 4 AM), '0 3 * * 0' (Sundays at 3 AM), '0 2 */2 * *' (every 2 days at 2 AM). Leave blank to disable scheduling. 💾 After editing this field, click \"💾 Save Schedule\" below to apply the new schedule."
     },
     {
       "id": "scheduler_timezone",
@@ -1442,6 +1449,39 @@
       "help_text": "Timezone for scheduled checks. All IANA timezone names are supported."
     },
     {
+      "id": "schedule_window_enabled",
+      "label": "🪟 Use Windowed Schedule (run only during a time window)",
+      "type": "boolean",
+      "default": false,
+      "help_text": "When on, your Scheduled Times above mark the START of a run window. The check runs until the configured end-time / duration, then halts cleanly between streams. The next time the window opens it RESUMES from the same point (channels already checked are skipped). Group selection, alternative-stream and visible-only settings are read fresh at each window fire."
+    },
+    {
+      "id": "schedule_end_mode",
+      "label": "🛑 Window End Mode",
+      "type": "select",
+      "default": "duration",
+      "options": [
+        { "label": "Run for a fixed duration (hours)", "value": "duration" },
+        { "label": "Run until a specific time (HH:MM)", "value": "time" }
+      ],
+      "help_text": "Choose how the window ends. Duration counts forward from the cron-fire time. Time mode supports past-midnight wrap (e.g. start 22:00, end 02:00)."
+    },
+    {
+      "id": "schedule_duration_hours",
+      "label": "⏳ Window Duration (hours)",
+      "type": "number",
+      "default": 4,
+      "help_text": "Used when Window End Mode = duration. Decimals allowed (e.g. 3.5). Default: 4 hours."
+    },
+    {
+      "id": "schedule_end_time",
+      "label": "🕓 Window End Time (HH:MM, scheduler timezone)",
+      "type": "string",
+      "default": "04:00",
+      "placeholder": "04:00",
+      "help_text": "Used when Window End Mode = time. 24-hour format in the Scheduler Timezone above. If earlier than the start time, the window is treated as wrapping past midnight."
+    },
+    {
       "id": "scheduler_export_csv",
       "label": "\ud83d\udcbe Export CSV for Scheduled Checks",
       "type": "boolean",
@@ -1535,6 +1575,14 @@
       "button_variant": "filled",
       "button_color": "green",
       "button_label": "\ud83d\udcbe Save Schedule"
+    },
+    {
+      "id": "reset_progress",
+      "label": "\ud83d\udd04 Reset Window Progress",
+      "description": "Clear the windowed-schedule resume state. The next window will start fresh from the full channel list instead of resuming where the last window left off.",
+      "button_variant": "outline",
+      "button_color": "orange",
+      "button_label": "\ud83d\udd04 Reset Progress"
     },
     {
       "id": "check_scheduler_status",

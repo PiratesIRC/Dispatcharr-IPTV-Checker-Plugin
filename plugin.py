@@ -15,12 +15,13 @@ import threading
 import urllib.request
 import urllib.error
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timedelta
+import collections
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Django ORM imports (plugins run inside the Django backend process)
-from apps.channels.models import Channel, ChannelGroup, Stream, ChannelStream
+from apps.channels.models import Channel, ChannelGroup, Stream, ChannelStream, ChannelProfileMembership
 from django.db import transaction
 from core.utils import send_websocket_update
 
@@ -54,6 +55,10 @@ LOGGER.addFilter(PluginNameFilter())
 _bg_scheduler_thread = None
 _scheduler_stop_event = threading.Event()
 _scheduler_pending_run = False  # Flag to queue a run if check already in progress
+_scheduler_init_lock = threading.Lock()  # Serialize concurrent _init_scheduler calls
+_scheduler_initialized = False  # Set True after the first Plugin instance bootstraps the scheduler
+# _RATE_LIMIT_GUARD is initialized eagerly below the RateLimitGuard class
+# definition so all Plugin instances share one guard counter.
 
 LOG_PREFIX = "[IPTV Checker]"
 
@@ -65,6 +70,8 @@ class PluginConfig:
     RESULTS_FILE = "/data/iptv_checker_results.json"
     LOADED_CHANNELS_FILE = "/data/iptv_checker_loaded_channels.json"
     PROGRESS_FILE = "/data/iptv_checker_progress.json"
+    PENDING_RESUME_FILE = "/data/iptv_checker_pending_resume.json"
+    SCHEDULER_LOCK_FILE = "/data/iptv_checker_scheduler.pid"
 
     # --- Scheduler ---
     DEFAULT_TIMEZONE = "America/Chicago"
@@ -138,24 +145,100 @@ class ProgressTracker:
             m = int((seconds % 3600) // 60)
             return f"{h}h {m}m"
 
+
+class RateLimitGuard:
+    """Adaptive backoff for upstream HTTP 429 (rate limit) responses.
+
+    Tracks 429 hits in a sliding window; trips a cooldown that doubles each
+    re-trip and decays to baseline after a clean stretch. Used by both
+    sequential and parallel check loops via wait_if_throttled() before each
+    ffprobe and record_hit() when a 429 classification is produced.
+    """
+    WINDOW_SECONDS = 60          # sliding window for hit counting
+    TRIP_THRESHOLD = 5           # hits within WINDOW_SECONDS to trip
+    BASE_COOLDOWN_SECONDS = 60   # first cooldown duration
+    MAX_COOLDOWN_SECONDS = 600   # cap doubled cooldowns at 10 min
+    DECAY_AFTER_SECONDS = 300    # clean window before resetting cooldown growth
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._hit_times = collections.deque()
+        self._cooldown_until = 0.0
+        self._next_cooldown = self.BASE_COOLDOWN_SECONDS
+        self._last_hit_time = 0.0
+
+    def record_hit(self, logger=None):
+        now = time.time()
+        with self._lock:
+            self._hit_times.append(now)
+            self._last_hit_time = now
+            cutoff = now - self.WINDOW_SECONDS
+            while self._hit_times and self._hit_times[0] < cutoff:
+                self._hit_times.popleft()
+            if len(self._hit_times) >= self.TRIP_THRESHOLD and now >= self._cooldown_until:
+                cooldown = self._next_cooldown
+                self._cooldown_until = now + cooldown
+                self._next_cooldown = min(self._next_cooldown * 2, self.MAX_COOLDOWN_SECONDS)
+                # Reset window so we only re-trip on a fresh burst after cooldown;
+                # in-cooldown hits still get appended below on subsequent calls.
+                self._hit_times.clear()
+                if logger:
+                    logger.warning(f"⚠️ Rate-limit guard tripped: pausing checks for {int(cooldown)}s after {self.TRIP_THRESHOLD}+ HTTP 429s in {self.WINDOW_SECONDS}s")
+
+    def wait_if_throttled(self, logger=None, stop_event=None):
+        with self._lock:
+            now = time.time()
+            if self._last_hit_time and (now - self._last_hit_time) > self.DECAY_AFTER_SECONDS:
+                self._next_cooldown = self.BASE_COOLDOWN_SECONDS
+            initial_wait = self._cooldown_until - now
+        if initial_wait <= 0:
+            return
+        if logger:
+            logger.info(f"⚠️ Rate-limit cooldown active — sleeping {int(initial_wait)}s before next check")
+        # Re-read _cooldown_until each iteration so a fresh trip that EXTENDS
+        # the cooldown during this sleep is honored (avoids TOCTOU where N
+        # parallel workers all wake on the original deadline).
+        while True:
+            with self._lock:
+                remaining = self._cooldown_until - time.time()
+            if remaining <= 0:
+                return
+            if stop_event is not None and stop_event.is_set():
+                return
+            time.sleep(min(remaining, 1.0))
+
+
+# Eager module-level singleton — runs once under the import lock, so all
+# Plugin instances created during Django plugin reloads share one counter.
+_RATE_LIMIT_GUARD = RateLimitGuard()
+
+
 class Plugin:
     """Dispatcharr IPTV Checker Plugin"""
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.1161403"
+    version = "1.26.1181126"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
         self.results_file = PluginConfig.RESULTS_FILE
         self.loaded_channels_file = PluginConfig.LOADED_CHANNELS_FILE
         self.progress_file = PluginConfig.PROGRESS_FILE
+        self.pending_resume_file = PluginConfig.PENDING_RESUME_FILE
         self.check_progress = self._load_progress()
         self.load_progress = {"current": 0, "total": 0, "status": "idle"}  # Track load groups progress
         self._thread = None
         self._thread_lock = threading.Lock()
         self._stop_event = threading.Event()
         self.timeout_retry_queue = []  # Queue for streams that timed out and need retry
+        # Module-level singleton so multiple Plugin instances created during
+        # Django plugin reload share one guard counter (see _RATE_LIMIT_GUARD).
+        self._rate_limit_guard = _RATE_LIMIT_GUARD
+        # Active windowed-schedule state (None when not in a window run)
+        self._active_window_end = None
+        self._active_window_tz = None
+        self._restart_resume_active = False
         self.version_check_cache = None  # Cached version check result
         self.version_check_time = None  # Time when version was last checked
         LOGGER.info(f"Plugin v{self.version} initialized")
@@ -164,15 +247,123 @@ class Plugin:
         self._init_scheduler()
 
     def _init_scheduler(self):
-        """Load saved settings from DB and start the scheduler if configured."""
+        """Load saved settings from DB and start the scheduler if configured.
+
+        Dispatcharr runs ~9 separate Python processes (4 uwsgi workers, celery
+        worker/beat, daphne ASGI, supervisors) — each imports this module and
+        constructs Plugin instances independently. Module-level locks/flags do
+        not cross process boundaries, so a per-process file lock at
+        SCHEDULER_LOCK_FILE elects exactly one process to host the scheduler;
+        every other process no-ops. Within the elected process, the module-
+        level lock+flag still de-dupe Django's per-process plugin reloads.
+        """
+        global _scheduler_initialized
+        with _scheduler_init_lock:
+            if _scheduler_initialized:
+                return
+            try:
+                self._normalize_stale_progress()
+                if not self._acquire_scheduler_lock():
+                    _scheduler_initialized = True  # mark so this process stops trying
+                    return
+                from apps.plugins.models import PluginConfig as DBPluginConfig
+                cfg = DBPluginConfig.objects.filter(key=self.key).first()
+                if cfg and cfg.settings:
+                    if cfg.settings.get("scheduled_times", "").strip():
+                        LOGGER.info("Loading saved settings for scheduler startup")
+                        self._start_background_scheduler(cfg.settings)
+                    # If a window was open when the container went down, resume it now
+                    self._maybe_resume_after_restart(cfg.settings)
+                _scheduler_initialized = True
+            except Exception as e:
+                LOGGER.warning(f"Could not load settings for scheduler on init: {e}")
+
+    def _acquire_scheduler_lock(self):
+        """Cross-process lock — return True iff this PID should host the scheduler.
+
+        Claims SCHEDULER_LOCK_FILE by writing PID to a tmp file and renaming
+        it onto the lock path (POSIX atomic rename). After the rename, every
+        contender re-reads the file; only the last writer's PID survives, so
+        exactly one process wins regardless of how many race. If the existing
+        lock points to a dead PID, reclaim it. The lock is "released" only by
+        the next startup detecting the holder is dead — there's no failover
+        if the elected holder exits mid-container-lifetime, but Dispatcharr's
+        processes (uwsgi/celery/daphne) are long-lived so this is acceptable.
+        Note: requires /data to be a local volume — NFS weakens rename atomicity.
+        """
+        lock_path = PluginConfig.SCHEDULER_LOCK_FILE
+        my_pid = os.getpid()
+
+        if os.path.exists(lock_path):
+            try:
+                with open(lock_path, 'r') as f:
+                    holder_pid = int(f.read().strip() or '0')
+                if holder_pid and holder_pid != my_pid:
+                    try:
+                        os.kill(holder_pid, 0)
+                        LOGGER.info(f"Scheduler already owned by PID {holder_pid}; this process ({my_pid}) will skip scheduler bootstrap.")
+                        return False
+                    except ProcessLookupError:
+                        LOGGER.info(f"Stale scheduler lock for dead PID {holder_pid}; reclaiming as PID {my_pid}.")
+                    except PermissionError:
+                        # Holder is alive but owned by another user (shouldn't
+                        # happen in this container). Treat as held.
+                        LOGGER.info(f"Scheduler lock held by PID {holder_pid} (different uid); skipping.")
+                        return False
+                    # Other OSError (EINTR, transient FS errors): skip rather
+                    # than risk stealing a live lock.
+            except (ValueError, OSError):
+                pass
+
+        tmp = f"{lock_path}.{my_pid}.tmp"
         try:
-            from apps.plugins.models import PluginConfig as DBPluginConfig
-            cfg = DBPluginConfig.objects.filter(key=self.key).first()
-            if cfg and cfg.settings and cfg.settings.get("scheduled_times", "").strip():
-                LOGGER.info("Loading saved settings for scheduler startup")
-                self._start_background_scheduler(cfg.settings)
+            with open(tmp, 'w') as f:
+                f.write(str(my_pid))
+                f.flush()
+                os.fsync(f.fileno())
+            os.rename(tmp, lock_path)
+        except OSError as e:
+            LOGGER.warning(f"Could not write scheduler lock file: {e}")
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            return False
+
+        try:
+            with open(lock_path, 'r') as f:
+                won = int(f.read().strip() or '0') == my_pid
+        except (ValueError, OSError):
+            won = False
+        if won:
+            LOGGER.info(f"Scheduler lock acquired by PID {my_pid}.")
+        return won
+
+    def _normalize_stale_progress(self):
+        """If progress.json claims a check is running at startup, clear it.
+
+        Container kill/restart bypasses the `finally` block that flips status
+        to 'idle', leaving the file stuck in 'running'. Subsequent cron fires
+        then self-queue believing a check is in flight. At __init__ time no
+        thread can possibly be running, so it's safe to normalize.
+        """
+        try:
+            if not os.path.exists(self.progress_file):
+                return
+            with open(self.progress_file, 'r') as f:
+                data = json.load(f) or {}
+            if data.get('status') == 'running':
+                LOGGER.warning(
+                    f"Found stale progress.json with status=running "
+                    f"({data.get('current', 0)}/{data.get('total', 0)}); "
+                    f"normalizing to idle (likely a prior container kill)."
+                )
+                data['status'] = 'idle'
+                data['end_time'] = time.time()
+                self._save_json_file(self.progress_file, data, indent=2)
+                self.check_progress = data
         except Exception as e:
-            LOGGER.warning(f"Could not load settings for scheduler on init: {e}")
+            LOGGER.warning(f"Could not normalize progress.json on startup: {e}")
 
     def _fresh_settings(self, fallback):
         """Re-read settings from DB so cron uses latest values."""
@@ -184,6 +375,219 @@ class Plugin:
         except Exception as e:
             LOGGER.warning(f"Could not refresh settings from DB; using cached snapshot: {e}")
         return fallback
+
+    # ---------------- Windowed schedule helpers ----------------
+
+    def _compute_window_end(self, now_local, settings, tz):
+        """Compute the absolute window-end datetime in tz given window start = now_local.
+
+        Returns None if config is invalid. `time` mode wraps past midnight.
+        """
+        mode = (settings.get("schedule_end_mode", "duration") or "duration").lower()
+        if mode == "duration":
+            try:
+                hours = float(settings.get("schedule_duration_hours", 4) or 4)
+            except (ValueError, TypeError):
+                return None
+            if hours <= 0:
+                return None
+            return now_local + timedelta(hours=hours)
+        if mode == "time":
+            end_str = (settings.get("schedule_end_time", "04:00") or "04:00").strip()
+            try:
+                hh_str, mm_str = end_str.split(":")
+                hh, mm = int(hh_str), int(mm_str)
+            except (ValueError, AttributeError):
+                return None
+            if not (0 <= hh < 24 and 0 <= mm < 60):
+                return None
+            end = now_local.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            if end <= now_local:
+                end = end + timedelta(days=1)
+            return end
+        return None
+
+    def _past_window_end(self):
+        if self._active_window_end is None or self._active_window_tz is None:
+            return False
+        return datetime.now(self._active_window_tz) >= self._active_window_end
+
+    def _setup_window_state(self, settings):
+        """Resolve TZ and compute end-of-window. Stores state on self. Returns False on bad config."""
+        if not PYTZ_AVAILABLE:
+            LOGGER.error("Windowed schedule requires pytz")
+            return False
+        tz_str = settings.get('scheduler_timezone', PluginConfig.DEFAULT_TIMEZONE)
+        try:
+            tz = pytz.timezone(tz_str)
+        except Exception:
+            tz = pytz.timezone(PluginConfig.DEFAULT_TIMEZONE)
+        now = datetime.now(tz)
+        end = self._compute_window_end(now, settings, tz)
+        if end is None:
+            LOGGER.error("⏰ WINDOW: invalid schedule_end_mode/end_time/duration; aborting run")
+            return False
+        self._active_window_end = end
+        self._active_window_tz = tz
+        LOGGER.info(f"⏰ WINDOW: starts {now.isoformat()} → ends {end.isoformat()}")
+        return True
+
+    def _clear_window_state(self):
+        self._active_window_end = None
+        self._active_window_tz = None
+
+    def _settings_fingerprint(self, settings):
+        return {
+            'group_names': settings.get('group_names', ''),
+            'check_alternative_streams': bool(settings.get('check_alternative_streams', True)),
+            'only_visible_channels': bool(settings.get('only_visible_channels', False)),
+        }
+
+    def _seed_pending_from_loaded_channels(self, settings):
+        """Write pending_resume.json from the current loaded_channels.json."""
+        loaded = self._load_json_file(self.loaded_channels_file) or []
+        stream_ids = [s['id'] for ch in loaded for s in ch.get('streams', []) if 'id' in s]
+        payload = {
+            'started_at': datetime.utcnow().isoformat() + 'Z',
+            'window_end_iso': self._active_window_end.isoformat() if self._active_window_end else None,
+            'tz': str(self._active_window_tz) if self._active_window_tz else None,
+            'settings_fingerprint': self._settings_fingerprint(settings),
+            'remaining_stream_ids': stream_ids,
+        }
+        self._save_json_file(self.pending_resume_file, payload)
+
+    def _apply_pending_resume_to_loaded_channels(self, settings, logger):
+        """Filter loaded_channels.json down to streams still in pending_resume.json.
+
+        Returns True if a usable resume state was applied; False if caller should
+        fall back to a fresh load.
+        """
+        pending = self._load_json_file(self.pending_resume_file)
+        if not pending or not pending.get('remaining_stream_ids'):
+            return False
+
+        saved_fp = pending.get('settings_fingerprint') or {}
+        if saved_fp != self._settings_fingerprint(settings):
+            logger.warning(
+                f"⏰ WINDOW RESUME: settings changed since last window — continuing with saved channel list. "
+                f"saved={saved_fp} current={self._settings_fingerprint(settings)}"
+            )
+
+        loaded = self._load_json_file(self.loaded_channels_file) or []
+        if not loaded:
+            logger.warning("⏰ WINDOW RESUME: pending state present but loaded_channels.json missing — falling back to fresh load")
+            self._clear_pending_resume()
+            return False
+
+        remaining = set(pending['remaining_stream_ids'])
+        channel_ids = [ch['id'] for ch in loaded]
+        live_ids = set(Channel.objects.filter(id__in=channel_ids).values_list('id', flat=True))
+
+        filtered = []
+        for ch in loaded:
+            if ch['id'] not in live_ids:
+                continue
+            kept = [s for s in ch.get('streams', []) if s.get('id') in remaining]
+            if kept:
+                filtered.append({**ch, 'streams': kept})
+
+        if not filtered:
+            logger.warning("⏰ WINDOW RESUME: no remaining streams match live channels — clearing pending state, falling back to fresh load")
+            self._clear_pending_resume()
+            return False
+
+        self._save_json_file(self.loaded_channels_file, filtered)
+        total_streams = sum(len(ch.get('streams', [])) for ch in filtered)
+        logger.info(f"⏰ WINDOW RESUME: continuing with {len(filtered)} channels / {total_streams} streams")
+
+        # Re-anchor the pending file's window metadata to the active window.
+        # Without this, a stale window_end from a prior cron-fire is preserved
+        # by _mark_stream_done, and _maybe_resume_after_restart would refuse
+        # to resume after a container restart inside the new window. Leave
+        # settings_fingerprint untouched so subsequent windows can still
+        # detect drift relative to the original run.
+        if self._active_window_end is not None:
+            pending['window_end_iso'] = self._active_window_end.isoformat()
+            pending['tz'] = str(self._active_window_tz) if self._active_window_tz else pending.get('tz')
+            self._save_json_file(self.pending_resume_file, pending)
+        return True
+
+    def _mark_stream_done(self, stream_id):
+        """Remove a stream id from pending_resume.json. Deletes the file when empty.
+
+        Safe no-op when not in a windowed run.
+        """
+        if self._active_window_end is None or stream_id is None:
+            return
+        pending = self._load_json_file(self.pending_resume_file)
+        if not pending or 'remaining_stream_ids' not in pending:
+            return
+        try:
+            pending['remaining_stream_ids'].remove(stream_id)
+        except ValueError:
+            return
+        if not pending['remaining_stream_ids']:
+            self._clear_pending_resume()
+        else:
+            self._save_json_file(self.pending_resume_file, pending)
+
+    def _clear_pending_resume(self):
+        try:
+            os.remove(self.pending_resume_file)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            LOGGER.warning(f"Could not remove pending_resume.json: {e}")
+
+    def _has_pending_resume(self):
+        pending = self._load_json_file(self.pending_resume_file)
+        return bool(pending and pending.get('remaining_stream_ids'))
+
+    def _maybe_resume_after_restart(self, settings):
+        """If a window was open when the container died, kick off the check immediately."""
+        if not settings.get("schedule_window_enabled", False):
+            return
+        pending = self._load_json_file(self.pending_resume_file)
+        if not pending or not pending.get("remaining_stream_ids"):
+            return
+        end_iso = pending.get("window_end_iso")
+        tz_str = pending.get("tz") or settings.get('scheduler_timezone', PluginConfig.DEFAULT_TIMEZONE)
+        try:
+            tz = pytz.timezone(tz_str)
+            end = datetime.fromisoformat(end_iso) if end_iso else None
+            if end is not None and end.tzinfo is None:
+                end = tz.localize(end)
+        except Exception as e:
+            LOGGER.warning(f"Could not parse pending window state on restart: {e}")
+            return
+        if end is None:
+            return
+        now = datetime.now(tz)
+        if now >= end:
+            LOGGER.info("⏰ WINDOW: pending state exists but window already closed — leaving for next scheduled fire")
+            return
+        LOGGER.info(f"⏰ WINDOW: pending state detected (ends {end.isoformat()}); resuming check after restart")
+        # Set the guard BEFORE spawning so the scheduler_loop's first tick
+        # doesn't queue a duplicate cron-fire while the resume is starting up.
+        self._restart_resume_active = True
+
+        def _do_resume():
+            try:
+                self._execute_scheduled_check(
+                    self._fresh_settings(settings),
+                    preserved_window_end=end,
+                    preserved_window_tz=tz,
+                )
+            finally:
+                self._restart_resume_active = False
+
+        threading.Thread(
+            target=_do_resume,
+            daemon=True,
+            name="iptv-checker-restart-resume"
+        ).start()
+
+    # ---------------- /Windowed schedule helpers ----------------
 
     def _try_start_thread(self, target, args):
         """Atomically check if a thread is running and start a new one.
@@ -420,8 +824,11 @@ class Plugin:
                             
                             # Check if a check is already running
                             if self.check_progress.get('status') == 'running':
-                                LOGGER.warning("Scheduled run triggered but a check is already running - queuing for later")
-                                _scheduler_pending_run = True
+                                if getattr(self, '_restart_resume_active', False):
+                                    LOGGER.info("Cron fire ignored: restart-resume is in progress for this window")
+                                else:
+                                    LOGGER.warning("Scheduled run triggered but a check is already running - queuing for later")
+                                    _scheduler_pending_run = True
                             else:
                                 # Execute scheduled task with the latest persisted settings
                                 # (not the closure's snapshot — settings may have been edited
@@ -473,27 +880,53 @@ class Plugin:
             _bg_scheduler_thread = None
             LOGGER.info("Scheduler thread stopped")
     
-    def _execute_scheduled_check(self, settings):
-        """Execute the scheduled stream check (Load Groups + Start Check)."""
+    def _execute_scheduled_check(self, settings, preserved_window_end=None, preserved_window_tz=None):
+        """Execute the scheduled stream check (Load Groups + Start Check).
+
+        Honors `schedule_window_enabled`. Per-stream progress is persisted to
+        pending_resume.json so the next window resumes where the last left off.
+        Post-check actions (rename/move/delete/webhook) only run on the window
+        that finishes the list.
+
+        preserved_window_end / preserved_window_tz come from
+        `_maybe_resume_after_restart` so the original window end is honored
+        instead of being re-anchored to "now + duration" after a container restart.
+        """
         LOGGER.info("⏰ Starting scheduled check sequence")
-        
+
         # Create a logger context for scheduled runs
         scheduled_logger = logging.getLogger("plugins.iptv_checker.scheduled")
         scheduled_logger.setLevel(logging.INFO)
         if not any(isinstance(f, PluginNameFilter) for f in scheduled_logger.filters):
             scheduled_logger.addFilter(PluginNameFilter())
-        
-        try:
-            # Step 1: Load Groups
-            LOGGER.info("⏰ SCHEDULED: Loading groups...")
-            load_result = self.load_groups_action(settings, scheduled_logger)
-            
-            if load_result.get('status') != 'ok':
-                LOGGER.error(f"⏰ SCHEDULED: Load groups failed: {load_result.get('message')}")
+
+        is_window = bool(settings.get("schedule_window_enabled", False))
+        if is_window:
+            if preserved_window_end is not None and preserved_window_tz is not None:
+                self._active_window_end = preserved_window_end
+                self._active_window_tz = preserved_window_tz
+                LOGGER.info(f"⏰ WINDOW: resuming preserved window → ends {preserved_window_end.isoformat()}")
+            elif not self._setup_window_state(settings):
                 return
-            
-            LOGGER.info(f"⏰ SCHEDULED: {load_result.get('message')}")
-            
+
+        try:
+            # Step 1: Load Groups (or apply pending resume in window mode)
+            resumed = False
+            if is_window and self._apply_pending_resume_to_loaded_channels(settings, scheduled_logger):
+                resumed = True
+                LOGGER.info("⏰ SCHEDULED: Resuming from prior window")
+            else:
+                LOGGER.info("⏰ SCHEDULED: Loading groups...")
+                load_result = self.load_groups_action(settings, scheduled_logger)
+
+                if load_result.get('status') != 'ok':
+                    LOGGER.error(f"⏰ SCHEDULED: Load groups failed: {load_result.get('message')}")
+                    return
+
+                LOGGER.info(f"⏰ SCHEDULED: {load_result.get('message')}")
+                if is_window:
+                    self._seed_pending_from_loaded_channels(settings)
+
             # Step 2: Start Stream Check
             LOGGER.info("⏰ SCHEDULED: Starting stream check...")
             check_result = self.check_streams_action(settings, scheduled_logger, context={'scheduled': True})
@@ -510,12 +943,24 @@ class Plugin:
                 time.sleep(5)
             
             LOGGER.info("⏰ SCHEDULED: Stream check completed")
-            
-            # Step 3: Export CSV if enabled
-            if settings.get('scheduler_export_csv', False):
-                LOGGER.info("⏰ SCHEDULED: Exporting results to CSV...")
+
+            # In window mode, only run post-actions when the channel list completed
+            # (pending_resume.json deleted = nothing left). Otherwise defer until the
+            # next window finishes the remaining streams.
+            if is_window and self._has_pending_resume():
+                LOGGER.info("⏰ WINDOW: closed mid-list — post-actions deferred to next window")
+                return
+
+            # Step 3: Always export CSV at the end of a scheduled session.
+            # The CSV is the authoritative audit record (especially when
+            # destructive actions follow), so it runs unconditionally rather
+            # than being gated on scheduler_export_csv.
+            LOGGER.info("⏰ SCHEDULED: Exporting results to CSV...")
+            try:
                 export_result = self.export_results_action(settings, scheduled_logger)
                 LOGGER.info(f"⏰ SCHEDULED: {export_result.get('message')}")
+            except Exception as e:
+                LOGGER.error(f"⏰ SCHEDULED: CSV export failed: {e}", exc_info=True)
             
             # Step 4: Rename dead channels if enabled
             if settings.get('scheduler_rename_dead_channels', False):
@@ -566,9 +1011,12 @@ class Plugin:
                     LOGGER.warning(f"⏰ SCHEDULED: {webhook_result.get('message')}")
 
             LOGGER.info("⏰ SCHEDULED: Check sequence completed successfully")
-            
+
         except Exception as e:
             LOGGER.error(f"⏰ SCHEDULED: Error during scheduled check: {e}", exc_info=True)
+        finally:
+            if is_window:
+                self._clear_window_state()
 
     def _get_latest_version(self, owner="PiratesIRC", repo="Dispatcharr-IPTV-Checker-Plugin"):
         """
@@ -689,6 +1137,7 @@ class Plugin:
                 "export_results": self.export_results_action,
                 "clear_csv_exports": self.clear_csv_exports_action,
                 "update_schedule": self.update_schedule_action,
+                "reset_progress": self.reset_progress_action,
                 "cleanup_orphaned_tasks": self.cleanup_orphaned_tasks_action,
                 "check_scheduler_status": self.check_scheduler_status_action,
                 "delete_dead_channels": self.delete_dead_channels_action,
@@ -1007,6 +1456,19 @@ class Plugin:
             qs = qs.filter(channel_group_id__in=group_ids)
         return list(qs.values('id', 'name', 'channel_number', 'channel_group_id', 'uuid'))
 
+    def _get_visible_channel_ids(self, logger):
+        """Return set of channel IDs that are enabled in at least one ChannelProfile.
+
+        A channel is "visible" if any ChannelProfileMembership row for it has enabled=True.
+        Channels with no membership rows at all, or whose every membership is disabled,
+        are excluded.
+        """
+        return set(
+            ChannelProfileMembership.objects.filter(enabled=True)
+            .values_list('channel_id', flat=True)
+            .distinct()
+        )
+
     def _get_channel_streams_bulk(self, channel_ids, logger, check_alternative=True):
         """Fetch streams for multiple channels in a single query.
 
@@ -1113,6 +1575,14 @@ class Plugin:
 
             channels_in_groups = self._get_all_channels(logger, group_ids=target_group_ids)
 
+            only_visible = bool(settings.get("only_visible_channels", False))
+            if only_visible:
+                visible_ids = self._get_visible_channel_ids(logger)
+                before = len(channels_in_groups)
+                channels_in_groups = [ch for ch in channels_in_groups if ch['id'] in visible_ids]
+                hidden = before - len(channels_in_groups)
+                logger.info(f"👁️ Only Visible Channels: kept {len(channels_in_groups)}/{before} (skipped {hidden} hidden)")
+
             # ORM is fast — always load synchronously
             return self._load_groups_sync(channels_in_groups, settings, logger, group_names_str, target_group_names)
 
@@ -1166,6 +1636,8 @@ class Plugin:
         """Build success message for load groups action"""
         total_streams = sum(len(c.get('streams', [])) for c in loaded_channels)
         group_msg = "all groups" if not group_names_str else f"group(s): {', '.join(target_group_names)}"
+        if settings.get("only_visible_channels", False):
+            group_msg += " (visible channels only)"
 
         parallel_enabled = settings.get("enable_parallel_checking", False)
         parallel_workers = settings.get("parallel_workers", 2)
@@ -1220,7 +1692,7 @@ class Plugin:
 
     def _process_streams_background(self, all_streams, settings, logger):
         """Background processing of streams to avoid request timeout"""
-        enable_parallel = settings.get("enable_parallel_checking", False)
+        enable_parallel = settings.get("enable_parallel_checking", True)
 
         if enable_parallel:
             self._process_streams_parallel(all_streams, settings, logger)
@@ -1247,6 +1719,9 @@ class Plugin:
         try:
             for i, stream_data in enumerate(all_streams):
                 if self._stop_event.is_set():  # Allow early termination
+                    break
+                if self._past_window_end():
+                    logger.info("⏰ WINDOW: end-of-window reached — halting stream check")
                     break
 
                 self.check_progress["current"] = i + 1
@@ -1277,6 +1752,7 @@ class Plugin:
                     logger.info(f"Added '{stream_data.get('channel_name')}' to retry queue due to {result.get('error_type')}")
 
                 results.append({**stream_data, **result})
+                self._mark_stream_done(stream_data.get('stream_id'))
                 streams_processed_since_retry += 1
                 tracker.update()
 
@@ -1287,6 +1763,8 @@ class Plugin:
 
                     if retry_stream["retry_count"] <= retries:
                         logger.info(f"Retrying timeout stream: '{retry_stream.get('channel_name')}' (attempt {retry_stream['retry_count']}/{retries})")
+                        if delay > 0:
+                            time.sleep(delay * 3)
                         retry_result = self.check_stream(retry_stream, timeout, 0, logger, skip_retries=True, settings=settings, retry_attempt=retry_stream["retry_count"])  # No immediate retries
 
                         # Update Dispatcharr metadata if retry succeeded
@@ -1320,11 +1798,14 @@ class Plugin:
                     time.sleep(delay)
 
             # Process any remaining timeout retries
+            retry_backoff = delay * 3
             while self.timeout_retry_queue:
                 retry_stream = self.timeout_retry_queue.pop(0)
                 if retry_stream["retry_count"] < retries:
                     retry_stream["retry_count"] += 1
                     logger.info(f"Final retry for timeout stream: '{retry_stream.get('channel_name')}' (attempt {retry_stream['retry_count']}/{retries})")
+                    if retry_backoff > 0:
+                        time.sleep(retry_backoff)
                     retry_result = self.check_stream(retry_stream, timeout, 0, logger, skip_retries=True, settings=settings, retry_attempt=retry_stream["retry_count"])
 
                     # Update Dispatcharr metadata if final retry succeeded
@@ -1403,6 +1884,10 @@ class Plugin:
                     if self._stop_event.is_set():
                         executor.shutdown(wait=False, cancel_futures=True)
                         break
+                    if self._past_window_end():
+                        logger.info("⏰ WINDOW: end-of-window reached — cancelling remaining stream checks")
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        break
 
                     index = future_to_index[future]
                     stream_data = all_streams[index]
@@ -1429,6 +1914,7 @@ class Plugin:
                             self.check_progress["current"] = len(results_dict)
                             self._save_progress()
                             tracker.update()
+                        self._mark_stream_done(stream_data.get('stream_id'))
 
                     except Exception as e:
                         logger.error(f"Error checking stream '{stream_data.get('channel_name')}': {e}")
@@ -1445,6 +1931,7 @@ class Plugin:
                             self.check_progress["current"] = len(results_dict)
                             self._save_progress()
                             tracker.update()
+                        self._mark_stream_done(stream_data.get('stream_id'))
 
             # Rebuild results list in original order
             results = [results_dict[i] for i in range(len(all_streams)) if i in results_dict]
@@ -1837,6 +2324,13 @@ class Plugin:
         # Add plugin settings (excluding sensitive information)
         lines.append("# Plugin Settings:")
         lines.append(f"#   Group(s) Checked: {settings.get('group_names', 'All groups')}")
+        lines.append(f"#   Only Visible Channels: {settings.get('only_visible_channels', False)}")
+        if settings.get('schedule_window_enabled', False):
+            end_mode = settings.get('schedule_end_mode', 'duration')
+            if end_mode == 'duration':
+                lines.append(f"#   Schedule Mode: window (duration {settings.get('schedule_duration_hours', 4)}h, tz {settings.get('scheduler_timezone', PluginConfig.DEFAULT_TIMEZONE)})")
+            else:
+                lines.append(f"#   Schedule Mode: window (until {settings.get('schedule_end_time', '04:00')}, tz {settings.get('scheduler_timezone', PluginConfig.DEFAULT_TIMEZONE)})")
         lines.append(f"#   Connection Timeout: {settings.get('timeout', 10)} seconds")
         lines.append(f"#   Probe Timeout: {settings.get('probe_timeout', 20)} seconds")
         lines.append(f"#   Dead Connection Retries: {settings.get('dead_connection_retries', 3)}")
@@ -1984,6 +2478,17 @@ class Plugin:
         else:
             return {"status": "ok", "message": f"✅ Successfully deleted {deleted_count} CSV export file(s) from /data/exports/."}
 
+    def reset_progress_action(self, settings, logger):
+        """Clear pending windowed-resume state so the next window starts fresh."""
+        try:
+            if os.path.exists(self.pending_resume_file):
+                os.remove(self.pending_resume_file)
+                logger.info("Pending resume state cleared")
+                return {"status": "ok", "message": "✅ Resume progress reset. Next scheduled window will start fresh."}
+            return {"status": "ok", "message": "No pending resume state to clear."}
+        except Exception as e:
+            return {"status": "error", "message": f"Failed to reset progress: {str(e)}"}
+
     def update_schedule_action(self, settings, logger):
         """Update the scheduler configuration and restart the scheduler."""
         try:
@@ -2095,97 +2600,135 @@ class Plugin:
                 "message": f"❌ Failed to cleanup orphaned tasks: {str(e)}"
             }
     
+    def _humanize_cron(self, expr):
+        """Convert a 5-field cron expression into a human-readable phrase."""
+        parts = expr.strip().split()
+        if len(parts) != 5:
+            return expr
+        minute, hour, dom, month, dow = parts
+
+        day_names = {"0": "Sun", "1": "Mon", "2": "Tue", "3": "Wed",
+                     "4": "Thu", "5": "Fri", "6": "Sat", "7": "Sun"}
+        month_names = {"1": "Jan", "2": "Feb", "3": "Mar", "4": "Apr",
+                       "5": "May", "6": "Jun", "7": "Jul", "8": "Aug",
+                       "9": "Sep", "10": "Oct", "11": "Nov", "12": "Dec"}
+
+        def fmt_time(h, m):
+            try:
+                if any(c in h for c in "*/,-") or any(c in m for c in "*/,-"):
+                    return None
+                hi, mi = int(h), int(m)
+                if not (0 <= hi < 24 and 0 <= mi < 60):
+                    return None
+                suffix = "AM" if hi < 12 else "PM"
+                disp = hi % 12 or 12
+                return f"{disp}:{mi:02d} {suffix}"
+            except ValueError:
+                return None
+
+        def fmt_step(minute_field, hour_field):
+            if hour_field == "*" and minute_field.startswith("*/"):
+                step = minute_field[2:]
+                if step.isdigit():
+                    return f"every {step} minute{'s' if step != '1' else ''}"
+            if minute_field == "0" and hour_field.startswith("*/"):
+                step = hour_field[2:]
+                if step.isdigit():
+                    return f"every {step} hour{'s' if step != '1' else ''}"
+            return None
+
+        def fmt_dow(d):
+            if d == "*":
+                return "every day"
+            if "-" in d and "/" not in d:
+                a, b = d.split("-", 1)
+                return f"{day_names.get(a, a)}–{day_names.get(b, b)}"
+            if "," in d:
+                return ", ".join(day_names.get(x, x) for x in d.split(","))
+            return day_names.get(d, d)
+
+        step_str = fmt_step(minute, hour)
+        time_str = fmt_time(hour, minute)
+        when = []
+        if step_str:
+            when.append(step_str)
+        elif time_str:
+            when.append(f"at {time_str}")
+        else:
+            return expr
+
+        if dow != "*":
+            when.append(f"on {fmt_dow(dow)}")
+        elif dom != "*":
+            if "/" in dom:
+                _, step = dom.split("/", 1)
+                when.append(f"every {step} days")
+            else:
+                when.append(f"on day {dom} of the month")
+        else:
+            when.append("daily")
+
+        if month != "*":
+            if "," in month:
+                when.append("in " + ", ".join(month_names.get(x, x) for x in month.split(",")))
+            else:
+                when.append(f"in {month_names.get(month, month)}")
+
+        return " ".join(when)
+
     def check_scheduler_status_action(self, settings, logger):
-        """Display scheduler thread status and diagnostic information."""
-        global _bg_scheduler_thread
-        
+        """Compact scheduler status — fits in a single toast notification."""
+        global _bg_scheduler_thread, _scheduler_pending_run
+
         try:
-            status_lines = []
-            status_lines.append("🔍 Scheduler Status Report")
-            status_lines.append("=" * 60)
-            status_lines.append("")
-            
-            # Check scheduler thread status
-            status_lines.append("📊 Thread Status:")
             if _bg_scheduler_thread is None:
-                status_lines.append("  • Thread: Not created")
-                thread_status = "❌ Not Running"
+                thread_status = "❌ Not running"
             elif _bg_scheduler_thread.is_alive():
-                status_lines.append(f"  • Thread: Alive (ID: {_bg_scheduler_thread.ident})")
-                status_lines.append(f"  • Thread Name: {_bg_scheduler_thread.name}")
-                status_lines.append(f"  • Daemon: {_bg_scheduler_thread.daemon}")
                 thread_status = "✅ Running"
             else:
-                status_lines.append("  • Thread: Created but not alive")
                 thread_status = "⚠️ Stopped"
-            
-            status_lines.append(f"  • Status: {thread_status}")
-            status_lines.append("")
-            
-            # Check configuration
-            status_lines.append("⚙️ Configuration:")
+
             scheduled_times_str = settings.get("scheduled_times", "").strip()
+            cron_lines = []
             if scheduled_times_str:
-                scheduled_times = self._parse_scheduled_times(scheduled_times_str)
-                status_lines.append(f"  • Cron Expressions: {', '.join(scheduled_times)}")
-                status_lines.append(f"  • Valid: {'Yes ✓' if scheduled_times else 'No ✗'}")
+                for expr in self._parse_scheduled_times(scheduled_times_str):
+                    cron_lines.append(f"  • {expr}  →  {self._humanize_cron(expr)}")
             else:
-                status_lines.append("  • Cron Expressions: Not configured")
-            
-            scheduler_timezone = settings.get("scheduler_timezone", PluginConfig.DEFAULT_TIMEZONE)
-            status_lines.append(f"  • Timezone: {scheduler_timezone}")
-            
+                cron_lines.append("  • (none configured)")
+
+            tz_name = settings.get("scheduler_timezone", PluginConfig.DEFAULT_TIMEZONE)
+            now_str = "?"
             if PYTZ_AVAILABLE:
                 try:
-                    tz = pytz.timezone(scheduler_timezone)
-                    now = datetime.now(tz)
-                    status_lines.append(f"  • Current Time: {now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
-                except:
-                    status_lines.append(f"  • Current Time: Unable to determine (invalid timezone)")
-            else:
-                status_lines.append(f"  • Current Time: Unable to determine (pytz not available)")
-            
-            export_csv = settings.get("scheduler_export_csv", False)
-            status_lines.append(f"  • Auto-export CSV: {'Enabled ✓' if export_csv else 'Disabled'}")
-            status_lines.append("")
-            
-            # Check dependencies
-            status_lines.append("📦 Dependencies:")
-            status_lines.append(f"  • pytz: {'Available ✓' if PYTZ_AVAILABLE else 'Not Available ✗'}")
-            status_lines.append("")
-            
-            # Check if there's a pending run
-            global _scheduler_pending_run
-            status_lines.append("⏳ Pending Operations:")
-            status_lines.append(f"  • Queued Run: {'Yes' if _scheduler_pending_run else 'No'}")
-            status_lines.append("")
-            
-            # Current check status
-            status_lines.append("🔄 Current Check Status:")
+                    now_str = datetime.now(pytz.timezone(tz_name)).strftime('%Y-%m-%d %H:%M %Z')
+                except Exception:
+                    now_str = "(invalid tz)"
+
             check_status = self.check_progress.get('status', 'idle')
-            status_lines.append(f"  • Status: {check_status.title()}")
+            check_line = check_status.title()
             if check_status == 'running':
-                current = self.check_progress.get('current', 0)
-                total = self.check_progress.get('total', 0)
-                percent = (current / total * 100) if total > 0 else 0
-                status_lines.append(f"  • Progress: {current}/{total} ({percent:.1f}%)")
-            status_lines.append("")
-            
-            # Recommendations
-            status_lines.append("💡 Recommendations:")
+                cur = self.check_progress.get('current', 0)
+                tot = self.check_progress.get('total', 0)
+                pct = (cur / tot * 100) if tot > 0 else 0
+                check_line = f"Running ({cur}/{tot}, {pct:.1f}%)"
+
             if not scheduled_times_str:
-                status_lines.append("  ⚠️ Configure cron expressions to enable scheduling")
+                hint = "⚠️ Set cron expressions and click 💾 Save Schedule"
             elif not PYTZ_AVAILABLE:
-                status_lines.append("  ⚠️ Install pytz for timezone support")
+                hint = "⚠️ pytz not available"
             elif not _bg_scheduler_thread or not _bg_scheduler_thread.is_alive():
-                status_lines.append("  ⚠️ Scheduler thread is not running - try clicking '📅 Update Schedule'")
+                hint = "⚠️ Click 📅 Save Schedule to start the scheduler"
             else:
-                status_lines.append("  ✅ Scheduler is configured and running properly")
-            
-            return {
-                "status": "ok",
-                "message": "\n".join(status_lines)
-            }
+                hint = "✅ Scheduler healthy"
+
+            lines = [
+                f"Scheduler: {thread_status}  |  Now: {now_str}",
+                "Schedule:",
+                *cron_lines,
+                f"Queued run: {'yes' if _scheduler_pending_run else 'no'}  |  Check: {check_line}",
+                hint,
+            ]
+            return {"status": "ok", "message": "\n".join(lines)}
             
         except Exception as e:
             logger.error(f"Error checking scheduler status: {e}", exc_info=True)
@@ -2261,6 +2804,10 @@ class Plugin:
         stream_id = stream_data.get('stream_id', 'unknown')
         last_error = "Unknown error"
         last_error_type = "Other"
+
+        # Honor rate-limit cooldown for every probe (covers sequential, parallel,
+        # and retry call sites without each having to remember to call it).
+        self._rate_limit_guard.wait_if_throttled(logger, self._stop_event)
 
         # Get probe timeout early for use in default return
         probe_timeout = settings.get('probe_timeout', 20) if settings else 20
@@ -2546,6 +3093,10 @@ class Plugin:
                         last_error_type = '404 Not Found'
                     elif '403' in error_output or 'forbidden' in error_lower:
                         last_error_type = '403 Forbidden'
+                    elif ('too many requests' in error_lower
+                          or 'rate limit' in error_lower
+                          or re.search(r'\b429\b', error_output)):
+                        last_error_type = 'Rate Limited'
                     elif '500' in error_output or 'internal server error' in error_lower:
                         last_error_type = 'Server Error'
                     elif 'connection refused' in error_lower:
@@ -2574,11 +3125,22 @@ class Plugin:
                 logger.debug(f"Channel '{channel_name}' stream check failed. Retrying ({attempt+1}/{retries})...")
                 time.sleep(1)
 
-        # Log final result once if stream is dead after all attempts
-        logger.info(f"✗ '{channel_name}' DEAD - {last_error_type}")
-
         # Mask URL in error message before returning
         masked_error = self._mask_url_in_error(last_error, url, stream_id)
+
+        # Rate-limited responses are not real failures — classify as Skipped so
+        # destructive actions (rename/move/delete) leave the stream alone, and
+        # notify the rate-limit guard to back off subsequent checks.
+        if last_error_type == 'Rate Limited':
+            self._rate_limit_guard.record_hit(logger)
+            logger.info(f"⤼ '{channel_name}' SKIPPED - Rate Limited (HTTP 429)")
+            default_return['status'] = 'Skipped'
+            default_return['error'] = masked_error
+            default_return['error_type'] = 'Rate Limited'
+            return default_return
+
+        # Log final result once if stream is dead after all attempts
+        logger.info(f"✗ '{channel_name}' DEAD - {last_error_type}")
 
         default_return['error'] = masked_error
         default_return['error_type'] = last_error_type

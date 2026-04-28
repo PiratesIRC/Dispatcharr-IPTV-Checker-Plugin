@@ -39,7 +39,9 @@ Before installing or using this plugin, it is **highly recommended** that you cr
 - **Enhanced Error Categorization:** Detailed error types (Timeout, 404, 403, Connection Refused, etc.)
 - **Webhook Notifications:** Send HTTP POST notifications after scheduled checks complete
 - **Auto-Delete Dead Channels:** Permanently remove dead channels with safety confirmation gate
-- **CSV Exports:** Export results with comprehensive statistics and URL masking
+- **CSV Exports:** Export results with comprehensive statistics and URL masking. Scheduled sessions always emit a CSV when the list completes (v1.26.1181025+).
+- **Adaptive Rate-Limit Guard:** Detects upstream HTTP 429 responses, classifies them as **Skipped (Rate Limited)** instead of Dead so destructive actions never act on a throttled stream, and applies an exponentially-doubling cooldown when 429s spike (v1.26.1181025+). The cooldown counter is shared across the whole container — Dispatcharr's multiple worker processes can no longer reset it independently (v1.26.1181126+).
+- **Single-Scheduler Election:** Dispatcharr runs ~9 separate Python processes; a file-based PID lock at `/data/iptv_checker_scheduler.pid` ensures exactly one of them hosts the cron scheduler. Prior versions could fire each cron N times in parallel (v1.26.1181126+).
 
 ## Requirements
 
@@ -144,8 +146,12 @@ To update the plugin:
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| Scheduled Check Times | string | *(empty)* | Cron expression (e.g., `0 4 * * *` for daily at 4 AM) |
+| Scheduled Check Times | string | *(empty)* | Cron expression (e.g., `0 4 * * *` for daily at 4 AM). When **Use Windowed Schedule** is on, this becomes the window **start** trigger. |
 | Scheduler Timezone | select | `America/Chicago` | Timezone for the scheduler |
+| Use Windowed Schedule | boolean | false | When on, each cron-fire opens a run window. The check runs until the configured end-of-window, then halts cleanly between streams. The next time the window opens, the run **resumes** from where it left off — already-checked streams are skipped. |
+| Window End Mode | select | `duration` | `duration` = run for N hours; `time` = run until a specific HH:MM (wraps past midnight if earlier than the start). |
+| Window Duration (hours) | number | 4 | Used when Window End Mode = duration. Decimals allowed (e.g. 3.5). |
+| Window End Time | string | `04:00` | Used when Window End Mode = time. 24-hour format in the Scheduler Timezone above. |
 | Export CSV for Scheduled Checks | boolean | false | Auto-export results to CSV after scheduled checks |
 | Rename Dead Channels | boolean | false | Auto-rename dead channels after scheduled checks |
 | Rename Low Framerate Channels | boolean | false | Auto-rename slow channels after scheduled checks |
@@ -253,6 +259,28 @@ Use shell-style wildcards in the Group(s) to Check field:
 - **Timezone Aware:** Schedules run according to your local timezone
 - **Post-Check Automation:** Chain any combination of rename, move, delete, export, and webhook actions
 - **Conflict Prevention:** Scheduler queues jobs if a manual check is already running
+
+#### Windowed Schedules with Resume
+
+For overnight or off-peak runs, enable **Use Windowed Schedule**. The cron expression becomes the window **start**; the check halts cleanly when the window closes and resumes from the same place the next time the window opens.
+
+**Example — Sun–Thu, 00:00 → 04:00 CST:**
+
+| Setting | Value |
+|---|---|
+| Scheduled Check Times | `0 0 * * 0-4` |
+| Scheduler Timezone | `America/Chicago` |
+| Use Windowed Schedule | ✅ on |
+| Window End Mode | `duration` |
+| Window Duration (hours) | `4` |
+
+What happens:
+
+- The window opens at midnight Sun–Thu and runs for 4 hours.
+- Per-stream progress is persisted to `/data/iptv_checker_pending_resume.json`.
+- If the window closes before the channel list is finished, post-check actions (rename / move / delete / webhook) are **deferred** to the window that completes the list.
+- If the container restarts mid-window, the original window end is preserved and the check resumes immediately rather than waiting for the next cron fire.
+- Click **Reset Window Progress** to wipe pending state and start fresh on the next window.
 
 ### Metadata Synchronization
 - **Database Sync:** Automatically updates Dispatcharr with technical stream details from FFprobe analysis

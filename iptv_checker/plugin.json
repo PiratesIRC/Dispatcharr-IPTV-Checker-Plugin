@@ -1,13 +1,21 @@
 {
   "name": "IPTV Checker",
-  "version": "0.8.0",
+  "version": "1.26.1181126",
   "description": "A Dispatcharr Plugin that goes through a playlist to check IPTV channels",
   "author": "PiratesIRC",
+  "logo": "logo.png",
+  "icon": "logo.png",
   "license": "MIT",
   "repo_url": "https://github.com/PiratesIRC/Dispatcharr-IPTV-Checker-Plugin",
   "min_dispatcharr_version": "v0.20.0",
   "help_url": "https://github.com/PiratesIRC/Dispatcharr-IPTV-Checker-Plugin",
   "fields": [
+    {
+      "id": "_section_scope",
+      "label": "\ud83d\udce5 Group Selection",
+      "type": "info",
+      "description": "Which Dispatcharr groups to check and whether to include backup streams."
+    },
     {
       "id": "group_names",
       "label": "\ud83d\udcc2 Group(s) to Check (comma-separated, wildcards supported)",
@@ -21,6 +29,19 @@
       "type": "boolean",
       "default": true,
       "help_text": "Check all alternative/backup streams for each channel in addition to the primary stream. This will significantly increase check time."
+    },
+    {
+      "id": "only_visible_channels",
+      "label": "\ud83d\udc41\ufe0f Only Check Visible Channels",
+      "type": "boolean",
+      "default": false,
+      "help_text": "Only check channels that are enabled (visible) in at least one Channel Profile. Channels disabled in every profile (or not assigned to any profile) are skipped. Useful for ignoring hidden/archived channels."
+    },
+    {
+      "id": "_section_check_behavior",
+      "label": "\ud83d\udd0d Check Behavior",
+      "type": "info",
+      "description": "Timeouts, retries, concurrency, cooldown, and ffprobe analysis flags. Keep worker count below your provider's concurrent-connection limit."
     },
     {
       "id": "timeout",
@@ -44,43 +65,6 @@
       "help_text": "Number of times to retry checking a stream if it appears to be dead. Default: 3"
     },
     {
-      "id": "dead_rename_format",
-      "label": "\ud83d\udc80 Dead Channel Rename Format",
-      "type": "string",
-      "default": "{name} [DEAD]",
-      "placeholder": "[DEAD] {name}",
-      "help_text": "Format for renaming dead channels. Use {name} as placeholder for the original channel name. Examples: '[DEAD] {name}', '{name} [DEAD]', '[X] {name} [DEAD]'"
-    },
-    {
-      "id": "move_to_group_name",
-      "label": "\u26b0\ufe0f Move Dead Channels to Group",
-      "type": "string",
-      "default": "Graveyard",
-      "help_text": "Enter the name for the group to move dead channels into."
-    },
-    {
-      "id": "low_framerate_rename_format",
-      "label": "\ud83d\udc0c Low Framerate Rename Format - Less than 30fps",
-      "type": "string",
-      "default": "{name} [Slow]",
-      "placeholder": "[SLOW] {name}",
-      "help_text": "Format for renaming low framerate channels. Use {name} as placeholder for the original channel name."
-    },
-    {
-      "id": "move_low_framerate_group",
-      "label": "\ud83d\udcc1 Move Low Framerate Channels to Group",
-      "type": "string",
-      "default": "Slow",
-      "help_text": "Enter the name for the group to move low framerate channels into."
-    },
-    {
-      "id": "video_format_suffixes",
-      "label": "\ud83c\udfac Add Video Format Suffixes - [UHD], [FHD], [HD], [SD], [Unknown]",
-      "type": "string",
-      "default": "UHD, FHD, HD, SD, Unknown",
-      "help_text": "A comma-separated list of formats to add as a suffix (e.g., [HD]) to channel names."
-    },
-    {
       "id": "enable_parallel_checking",
       "label": "\u26a1 Enable Parallel Stream Checking",
       "type": "boolean",
@@ -92,7 +76,14 @@
       "label": "\ud83d\udc77 Number of Parallel Workers",
       "type": "number",
       "default": 2,
-      "help_text": "Number of streams to check simultaneously when parallel checking is enabled. Default: 2. Higher values = faster but more resource-intensive."
+      "help_text": "Number of streams to check simultaneously when parallel checking is enabled. Default: 2. Higher values = faster but more resource-intensive. Keep BELOW your provider's max concurrent connection limit."
+    },
+    {
+      "id": "stream_check_delay",
+      "label": "\u23f3 Per-Stream Cooldown (seconds)",
+      "type": "number",
+      "default": 2,
+      "help_text": "Cooldown each worker waits after finishing a stream check, before picking up the next. Prevents provider rate-limiting / slot-reuse errors when your account has a concurrent-connection limit. Default: 2. Retry passes use 3x this value."
     },
     {
       "id": "ffprobe_flags",
@@ -110,12 +101,73 @@
       "help_text": "Duration to analyze stream when using -show_frames or -show_packets. Longer duration = more accurate bitrate/GOP analysis but slower checks. Default: 5 seconds"
     },
     {
-      "id": "ffprobe_path",
-      "label": "\ud83d\udccd FFprobe Path",
+      "id": "streamlink_hosts",
+      "label": "\u23fc Streamlink-Only Hosts (skip ffprobe)",
       "type": "string",
-      "default": "/usr/local/bin/ffprobe",
-      "placeholder": "/usr/local/bin/ffprobe",
-      "help_text": "Full path to the ffprobe executable. Default: /usr/local/bin/ffprobe (Dispatcharr's default location)"
+      "default": "youtube.com, youtu.be, twitch.tv, kick.com",
+      "placeholder": "youtube.com, twitch.tv",
+      "help_text": "Comma-separated host suffixes that ffprobe cannot validate (served via Streamlink). Streams on these hosts are marked 'Skipped' instead of 'Dead' so rename/move/delete actions leave them alone. Use full domains (e.g. 'youtube.com', not 'youtube'). Leave blank to use the defaults."
+    },
+    {
+      "id": "_section_dead",
+      "label": "\u270f\ufe0f Dead Channel Handling",
+      "type": "info",
+      "description": "How to rename and relocate channels that fail every stream check."
+    },
+    {
+      "id": "dead_rename_format",
+      "label": "\ud83d\udc80 Dead Channel Rename Format",
+      "type": "string",
+      "default": "{name} [DEAD]",
+      "placeholder": "[DEAD] {name}",
+      "help_text": "Format for renaming dead channels. Use {name} as placeholder for the original channel name. Examples: '[DEAD] {name}', '{name} [DEAD]', '[X] {name} [DEAD]'"
+    },
+    {
+      "id": "move_to_group_name",
+      "label": "\u26b0\ufe0f Move Dead Channels to Group",
+      "type": "string",
+      "default": "Graveyard",
+      "help_text": "Enter the name for the group to move dead channels into."
+    },
+    {
+      "id": "_section_low_fps",
+      "label": "\ud83d\udc0c Low Framerate Handling",
+      "type": "info",
+      "description": "How to rename and relocate channels whose streams deliver under 30 fps."
+    },
+    {
+      "id": "low_framerate_rename_format",
+      "label": "\ud83d\udc0c Low Framerate Rename Format - Less than 30fps",
+      "type": "string",
+      "default": "{name} [Slow]",
+      "placeholder": "[SLOW] {name}",
+      "help_text": "Format for renaming low framerate channels. Use {name} as placeholder for the original channel name."
+    },
+    {
+      "id": "move_low_framerate_group",
+      "label": "\ud83d\udcc1 Move Low Framerate Channels to Group",
+      "type": "string",
+      "default": "Slow",
+      "help_text": "Enter the name for the group to move low framerate channels into."
+    },
+    {
+      "id": "_section_format",
+      "label": "\ud83c\udfac Format Suffixes",
+      "type": "info",
+      "description": "Append a resolution tag (e.g. [HD], [FHD]) to channel names based on probed format."
+    },
+    {
+      "id": "video_format_suffixes",
+      "label": "\ud83c\udfac Add Video Format Suffixes - [UHD], [FHD], [HD], [SD], [Unknown]",
+      "type": "string",
+      "default": "UHD, FHD, HD, SD, Unknown",
+      "help_text": "A comma-separated list of formats to add as a suffix (e.g., [HD]) to channel names."
+    },
+    {
+      "id": "_section_webhook",
+      "label": "\ud83d\udd17 Webhook",
+      "type": "info",
+      "description": "Optional HTTP POST notification after every stream check completes."
     },
     {
       "id": "webhook_url",
@@ -126,12 +178,18 @@
       "help_text": "URL to send an HTTP POST request to after stream checks complete. Payload includes check summary (total, alive, dead counts). Leave blank to disable."
     },
     {
+      "id": "_section_scheduling",
+      "label": "\u23f0 Scheduling & Automation",
+      "type": "info",
+      "description": "Run checks on a cron schedule and optionally apply rename / move / delete / webhook actions automatically afterwards."
+    },
+    {
       "id": "scheduled_times",
       "label": "\u23f0 Scheduled Check Times (Cron Format)",
       "type": "string",
       "default": "",
       "placeholder": "0 4 * * *,0 3 1 * *",
-      "help_text": "Comma-separated cron expressions. Format: 'minute hour day month weekday' (weekday: 0=Sunday, 6=Saturday). Examples: '0 4 * * *' (daily at 4 AM), '0 3 * * 0' (Sundays at 3 AM), '0 2 */2 * *' (every 2 days at 2 AM). Leave blank to disable scheduling."
+      "help_text": "Comma-separated cron expressions. Format: 'minute hour day month weekday' (weekday: 0=Sunday, 6=Saturday). Examples: '0 4 * * *' (daily at 4 AM), '0 3 * * 0' (Sundays at 3 AM), '0 2 */2 * *' (every 2 days at 2 AM). Leave blank to disable scheduling. 💾 After editing this field, click \"💾 Save Schedule\" below to apply the new schedule."
     },
     {
       "id": "scheduler_timezone",
@@ -1391,6 +1449,39 @@
       "help_text": "Timezone for scheduled checks. All IANA timezone names are supported."
     },
     {
+      "id": "schedule_window_enabled",
+      "label": "🪟 Use Windowed Schedule (run only during a time window)",
+      "type": "boolean",
+      "default": false,
+      "help_text": "When on, your Scheduled Times above mark the START of a run window. The check runs until the configured end-time / duration, then halts cleanly between streams. The next time the window opens it RESUMES from the same point (channels already checked are skipped). Group selection, alternative-stream and visible-only settings are read fresh at each window fire."
+    },
+    {
+      "id": "schedule_end_mode",
+      "label": "🛑 Window End Mode",
+      "type": "select",
+      "default": "duration",
+      "options": [
+        { "label": "Run for a fixed duration (hours)", "value": "duration" },
+        { "label": "Run until a specific time (HH:MM)", "value": "time" }
+      ],
+      "help_text": "Choose how the window ends. Duration counts forward from the cron-fire time. Time mode supports past-midnight wrap (e.g. start 22:00, end 02:00)."
+    },
+    {
+      "id": "schedule_duration_hours",
+      "label": "⏳ Window Duration (hours)",
+      "type": "number",
+      "default": 4,
+      "help_text": "Used when Window End Mode = duration. Decimals allowed (e.g. 3.5). Default: 4 hours."
+    },
+    {
+      "id": "schedule_end_time",
+      "label": "🕓 Window End Time (HH:MM, scheduler timezone)",
+      "type": "string",
+      "default": "04:00",
+      "placeholder": "04:00",
+      "help_text": "Used when Window End Mode = time. 24-hour format in the Scheduler Timezone above. If earlier than the start time, the window is treated as wrapping past midnight."
+    },
+    {
       "id": "scheduler_export_csv",
       "label": "\ud83d\udcbe Export CSV for Scheduled Checks",
       "type": "boolean",
@@ -1452,69 +1543,119 @@
       "type": "boolean",
       "default": false,
       "help_text": "Send an HTTP POST notification to the Webhook URL above after each scheduled check finishes. The payload includes total, alive, and dead channel counts. Useful for alerting Discord, Slack, or other external services. Requires a Webhook URL to be configured."
+    },
+    {
+      "id": "_section_advanced",
+      "label": "\u2699\ufe0f Advanced",
+      "type": "info",
+      "description": "Paths and low-level overrides. Change only if your environment differs from the Dispatcharr defaults."
+    },
+    {
+      "id": "ffprobe_path",
+      "label": "\ud83d\udccd FFprobe Path",
+      "type": "string",
+      "default": "/usr/local/bin/ffprobe",
+      "placeholder": "/usr/local/bin/ffprobe",
+      "help_text": "Full path to the ffprobe executable. Default: /usr/local/bin/ffprobe (Dispatcharr's default location)"
     }
   ],
   "actions": [
     {
       "id": "validate_settings",
       "label": "\u2705 Validate Settings",
-      "description": "Validate all plugin settings (database connectivity, groups, etc.)."
+      "description": "Validate all plugin settings (database connectivity, groups, etc.).",
+      "button_variant": "outline",
+      "button_color": "blue",
+      "button_label": "\u2705 Validate"
     },
     {
       "id": "update_schedule",
       "label": "\ud83d\udcc5 Update Schedule",
-      "description": "Apply the current schedule settings. If scheduled times are empty, the schedule will be cleared and scheduler will be stopped."
+      "description": "Apply the current schedule settings. If scheduled times are empty, the schedule will be cleared and scheduler will be stopped.",
+      "button_variant": "filled",
+      "button_color": "green",
+      "button_label": "\ud83d\udcbe Save Schedule"
+    },
+    {
+      "id": "reset_progress",
+      "label": "\ud83d\udd04 Reset Window Progress",
+      "description": "Clear the windowed-schedule resume state. The next window will start fresh from the full channel list instead of resuming where the last window left off.",
+      "button_variant": "outline",
+      "button_color": "orange",
+      "button_label": "\ud83d\udd04 Reset Progress"
     },
     {
       "id": "check_scheduler_status",
       "label": "\ud83d\udd0d Check Scheduler Status",
-      "description": "Display scheduler thread status and diagnostic information."
+      "description": "Display scheduler thread status and diagnostic information.",
+      "button_variant": "outline",
+      "button_color": "blue",
+      "button_label": "\ud83e\ude7a Check Scheduler"
     },
     {
       "id": "load_groups",
       "label": "\ud83d\udce5 Load Group(s)",
-      "description": "Load channels from the specified Dispatcharr group(s) (or all groups if blank)."
+      "description": "Load channels from the specified Dispatcharr group(s) (or all groups if blank).",
+      "button_variant": "filled",
+      "button_color": "green",
+      "button_label": "\ud83d\udce5 Load Group(s)"
     },
     {
       "id": "check_streams",
       "label": "\u25b6\ufe0f Start Stream Check",
       "description": "Start checking stream status and quality for all loaded channels.",
       "button_variant": "filled",
-      "button_color": "blue"
+      "button_color": "green",
+      "button_label": "\u25b6\ufe0f Start Stream Check"
     },
     {
       "id": "view_progress",
       "label": "\ud83d\udcca View Check Progress",
-      "description": "View the current progress and ETA of the running stream check."
+      "description": "View the current progress and ETA of the running stream check.",
+      "button_variant": "outline",
+      "button_color": "blue",
+      "button_label": "\ud83d\udcca View Progress"
     },
     {
       "id": "cancel_check",
       "label": "\ud83d\uded1 Cancel Stream Check",
       "description": "Cancel the currently running stream check.",
-      "button_color": "red"
+      "button_color": "orange",
+      "button_variant": "outline",
+      "button_label": "\ud83d\uded1 Cancel Check",
+      "confirm": {
+        "message": "Cancel the in-progress stream check? Streams already probed are kept; queued and in-flight streams are aborted (ffprobe currently running may take a few seconds to exit)."
+      }
     },
     {
       "id": "view_results",
       "label": "\ud83d\udccb View Last Results",
-      "description": "View summary of the last completed stream check."
+      "description": "View summary of the last completed stream check.",
+      "button_variant": "outline",
+      "button_color": "blue",
+      "button_label": "\ud83d\udccb View Last Results"
     },
     {
       "id": "rename_channels",
       "label": "\u270f\ufe0f Rename Dead Channels",
       "description": "Rename all channels marked as Dead in the last check using the configured rename format.",
-      "button_color": "orange",
+      "button_color": "red",
       "confirm": {
         "message": "This will rename dead channels. This action is irreversible. Continue?"
-      }
+      },
+      "button_variant": "filled",
+      "button_label": "\u270f\ufe0f Rename Dead"
     },
     {
       "id": "move_dead_channels",
       "label": "\u26b0\ufe0f Move Dead Channels to Group",
       "description": "Moves all channels marked as Dead in the last check to the specified group.",
-      "button_color": "orange",
+      "button_color": "red",
       "confirm": {
         "message": "This will move dead channels to the configured group. This action is irreversible. Continue?"
-      }
+      },
+      "button_variant": "filled",
+      "button_label": "\u26b0\ufe0f Move Dead"
     },
     {
       "id": "rename_low_framerate_channels",
@@ -1522,7 +1663,10 @@
       "description": "Rename channels with streams under 30fps using the configured rename format.",
       "confirm": {
         "message": "This will rename low framerate channels. This action is irreversible. Continue?"
-      }
+      },
+      "button_variant": "filled",
+      "button_color": "red",
+      "button_label": "\ud83d\udc0c Rename Low FPS"
     },
     {
       "id": "move_low_framerate_channels",
@@ -1530,7 +1674,10 @@
       "description": "Moves channels with streams under 30fps to the specified group.",
       "confirm": {
         "message": "This will move low framerate channels to the configured group. This action is irreversible. Continue?"
-      }
+      },
+      "button_variant": "filled",
+      "button_color": "red",
+      "button_label": "\ud83d\udcc1 Move Low FPS"
     },
     {
       "id": "add_video_format_suffix",
@@ -1538,22 +1685,34 @@
       "description": "Adds a format suffix like [HD] or [FHD] to alive channel names.",
       "confirm": {
         "message": "This will rename channels based on the last check. This action is irreversible. Continue?"
-      }
+      },
+      "button_variant": "filled",
+      "button_color": "red",
+      "button_label": "\ud83c\udfac Add Format Suffix"
     },
     {
       "id": "view_table",
       "label": "\ud83d\udcca View Results Table",
-      "description": "Display detailed results in table format. (Copy/paste into text editor for better formatting.)"
+      "description": "Display detailed results in table format. (Copy/paste into text editor for better formatting.)",
+      "button_variant": "outline",
+      "button_color": "blue",
+      "button_label": "\ud83d\udcca View Results Table"
     },
     {
       "id": "export_results",
       "label": "\ud83d\udcbe Export Results to CSV",
-      "description": "Export the last check results to a CSV file. Will be saved in Docker container: /data/exports/"
+      "description": "Export the last check results to a CSV file. Will be saved in Docker container: /data/exports/",
+      "button_variant": "filled",
+      "button_color": "green",
+      "button_label": "\ud83d\udcbe Export CSV"
     },
     {
       "id": "cleanup_orphaned_tasks",
       "label": "\ud83e\uddf9 Cleanup Orphaned Tasks",
-      "description": "Remove any orphaned Celery periodic tasks from old plugin versions."
+      "description": "Remove any orphaned Celery periodic tasks from old plugin versions.",
+      "button_variant": "outline",
+      "button_color": "orange",
+      "button_label": "\ud83e\uddf9 Cleanup Orphaned Tasks"
     },
     {
       "id": "clear_csv_exports",
@@ -1562,7 +1721,9 @@
       "button_color": "red",
       "confirm": {
         "message": "This will delete all CSV files in /data/exports/. This action cannot be undone. Continue?"
-      }
+      },
+      "button_variant": "filled",
+      "button_label": "\ud83d\uddd1\ufe0f Clear CSV Exports"
     },
     {
       "id": "delete_dead_channels",
@@ -1571,7 +1732,9 @@
       "button_color": "red",
       "confirm": {
         "message": "WARNING: This will PERMANENTLY DELETE dead channels from the database. This action CANNOT be undone. The 'Auto-Delete Confirmation' field must contain DELETE for this to work. Continue?"
-      }
+      },
+      "button_variant": "filled",
+      "button_label": "\ud83d\uddd1\ufe0f Delete Dead"
     }
   ]
 }
