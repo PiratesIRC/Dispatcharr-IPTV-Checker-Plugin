@@ -218,7 +218,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.1181126"
+    version = "1.26.1191257"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -257,14 +257,34 @@ class Plugin:
         every other process no-ops. Within the elected process, the module-
         level lock+flag still de-dupe Django's per-process plugin reloads.
         """
-        global _scheduler_initialized
+        global _scheduler_initialized, _bg_scheduler_thread, _scheduler_stop_event
         with _scheduler_init_lock:
             if _scheduler_initialized:
                 return
+            # Module-reload recovery: Django/uwsgi can re-import this module,
+            # which resets _scheduler_initialized, _bg_scheduler_thread, and
+            # _scheduler_stop_event to fresh values even though a prior
+            # iptv-checker-scheduler thread is still alive in this process.
+            # If we don't catch that here, _acquire_scheduler_lock will see
+            # its own PID in the lock file, fall through, "re-acquire," and
+            # spawn a duplicate thread (the bug behind the 2026-04-29 incident
+            # where one PID started 3 schedulers and 5 parallel windowed runs
+            # hammered the provider into rate-limit cooldowns). Recover the
+            # orphan's stop event into the new module's global so future
+            # _stop_background_scheduler calls actually reach it.
+            for t in threading.enumerate():
+                if t.name == "iptv-checker-scheduler" and t.is_alive():
+                    recovered = getattr(t, "_iptv_stop_event", None)
+                    if recovered is not None:
+                        _scheduler_stop_event = recovered
+                    _bg_scheduler_thread = t
+                    LOGGER.info(f"Scheduler already running in this process (thread id {t.ident}); skipping bootstrap.")
+                    _scheduler_initialized = True
+                    return
             try:
                 self._normalize_stale_progress()
                 if not self._acquire_scheduler_lock():
-                    _scheduler_initialized = True  # mark so this process stops trying
+                    _scheduler_initialized = True  # not elected; stop trying in this process
                     return
                 from apps.plugins.models import PluginConfig as DBPluginConfig
                 cfg = DBPluginConfig.objects.filter(key=self.key).first()
@@ -276,6 +296,10 @@ class Plugin:
                     self._maybe_resume_after_restart(cfg.settings)
                 _scheduler_initialized = True
             except Exception as e:
+                # Leave _scheduler_initialized False so a later Plugin() in
+                # this module retries — the elected process should not get
+                # stuck without a scheduler thread because of a transient
+                # bootstrap failure (e.g. DB momentarily unavailable).
                 LOGGER.warning(f"Could not load settings for scheduler on init: {e}")
 
     def _acquire_scheduler_lock(self):
@@ -773,9 +797,27 @@ class Plugin:
             LOGGER.error("Scheduler requires pytz library but it is not installed")
             return
         
+        # Module-reload recovery: if a prior module-instance left an
+        # iptv-checker-scheduler thread alive in this process, recover its
+        # stop event into the current module's global before stopping it.
+        # Otherwise our _stop_background_scheduler would .set() a fresh Event
+        # the orphan never observes, and we'd race a second thread on top of
+        # it. Done before _stop_background_scheduler so that call can
+        # actually signal the orphan.
+        global _scheduler_stop_event
+        for t in threading.enumerate():
+            if t.name == "iptv-checker-scheduler" and t.is_alive():
+                recovered = getattr(t, "_iptv_stop_event", None)
+                if recovered is not None:
+                    _scheduler_stop_event = recovered
+                # Rebind so _stop_background_scheduler below can find and
+                # join the orphan (it gates on _bg_scheduler_thread.is_alive()).
+                _bg_scheduler_thread = t
+                break
+
         # Stop any existing scheduler first
         self._stop_background_scheduler()
-        
+
         # Get and validate schedule configuration
         scheduled_times_str = settings.get("scheduled_times", "")
         if not scheduled_times_str:
@@ -858,12 +900,15 @@ class Plugin:
             
             LOGGER.info("Scheduler stopped")
         
-        # Start the scheduler thread
+        # Start the scheduler thread. Attach the stop event as an attribute
+        # so a re-imported module-instance can discover and reuse it via
+        # threading.enumerate() (see _init_scheduler / top of this method).
         _bg_scheduler_thread = threading.Thread(
             target=scheduler_loop,
             name="iptv-checker-scheduler",
             daemon=True
         )
+        _bg_scheduler_thread._iptv_stop_event = _scheduler_stop_event
         _bg_scheduler_thread.start()
         LOGGER.info("Background scheduler thread started")
     
@@ -944,23 +989,24 @@ class Plugin:
             
             LOGGER.info("⏰ SCHEDULED: Stream check completed")
 
-            # In window mode, only run post-actions when the channel list completed
-            # (pending_resume.json deleted = nothing left). Otherwise defer until the
-            # next window finishes the remaining streams.
-            if is_window and self._has_pending_resume():
-                LOGGER.info("⏰ WINDOW: closed mid-list — post-actions deferred to next window")
-                return
-
-            # Step 3: Always export CSV at the end of a scheduled session.
-            # The CSV is the authoritative audit record (especially when
-            # destructive actions follow), so it runs unconditionally rather
-            # than being gated on scheduler_export_csv.
+            # Always export a CSV when a scheduled session ends — including
+            # partial windows that close mid-list. The CSV is the audit record
+            # of what was actually probed in this run; deferring it would lose
+            # the per-window evidence (and the next window overwrites
+            # results.json with its own slice).
             LOGGER.info("⏰ SCHEDULED: Exporting results to CSV...")
             try:
                 export_result = self.export_results_action(settings, scheduled_logger)
                 LOGGER.info(f"⏰ SCHEDULED: {export_result.get('message')}")
             except Exception as e:
                 LOGGER.error(f"⏰ SCHEDULED: CSV export failed: {e}", exc_info=True)
+
+            # Destructive post-actions (rename/move/delete/webhook) only run
+            # on the window that finishes the channel list. If pending_resume
+            # is still present, defer them to the next window.
+            if is_window and self._has_pending_resume():
+                LOGGER.info("⏰ WINDOW: closed mid-list — post-actions deferred to next window")
+                return
             
             # Step 4: Rename dead channels if enabled
             if settings.get('scheduler_rename_dead_channels', False):

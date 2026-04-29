@@ -39,9 +39,9 @@ Before installing or using this plugin, it is **highly recommended** that you cr
 - **Enhanced Error Categorization:** Detailed error types (Timeout, 404, 403, Connection Refused, etc.)
 - **Webhook Notifications:** Send HTTP POST notifications after scheduled checks complete
 - **Auto-Delete Dead Channels:** Permanently remove dead channels with safety confirmation gate
-- **CSV Exports:** Export results with comprehensive statistics and URL masking. Scheduled sessions always emit a CSV when the list completes (v1.26.1181025+).
+- **CSV Exports:** Export results with comprehensive statistics and URL masking. Scheduled sessions emit a CSV every time a run ends — including windowed runs that close mid-list — so each window has its own audit record (v1.26.1191257+; v1.26.1181025–v1.26.1191249 only wrote on the window that finished the list).
 - **Adaptive Rate-Limit Guard:** Detects upstream HTTP 429 responses, classifies them as **Skipped (Rate Limited)** instead of Dead so destructive actions never act on a throttled stream, and applies an exponentially-doubling cooldown when 429s spike (v1.26.1181025+). The cooldown counter is shared across the whole container — Dispatcharr's multiple worker processes can no longer reset it independently (v1.26.1181126+).
-- **Single-Scheduler Election:** Dispatcharr runs ~9 separate Python processes; a file-based PID lock at `/data/iptv_checker_scheduler.pid` ensures exactly one of them hosts the cron scheduler. Prior versions could fire each cron N times in parallel (v1.26.1181126+).
+- **Single-Scheduler Election:** Dispatcharr runs ~9 separate Python processes; a file-based PID lock at `/data/iptv_checker_scheduler.pid` ensures exactly one of them hosts the cron scheduler. Prior versions could fire each cron N times in parallel (v1.26.1181126+). Module-reload duplicate-thread protection added in v1.26.1191257 (Django/uwsgi could re-import the plugin module within the elected process and spawn additional scheduler threads, defeating the PID lock).
 
 ## Requirements
 
