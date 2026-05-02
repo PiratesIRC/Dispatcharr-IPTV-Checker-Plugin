@@ -1,6 +1,6 @@
 {
   "name": "IPTV Checker",
-  "version": "1.26.1221035",
+  "version": "1.26.1221101",
   "description": "A Dispatcharr Plugin that goes through a playlist to check IPTV channels",
   "author": "PiratesIRC",
   "logo": "logo.png",
@@ -97,8 +97,8 @@
       "id": "ffprobe_analysis_duration",
       "label": "\u23f1\ufe0f FFprobe Analysis Duration (seconds)",
       "type": "number",
-      "default": 5,
-      "help_text": "Duration to analyze stream when using -show_frames or -show_packets. Longer duration = more accurate bitrate/GOP analysis but slower checks. Default: 5 seconds"
+      "default": 8,
+      "help_text": "Duration to analyze stream when using -show_frames or -show_packets. Longer duration = more accurate bitrate/GOP analysis but slower checks. Probes that capture fewer than 30 video packets leave video_bitrate unset, so 8s gives slow-start streams enough room to clear the threshold. Default: 8 seconds"
     },
     {
       "id": "streamlink_hosts",
