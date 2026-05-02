@@ -218,7 +218,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.1220951"
+    version = "1.26.1221035"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):

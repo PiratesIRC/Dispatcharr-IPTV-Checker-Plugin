@@ -81,6 +81,15 @@ class PluginConfig:
     SCHEDULER_ERROR_WAIT = 60  # Wait 60s if error occurs
     SCHEDULER_STOP_TIMEOUT = 5  # Max wait for thread to stop
 
+    # --- Bitrate calc ---
+    # Packet-based video_bitrate is the average over the sampled packets.
+    # With very few packets (e.g. probe captured 2), the estimate is dominated
+    # by per-packet noise and can spike to wildly inflated values (observed:
+    # 22924 kbps from 2 packets). Below this threshold we leave video_bitrate
+    # unset rather than persist a misleading number — the next probe will get
+    # a fresh shot. 30 ≈ 1s of 30fps video; healthy probes return 200-400.
+    MIN_PACKETS_FOR_BITRATE_CALC = 30
+
     # --- ETA Estimation ---
     # Fallback only; _estimate_check_seconds models a realistic mix.
     ESTIMATED_SECONDS_PER_STREAM = 10
@@ -219,7 +228,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.1220951"
+    version = "1.26.1221035"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -3113,11 +3122,12 @@ class Plugin:
                             if not video_bitrate:
                                 video_idx = video_stream.get('index')
                                 video_packets = [p for p in packets if p.get('stream_index') == video_idx] or packets
-                                total_size = sum(int(p.get('size', 0)) for p in video_packets)
-                                total_duration = sum(float(p.get('duration_time') or 0) for p in video_packets)
-                                if total_duration > 0:
-                                    video_bitrate = (total_size * 8) / (total_duration * 1000)
-                                    ffprobe_extra_data['calculated_bitrate_kbps'] = video_bitrate
+                                if len(video_packets) >= PluginConfig.MIN_PACKETS_FOR_BITRATE_CALC:
+                                    total_size = sum(int(p.get('size', 0)) for p in video_packets)
+                                    total_duration = sum(float(p.get('duration_time') or 0) for p in video_packets)
+                                    if total_duration > 0:
+                                        video_bitrate = (total_size * 8) / (total_duration * 1000)
+                                        ffprobe_extra_data['calculated_bitrate_kbps'] = video_bitrate
 
                         # Round video_bitrate to nearest whole kbps before handing
                         # to Dispatcharr — the channel-menu UI displays it as an
