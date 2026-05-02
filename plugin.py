@@ -218,7 +218,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.1191257"
+    version = "1.26.1220951"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -2926,7 +2926,7 @@ class Plugin:
         max_attempts = 1 if skip_retries else (retries + 1)
 
         # Parse ffprobe flags from settings
-        ffprobe_flags_str = settings.get('ffprobe_flags', '-show_streams,-show_frames,-show_packets,-loglevel error') if settings else '-show_streams,-show_frames,-show_packets,-loglevel error'
+        ffprobe_flags_str = settings.get('ffprobe_flags', '-show_streams,-show_packets,-loglevel error') if settings else '-show_streams,-show_packets,-loglevel error'
         ffprobe_flags = [flag.strip() for flag in ffprobe_flags_str.split(',') if flag.strip()]
 
         # Get ffprobe path from settings

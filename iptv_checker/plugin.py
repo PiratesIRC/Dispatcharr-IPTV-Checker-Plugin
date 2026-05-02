@@ -72,6 +72,7 @@ class PluginConfig:
     PROGRESS_FILE = "/data/iptv_checker_progress.json"
     PENDING_RESUME_FILE = "/data/iptv_checker_pending_resume.json"
     SCHEDULER_LOCK_FILE = "/data/iptv_checker_scheduler.pid"
+    SCHEDULER_RELOAD_FLAG = "/data/iptv_checker_scheduler_reload.flag"
 
     # --- Scheduler ---
     DEFAULT_TIMEZONE = "America/Chicago"
@@ -218,7 +219,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.1181126"
+    version = "1.26.1220951"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -338,6 +339,28 @@ class Plugin:
         if won:
             LOGGER.info(f"Scheduler lock acquired by PID {my_pid}.")
         return won
+
+    def _owns_scheduler_lock(self):
+        """True iff this process is the elected scheduler holder.
+
+        Read-only check used by UI-triggered code paths (run(), update_schedule_action)
+        so non-elected uwsgi workers don't spawn rogue scheduler threads. A non-owner
+        that needs to reconfigure the scheduler should write SCHEDULER_RELOAD_FLAG
+        instead, which the owner's scheduler_loop polls each iteration.
+        """
+        try:
+            with open(PluginConfig.SCHEDULER_LOCK_FILE, 'r') as f:
+                return int(f.read().strip() or '0') == os.getpid()
+        except (OSError, ValueError):
+            return False
+
+    def _request_scheduler_reload(self):
+        """Signal the elected scheduler process to re-read settings from DB."""
+        try:
+            with open(PluginConfig.SCHEDULER_RELOAD_FLAG, 'w') as f:
+                f.write(str(time.time()))
+        except OSError as e:
+            LOGGER.warning(f"Could not write scheduler reload flag: {e}")
 
     def _normalize_stale_progress(self):
         """If progress.json claims a check is running at startup, clear it.
@@ -799,17 +822,43 @@ class Plugin:
         # Define the scheduler loop
         def scheduler_loop():
             global _scheduler_pending_run
-            nonlocal local_tz
+            nonlocal local_tz, tz_str, scheduled_times
             last_run = {}  # Track last run timestamp for each cron expression (to minute precision)
-            
+
             LOGGER.info(f"Scheduler started. Timezone: {tz_str}, Cron expressions: {scheduled_times}")
-            
+
             while not _scheduler_stop_event.is_set():
                 try:
+                    # Reload schedule from DB if a non-owner worker requested it
+                    # (UI "Update Schedule" handled in a different uwsgi process).
+                    if os.path.exists(PluginConfig.SCHEDULER_RELOAD_FLAG):
+                        try:
+                            os.remove(PluginConfig.SCHEDULER_RELOAD_FLAG)
+                        except OSError:
+                            pass
+                        fresh = self._fresh_settings(settings)
+                        new_times_str = (fresh.get("scheduled_times") or "").strip()
+                        new_times = self._parse_scheduled_times(new_times_str) if new_times_str else []
+                        new_tz_str = fresh.get("scheduler_timezone", PluginConfig.DEFAULT_TIMEZONE)
+                        try:
+                            new_tz = pytz.timezone(new_tz_str)
+                        except pytz.exceptions.UnknownTimeZoneError:
+                            new_tz_str = PluginConfig.DEFAULT_TIMEZONE
+                            new_tz = pytz.timezone(new_tz_str)
+                        if new_times != scheduled_times or new_tz_str != tz_str:
+                            LOGGER.info(
+                                f"Scheduler reloaded: tz={new_tz_str}, "
+                                f"cron={new_times if new_times else '(empty — idle)'}"
+                            )
+                            scheduled_times = new_times
+                            tz_str = new_tz_str
+                            local_tz = new_tz
+                            last_run = {}
+
                     now = datetime.now(local_tz)
                     # Truncate to minute precision for matching (ignore seconds)
                     current_minute = now.replace(second=0, microsecond=0)
-                    
+
                     for cron_expr in scheduled_times:
                         # Check if this cron expression matches the current time
                         if self._cron_matches(cron_expr, now):
@@ -944,23 +993,24 @@ class Plugin:
             
             LOGGER.info("⏰ SCHEDULED: Stream check completed")
 
-            # In window mode, only run post-actions when the channel list completed
-            # (pending_resume.json deleted = nothing left). Otherwise defer until the
-            # next window finishes the remaining streams.
-            if is_window and self._has_pending_resume():
-                LOGGER.info("⏰ WINDOW: closed mid-list — post-actions deferred to next window")
-                return
-
-            # Step 3: Always export CSV at the end of a scheduled session.
-            # The CSV is the authoritative audit record (especially when
-            # destructive actions follow), so it runs unconditionally rather
-            # than being gated on scheduler_export_csv.
+            # CSV export runs on every scheduled session, BEFORE the mid-list gate.
+            # The CSV is the authoritative audit record of what was probed in this
+            # window — it must be written even when the window closes mid-list,
+            # otherwise partial-window runs leave no on-disk trace. Wrapped in
+            # try/except so a CSV failure does not abort post-actions on full runs.
             LOGGER.info("⏰ SCHEDULED: Exporting results to CSV...")
             try:
                 export_result = self.export_results_action(settings, scheduled_logger)
                 LOGGER.info(f"⏰ SCHEDULED: {export_result.get('message')}")
             except Exception as e:
                 LOGGER.error(f"⏰ SCHEDULED: CSV export failed: {e}", exc_info=True)
+
+            # In window mode, only run post-actions when the channel list completed
+            # (pending_resume.json deleted = nothing left). Otherwise defer until the
+            # next window finishes the remaining streams.
+            if is_window and self._has_pending_resume():
+                LOGGER.info("⏰ WINDOW: closed mid-list — post-actions deferred to next window")
+                return
             
             # Step 4: Rename dead channels if enabled
             if settings.get('scheduler_rename_dead_channels', False):
@@ -1114,8 +1164,9 @@ class Plugin:
         logger = context.get("logger", LOGGER)
 
         try:
-            # Restart scheduler if scheduling settings may have changed
-            self._start_background_scheduler(settings)
+            # Scheduler lifecycle is owned by the elected process and managed via
+            # _init_scheduler + the SCHEDULER_RELOAD_FLAG. Non-owner workers must
+            # NOT spawn a thread here — that's how duplicate cron fires happen.
 
             # Add our filter to context logger to ensure all logs are prefixed
             if logger is not LOGGER and not any(isinstance(f, PluginNameFilter) for f in logger.filters):
@@ -1800,6 +1851,9 @@ class Plugin:
             # Process any remaining timeout retries
             retry_backoff = delay * 3
             while self.timeout_retry_queue:
+                if self._stop_event.is_set() or self._past_window_end():
+                    logger.info("⏰ WINDOW: end-of-window reached — abandoning final-flush retries")
+                    break
                 retry_stream = self.timeout_retry_queue.pop(0)
                 if retry_stream["retry_count"] < retries:
                     retry_stream["retry_count"] += 1
@@ -1952,6 +2006,14 @@ class Plugin:
                     for retry_pass in range(retries):
                         if not retry_streams or self._stop_event.is_set():
                             break
+                        # Honor the schedule window: once the window has closed,
+                        # do not start another retry pass — destructive actions
+                        # downstream are gated on window completion, not retry
+                        # exhaustion, and a 9s+probe loop here can run minutes
+                        # past window-end (observed 14m overrun on May 1).
+                        if self._past_window_end():
+                            logger.info("⏰ WINDOW: end-of-window reached — skipping remaining retry passes")
+                            break
 
                         # Backoff between retry passes so the provider can release slots
                         backoff = delay * 3
@@ -1974,6 +2036,10 @@ class Plugin:
 
                             for future in as_completed(future_to_result_index):
                                 if self._stop_event.is_set():
+                                    executor.shutdown(wait=False, cancel_futures=True)
+                                    break
+                                if self._past_window_end():
+                                    logger.info("⏰ WINDOW: end-of-window reached — cancelling in-flight retry probes")
                                     executor.shutdown(wait=False, cancel_futures=True)
                                     break
                                 result_index = future_to_result_index[future]
@@ -2495,10 +2561,13 @@ class Plugin:
             scheduled_times_str = settings.get("scheduled_times", "").strip()
             scheduler_timezone = settings.get("scheduler_timezone", PluginConfig.DEFAULT_TIMEZONE)
             
-            # If scheduled times are empty, stop the scheduler
+            # If scheduled times are empty, signal the elected scheduler to go idle
+            # rather than tearing the loop down. Killing the thread leaves no
+            # consumer for a future reload flag, so a later re-add via the UI
+            # would be silently dropped until the next process restart.
             if not scheduled_times_str:
-                logger.info("Scheduled times empty - stopping scheduler")
-                self._stop_background_scheduler()
+                logger.info("Scheduled times empty - signaling scheduler to idle")
+                self._request_scheduler_reload()
                 return {
                     "status": "ok",
                     "message": "✅ Schedule cleared. Scheduler has been stopped.\n\nTo enable scheduling, configure scheduled times in cron format."
@@ -2527,9 +2596,15 @@ class Plugin:
                     "message": "❌ Scheduler requires pytz library but it is not installed.\n\nPlease install pytz to use scheduling features."
                 }
             
-            # Restart scheduler with new settings
+            # Restart scheduler with new settings. Only the elected scheduler-owner
+            # process may touch the thread directly; non-owner workers signal via
+            # the reload flag so we don't accumulate one rogue thread per uwsgi
+            # worker that handles the UI request.
             logger.info(f"Updating schedule: Times={scheduled_times_str}, Timezone={scheduler_timezone}")
-            self._start_background_scheduler(settings)
+            if self._owns_scheduler_lock():
+                self._start_background_scheduler(settings)
+            else:
+                self._request_scheduler_reload()
             
             # Build status message
             times_display = ', '.join(scheduled_times)  # Already strings (cron expressions)
@@ -2880,7 +2955,7 @@ class Plugin:
         max_attempts = 1 if skip_retries else (retries + 1)
 
         # Parse ffprobe flags from settings
-        ffprobe_flags_str = settings.get('ffprobe_flags', '-show_streams,-show_frames,-show_packets,-loglevel error') if settings else '-show_streams,-show_frames,-show_packets,-loglevel error'
+        ffprobe_flags_str = settings.get('ffprobe_flags', '-show_streams,-show_packets,-loglevel error') if settings else '-show_streams,-show_packets,-loglevel error'
         ffprobe_flags = [flag.strip() for flag in ffprobe_flags_str.split(',') if flag.strip()]
 
         # Get ffprobe path from settings
@@ -3043,6 +3118,13 @@ class Plugin:
                                 if total_duration > 0:
                                     video_bitrate = (total_size * 8) / (total_duration * 1000)
                                     ffprobe_extra_data['calculated_bitrate_kbps'] = video_bitrate
+
+                        # Round video_bitrate to nearest whole kbps before handing
+                        # to Dispatcharr — the channel-menu UI displays it as an
+                        # integer, so storing fractions just adds noise to the
+                        # stream_stats jsonb and to CSV exports.
+                        if video_bitrate is not None:
+                            video_bitrate = int(round(video_bitrate))
 
                         stream_format = self._get_stream_format(resolution)
                         logger.info(f"✓ '{channel_name}' ALIVE - {stream_format} {resolution} {framerate_num:.1f}fps")

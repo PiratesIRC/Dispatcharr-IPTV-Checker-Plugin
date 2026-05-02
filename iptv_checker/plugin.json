@@ -1,6 +1,6 @@
 {
   "name": "IPTV Checker",
-  "version": "1.26.1181126",
+  "version": "1.26.1220951",
   "description": "A Dispatcharr Plugin that goes through a playlist to check IPTV channels",
   "author": "PiratesIRC",
   "logo": "logo.png",
@@ -89,9 +89,9 @@
       "id": "ffprobe_flags",
       "label": "\ud83d\udd0d FFprobe Analysis Flags",
       "type": "string",
-      "default": "-show_streams,-show_frames,-show_packets,-loglevel error",
-      "placeholder": "-show_streams, -show_frames, -show_packets",
-      "help_text": "Comma-separated ffprobe flags for stream analysis. Options: -show_streams (basic validation), -show_frames (GOP/timestamps), -show_packets (bitrate), -loglevel error (errors only). Default: -show_streams,-show_frames,-show_packets,-loglevel error"
+      "default": "-show_streams,-show_packets,-loglevel error",
+      "placeholder": "-show_streams, -show_packets",
+      "help_text": "Comma-separated ffprobe flags for stream analysis. Options: -show_streams (basic validation), -show_packets (per-packet data; required for video bitrate calculation on live MPEG-TS streams), -loglevel error (errors only). Default: -show_streams,-show_packets,-loglevel error. Note: do not add -show_frames — when both -show_frames and -show_packets are passed, ffprobe returns a combined packets_and_frames array instead of separate packets[], which prevents the bitrate fallback from running."
     },
     {
       "id": "ffprobe_analysis_duration",
