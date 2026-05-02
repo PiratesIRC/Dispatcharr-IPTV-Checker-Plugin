@@ -56,3 +56,17 @@ After deploying, watch the logs through the next scheduled fire:
 - No setting changes.
 - No data file format changes.
 - Pre-fix orphan threads from a rolling restart will not have the `_iptv_stop_event` attribute; the new code falls back gracefully (`getattr` default `None`) but cannot stop those orphans without a container restart. Transient hazard limited to one upgrade.
+
+## Post-deploy log review — 2026-04-30
+
+The 2026-04-29 → 2026-04-30 overnight cron fired before the running processes had reloaded the new code, so it executed on **v1.26.1181126** and reproduced the exact symptoms this release targets. Useful as a final "before" snapshot:
+
+- **Same-process duplicate threads observed.** PID 223 logged 4× `⏰ WINDOW RESUME: continuing with 1556 channels / 6542 streams` within 14 seconds at 05:00:10–05:00:24 UTC, then 5× `[Stream Check (Parallel)] Complete: NNN/4766` at the window close (1125, 1195, 1588, 1495, 1424) — different slices of the same window run in parallel by sibling scheduler threads.
+- **Atomic-rename race surfaced.** 2× `Failed to save JSON file /data/iptv_checker_pending_resume.json: [Errno 2] No such file or directory: '/data/iptv_checker_pending_resume.json.tmp' -> '/data/iptv_checker_pending_resume.json'` during the run — sibling threads racing the same `os.rename`.
+- **No CSV produced.** `/data/exports/` last `iptv_checker_results_*.csv` was 2026-04-28; every window closed mid-list and v1.26.1181126's CSV step was below the post-actions gate.
+- **Provider rate-limit pressure.** Cooldown escalated 60s → 120s → 240s → 600s; saved-results slice (1424 streams): 1037 Alive · 154 Dead · 233 Skipped (all HTTP 429).
+- **In-memory version transition.** All worker PIDs reloaded v1.26.1191257 by 2026-04-29 13:42 UTC and again on container restart at 2026-04-30 09:31 UTC (`Plugin v1.26.1191257 initialized` followed by `Scheduler already owned by PID 223; this process (224) will skip scheduler bootstrap.`). The next scheduled fire is the first true verification of the fix.
+- **Carry-over state.** `pending_resume.json` retains `window_end_iso=2026-04-30T04:00:19-05:00` and 2115 remaining stream IDs — the v1.26.1191257 cron-fire re-anchor is expected to overwrite the stale window_end on the next cron.
+
+**Lesson worth keeping:** copying `plugin.py` into the container does not reload running scheduler threads. Always confirm the live version by greping `Plugin v… initialized` *after* a process restart, not by file mtime.
+
