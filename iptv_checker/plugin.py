@@ -33,12 +33,20 @@ except ImportError:
     PYTZ_AVAILABLE = False
     # Will log warning later when scheduler is attempted to be used
 
-# Django/Dispatcharr imports for metadata updates
+# Django/Dispatcharr imports for metadata updates.
+# Dispatcharr's dev branch renamed apps.proxy.ts_proxy -> apps.proxy.live_proxy.
+# Prefer the new path, fall back to the legacy one so the plugin works on both
+# current-release and next-release Dispatcharr. The ChannelService API
+# (_update_stream_stats_in_db(stream_id, **stats)) is unchanged across the rename.
 try:
-    from apps.proxy.ts_proxy.services.channel_service import ChannelService
+    from apps.proxy.live_proxy.services.channel_service import ChannelService
     DISPATCHARR_INTEGRATION_AVAILABLE = True
 except ImportError:
-    DISPATCHARR_INTEGRATION_AVAILABLE = False
+    try:
+        from apps.proxy.ts_proxy.services.channel_service import ChannelService
+        DISPATCHARR_INTEGRATION_AVAILABLE = True
+    except ImportError:
+        DISPATCHARR_INTEGRATION_AVAILABLE = False
 
 # Setup logging with plugin name for Dispatcharr's logging system
 class PluginNameFilter(logging.Filter):
@@ -57,6 +65,12 @@ _scheduler_stop_event = threading.Event()
 _scheduler_pending_run = False  # Flag to queue a run if check already in progress
 _scheduler_init_lock = threading.Lock()  # Serialize concurrent _init_scheduler calls
 _scheduler_initialized = False  # Set True after the first Plugin instance bootstraps the scheduler
+# Re-entrant: makes the stop->create->assign-global sequence in
+# _start_background_scheduler atomic against a concurrent start from another
+# thread (e.g. _init_scheduler racing the run()/update-schedule path). RLock so
+# _start_background_scheduler can call _stop_background_scheduler while holding
+# it. Distinct from _scheduler_init_lock to avoid a deadlock with _init_scheduler.
+_scheduler_lifecycle_lock = threading.RLock()
 # _RATE_LIMIT_GUARD is initialized eagerly below the RateLimitGuard class
 # definition so all Plugin instances share one guard counter.
 
@@ -223,12 +237,52 @@ class RateLimitGuard:
 _RATE_LIMIT_GUARD = RateLimitGuard()
 
 
+_CONTAINER_BOOT_TOKEN = None
+
+
+def _container_boot_token():
+    """A token that is stable within one container lifetime but changes on every
+    container (re)start. Used to detect a scheduler lock file left behind on the
+    persistent /data volume by a previous container — after a restart the OS
+    recycles low PID numbers, so the old holder PID frequently collides with a
+    live, unrelated process and os.kill(pid, 0) succeeds, wedging the election.
+
+    Composed of the host kernel boot_id (changes on host reboot) and PID 1's
+    starttime in clock ticks (changes on every container start, since PID 1 is
+    the container entrypoint). Either component alone is insufficient: boot_id
+    is unchanged by a container restart, and starttime can recur across a host
+    reboot. Cached after first computation. Returns "" if nothing readable, in
+    which case callers fall back to the legacy dead-PID check only.
+    """
+    global _CONTAINER_BOOT_TOKEN
+    if _CONTAINER_BOOT_TOKEN is not None:
+        return _CONTAINER_BOOT_TOKEN
+    boot_id = ""
+    try:
+        with open('/proc/sys/kernel/random/boot_id', 'r') as f:
+            boot_id = f.read().strip()
+    except OSError:
+        pass
+    pid1_start = ""
+    try:
+        with open('/proc/1/stat', 'r') as f:
+            # Field 22 (1-indexed) is starttime. The comm field (2) may contain
+            # spaces/parens, so split on the final ')' first.
+            stat = f.read()
+            after = stat[stat.rfind(')') + 1:].split()
+            pid1_start = after[19]  # 22nd field overall -> index 19 after comm
+    except (OSError, IndexError):
+        pass
+    _CONTAINER_BOOT_TOKEN = f"{boot_id}:{pid1_start}" if (boot_id or pid1_start) else ""
+    return _CONTAINER_BOOT_TOKEN
+
+
 class Plugin:
     """Dispatcharr IPTV Checker Plugin"""
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.1221101"
+    version = "1.26.1362003"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -303,32 +357,43 @@ class Plugin:
         """
         lock_path = PluginConfig.SCHEDULER_LOCK_FILE
         my_pid = os.getpid()
+        my_token = _container_boot_token()
 
         if os.path.exists(lock_path):
             try:
                 with open(lock_path, 'r') as f:
-                    holder_pid = int(f.read().strip() or '0')
+                    raw = f.read().splitlines()
+                holder_pid = int((raw[0].strip() if raw else '') or '0')
+                holder_token = raw[1].strip() if len(raw) > 1 else ''
                 if holder_pid and holder_pid != my_pid:
-                    try:
-                        os.kill(holder_pid, 0)
-                        LOGGER.info(f"Scheduler already owned by PID {holder_pid}; this process ({my_pid}) will skip scheduler bootstrap.")
-                        return False
-                    except ProcessLookupError:
-                        LOGGER.info(f"Stale scheduler lock for dead PID {holder_pid}; reclaiming as PID {my_pid}.")
-                    except PermissionError:
-                        # Holder is alive but owned by another user (shouldn't
-                        # happen in this container). Treat as held.
-                        LOGGER.info(f"Scheduler lock held by PID {holder_pid} (different uid); skipping.")
-                        return False
-                    # Other OSError (EINTR, transient FS errors): skip rather
-                    # than risk stealing a live lock.
+                    # A lock written by a previous container instance: after a
+                    # restart the recycled PID often collides with a live
+                    # unrelated process, so os.kill() can't be trusted. The
+                    # boot token is the authoritative staleness signal.
+                    if my_token and holder_token and holder_token != my_token:
+                        LOGGER.info(f"Stale scheduler lock from a previous container (PID {holder_pid}, token mismatch); reclaiming as PID {my_pid}.")
+                    else:
+                        try:
+                            os.kill(holder_pid, 0)
+                            LOGGER.info(f"Scheduler already owned by PID {holder_pid}; this process ({my_pid}) will skip scheduler bootstrap.")
+                            return False
+                        except ProcessLookupError:
+                            LOGGER.info(f"Stale scheduler lock for dead PID {holder_pid}; reclaiming as PID {my_pid}.")
+                        except PermissionError:
+                            # Holder is alive but owned by another user (shouldn't
+                            # happen in this container). Treat as held.
+                            LOGGER.info(f"Scheduler lock held by PID {holder_pid} (different uid); skipping.")
+                            return False
+                        # Other OSError (EINTR, transient FS errors): skip rather
+                        # than risk stealing a live lock.
             except (ValueError, OSError):
                 pass
 
         tmp = f"{lock_path}.{my_pid}.tmp"
         try:
             with open(tmp, 'w') as f:
-                f.write(str(my_pid))
+                # Line 1: PID. Line 2: container boot token (staleness signal).
+                f.write(f"{my_pid}\n{my_token}")
                 f.flush()
                 os.fsync(f.fileno())
             os.rename(tmp, lock_path)
@@ -342,7 +407,7 @@ class Plugin:
 
         try:
             with open(lock_path, 'r') as f:
-                won = int(f.read().strip() or '0') == my_pid
+                won = int((f.readline().strip() or '0')) == my_pid
         except (ValueError, OSError):
             won = False
         if won:
@@ -359,7 +424,7 @@ class Plugin:
         """
         try:
             with open(PluginConfig.SCHEDULER_LOCK_FILE, 'r') as f:
-                return int(f.read().strip() or '0') == os.getpid()
+                return int((f.readline().strip() or '0')) == os.getpid()
         except (OSError, ValueError):
             return False
 
@@ -501,9 +566,34 @@ class Plugin:
         saved_fp = pending.get('settings_fingerprint') or {}
         if saved_fp != self._settings_fingerprint(settings):
             logger.warning(
-                f"⏰ WINDOW RESUME: settings changed since last window — continuing with saved channel list. "
+                f"⏰ WINDOW RESUME: settings changed since last window — discarding stale "
+                f"pending state and starting a fresh load with current settings. "
                 f"saved={saved_fp} current={self._settings_fingerprint(settings)}"
             )
+            self._clear_pending_resume()
+            return False
+
+        # A pending file whose window has already elapsed is dead state (e.g.
+        # left behind by a closed window — see _maybe_resume_after_restart).
+        # Resuming it would scan a stale list against the wrong window; discard.
+        saved_end_iso = pending.get('window_end_iso')
+        if saved_end_iso:
+            try:
+                saved_end = datetime.fromisoformat(saved_end_iso)
+                saved_tz = pytz.timezone(pending.get('tz') or PluginConfig.DEFAULT_TIMEZONE)
+                if saved_end.tzinfo is None:
+                    saved_end = saved_tz.localize(saved_end)
+                if datetime.now(saved_tz) >= saved_end:
+                    logger.warning(
+                        "⏰ WINDOW RESUME: saved window already elapsed — discarding "
+                        "stale pending state and starting a fresh load"
+                    )
+                    self._clear_pending_resume()
+                    return False
+            except Exception as e:
+                logger.warning(f"⏰ WINDOW RESUME: could not parse saved window end ({e}); discarding stale pending state")
+                self._clear_pending_resume()
+                return False
 
         loaded = self._load_json_file(self.loaded_channels_file) or []
         if not loaded:
@@ -596,7 +686,8 @@ class Plugin:
             return
         now = datetime.now(tz)
         if now >= end:
-            LOGGER.info("⏰ WINDOW: pending state exists but window already closed — leaving for next scheduled fire")
+            LOGGER.info("⏰ WINDOW: pending state exists but its window already closed — discarding dead pending state")
+            self._clear_pending_resume()
             return
         LOGGER.info(f"⏰ WINDOW: pending state detected (ends {end.isoformat()}); resuming check after restart")
         # Set the guard BEFORE spawning so the scheduler_loop's first tick
@@ -805,9 +896,6 @@ class Plugin:
             LOGGER.error("Scheduler requires pytz library but it is not installed")
             return
         
-        # Stop any existing scheduler first
-        self._stop_background_scheduler()
-        
         # Get and validate schedule configuration
         scheduled_times_str = settings.get("scheduled_times", "")
         if not scheduled_times_str:
@@ -838,6 +926,14 @@ class Plugin:
 
             while not _scheduler_stop_event.is_set():
                 try:
+                    # Self-evict if superseded: a newer _start_background_scheduler
+                    # may have replaced the global without _stop_background_scheduler
+                    # having joined this thread. Belt-and-suspenders alongside the
+                    # lifecycle lock so an orphaned loop can never double-fire.
+                    if _bg_scheduler_thread is not threading.current_thread():
+                        LOGGER.info("Scheduler loop superseded by a newer thread — exiting orphaned loop")
+                        return
+
                     # Reload schedule from DB if a non-owner worker requested it
                     # (UI "Update Schedule" handled in a different uwsgi process).
                     if os.path.exists(PluginConfig.SCHEDULER_RELOAD_FLAG):
@@ -916,27 +1012,36 @@ class Plugin:
             
             LOGGER.info("Scheduler stopped")
         
-        # Start the scheduler thread
-        _bg_scheduler_thread = threading.Thread(
-            target=scheduler_loop,
-            name="iptv-checker-scheduler",
-            daemon=True
-        )
-        _bg_scheduler_thread.start()
-        LOGGER.info("Background scheduler thread started")
+        # Atomically stop any existing scheduler and install this one. Holding
+        # _scheduler_lifecycle_lock across stop+create+assign prevents a
+        # concurrent start (e.g. _init_scheduler racing the run()/update-schedule
+        # path) from leaving two live scheduler_loop threads — each with its own
+        # last_run, which caused duplicate cron fires.
+        with _scheduler_lifecycle_lock:
+            self._stop_background_scheduler()
+            _bg_scheduler_thread = threading.Thread(
+                target=scheduler_loop,
+                name="iptv-checker-scheduler",
+                daemon=True
+            )
+            _bg_scheduler_thread.start()
+            LOGGER.info("Background scheduler thread started")
     
     def _stop_background_scheduler(self):
         """Cleanly stop the background scheduler thread."""
         global _bg_scheduler_thread, _scheduler_pending_run
-        
-        if _bg_scheduler_thread and _bg_scheduler_thread.is_alive():
-            LOGGER.info("Stopping scheduler thread...")
-            _scheduler_stop_event.set()
-            _bg_scheduler_thread.join(timeout=PluginConfig.SCHEDULER_STOP_TIMEOUT)
-            _scheduler_stop_event.clear()
-            _scheduler_pending_run = False
-            _bg_scheduler_thread = None
-            LOGGER.info("Scheduler thread stopped")
+
+        # Re-entrant: _start_background_scheduler calls this while already
+        # holding _scheduler_lifecycle_lock; an external stop serializes here.
+        with _scheduler_lifecycle_lock:
+            if _bg_scheduler_thread and _bg_scheduler_thread.is_alive():
+                LOGGER.info("Stopping scheduler thread...")
+                _scheduler_stop_event.set()
+                _bg_scheduler_thread.join(timeout=PluginConfig.SCHEDULER_STOP_TIMEOUT)
+                _scheduler_stop_event.clear()
+                _scheduler_pending_run = False
+                _bg_scheduler_thread = None
+                LOGGER.info("Scheduler thread stopped")
     
     def _execute_scheduled_check(self, settings, preserved_window_end=None, preserved_window_tz=None):
         """Execute the scheduled stream check (Load Groups + Start Check).
@@ -2270,6 +2375,16 @@ class Plugin:
         suffixes_to_add = {s.strip() for s in suffixes_to_add_str.split(',')}
         logger.info(f"DEBUG: Configured suffixes to add: {suffixes_to_add}")
 
+        # Recognized format tags that may already be appended to a channel name.
+        # Always includes the standard set so a previously-applied tag is stripped
+        # even if the user later narrows video_format_suffixes (issue #18).
+        known_format_tags = {s for s in suffixes_to_add if s} | {'uhd', 'fhd', 'hd', 'sd', 'unknown'}
+        # Matches one or more trailing " [TAG]" groups (case-insensitive).
+        trailing_tag_re = re.compile(
+            r'(?:\s*\[(?:' + '|'.join(re.escape(t) for t in known_format_tags) + r')\])+\s*$',
+            re.IGNORECASE,
+        )
+
         results = self._load_json_file(self.results_file)
         if results is None:
             return {"status": "error", "message": "No check results found (or data corrupted). Please run 'Check Streams' first."}
@@ -2316,15 +2431,18 @@ class Plugin:
                     continue
 
                 suffix = f" [{fmt.upper()}]"
+                # Strip any previously-applied format tag(s) before re-appending so
+                # quality changes replace the suffix instead of stacking (issue #18).
+                base_name = trailing_tag_re.sub('', current_name).rstrip()
+                new_name = base_name + suffix
                 logger.debug(f"DEBUG:   - Current name: '{current_name}'")
-                logger.debug(f"DEBUG:   - Will add suffix: '{suffix}'")
-                logger.debug(f"DEBUG:   - Already ends with suffix? {current_name.endswith(suffix)}")
+                logger.debug(f"DEBUG:   - Base name (tags stripped): '{base_name}'")
+                logger.debug(f"DEBUG:   - Will set suffix: '{suffix}'")
 
-                if current_name.endswith(suffix):
-                    logger.debug(f"DEBUG:   - Skipped: already has suffix '{suffix}'")
+                if new_name == current_name:
+                    logger.debug(f"DEBUG:   - Skipped: already has correct suffix '{suffix}'")
                     skipped_already_has_suffix += 1
                 else:
-                    new_name = current_name + suffix
                     logger.info(f"DEBUG:   ✓ Adding to payload: '{current_name}' -> '{new_name}'")
                     payload.append({'id': cid, 'name': new_name})
 
@@ -3261,7 +3379,11 @@ class Plugin:
                 # Dead stream - completely clear stream_stats by setting to empty dict
                 logger.debug(f"Clearing metadata for dead stream {stream_id}")
                 try:
-                    from apps.proxy.ts_proxy.models import Stream as ProxyStream
+                    # The Stream model carrying stream_stats lives in
+                    # apps.channels.models (it never lived under apps.proxy.*);
+                    # the old apps.proxy.ts_proxy.models path always ImportError'd
+                    # and silently disabled this dead-stream cleanup path.
+                    from apps.channels.models import Stream as ProxyStream
                     stream = ProxyStream.objects.filter(id=stream_id).first()
                     if stream:
                         stream.stream_stats = {}  # Clear all stats
