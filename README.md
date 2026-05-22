@@ -374,7 +374,7 @@ Pull requests welcome. To submit changes:
 
 ### To this repo (PiratesIRC/Dispatcharr-IPTV-Checker-Plugin)
 
-1. Bump version: `python3 bump_version.py` (auto-stamps with current UTC day-of-year + HHMM).
+1. Bump the version (calver `1.26.{DDD}{HHMM}`, UTC) in **both** `iptv_checker/plugin.json` and `iptv_checker/plugin.py`. Note: `bump_version.py` targets a legacy root-level layout and does **not** work with the current `iptv_checker/` subfolder — edit the two files directly.
 2. Commit, push, tag, and release:
 
 ```bash
