@@ -282,7 +282,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.1362003"
+    version = "1.26.1421301"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -1237,13 +1237,13 @@ class Plugin:
                         current_parts += [0] * (max_len - len(current_parts))
 
                         if latest_parts > current_parts:
-                            message = f"🔔 Update Available: v{latest_version} is available (current: v{self.version})"
+                            message = f"🔔 Update Available: v{latest_clean} is available (current: v{current_clean})"
                         else:
                             message = f"✅ Version Status: You are up to date (v{self.version})"
                     except (ValueError, AttributeError):
                         # Fallback to string comparison if version parsing fails
-                        if latest_version != self.version:
-                            message = f"🔔 Update Available: v{latest_version} is available (current: v{self.version})"
+                        if latest_clean != current_clean:
+                            message = f"🔔 Update Available: v{latest_clean} is available (current: v{current_clean})"
                         else:
                             message = f"✅ Version Status: You are up to date (v{self.version})"
 
