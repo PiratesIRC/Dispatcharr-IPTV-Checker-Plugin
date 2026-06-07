@@ -311,8 +311,10 @@ If you see a lot of "Server Error" or "Stream Unreachable" results that turn ali
 - Can be automated via scheduler with the same confirmation gate
 
 ### Webhook Notifications
-- Sends HTTP POST with JSON payload after scheduled checks complete
-- Configure any URL — works with Discord, Slack, custom endpoints
+- Sends an HTTP POST after scheduled checks complete
+- **Discord:** paste your Discord webhook URL as-is — the plugin auto-detects Discord hosts (`discord.com` / `discordapp.com`) and sends a native message Discord renders directly. No need to append `/slack` or edit the URL.
+- **Custom endpoints / integrations:** non-Discord URLs receive a machine-readable JSON payload (`{plugin, event, total, alive, dead, skipped, timestamp}`)
+- Sends an explicit `User-Agent` header so Cloudflare-fronted services (like Discord) don't silently reject the request
 - No additional dependencies (uses Python's built-in `urllib`)
 
 ## Troubleshooting
