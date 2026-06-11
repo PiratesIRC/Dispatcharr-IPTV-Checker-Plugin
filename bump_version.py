@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Bump the IPTV Checker plugin version in plugin.json and plugin.py.
+"""Bump the IPTV Checker plugin version in iptv_checker/plugin.json,
+iptv_checker/plugin.py, and the "Current Version" line in CLAUDE.md.
 
 Version format: 1.26.{DDD}{HHMM} where DDD is day-of-year (3 digits) and
 HHMM is 4-digit UTC time. Matches the Lineuparr / Channel-Mapparr /
@@ -20,8 +21,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-PLUGIN_JSON = ROOT / "plugin.json"
-PLUGIN_PY = ROOT / "plugin.py"
+PLUGIN_JSON = ROOT / "iptv_checker" / "plugin.json"
+PLUGIN_PY = ROOT / "iptv_checker" / "plugin.py"
+CLAUDE_MD = ROOT / "CLAUDE.md"
 
 VERSION_RE = re.compile(r'^\d+\.\d+\.\d{7}$')
 PY_VERSION_RE = re.compile(r'(^\s*version\s*=\s*)"([^"]+)"', re.MULTILINE)
@@ -33,26 +35,37 @@ def auto_version() -> str:
 
 
 def read_json_version() -> str:
-    return json.loads(PLUGIN_JSON.read_text())["version"]
+    return json.loads(PLUGIN_JSON.read_text(encoding="utf-8"))["version"]
 
 
 def read_py_version() -> str:
-    m = PY_VERSION_RE.search(PLUGIN_PY.read_text())
+    m = PY_VERSION_RE.search(PLUGIN_PY.read_text(encoding="utf-8"))
     if not m:
         raise RuntimeError("version attribute not found in plugin.py")
     return m.group(2)
 
 
 def write_json_version(new: str) -> None:
-    text = PLUGIN_JSON.read_text()
+    text = PLUGIN_JSON.read_text(encoding="utf-8")
     updated = re.sub(r'("version"\s*:\s*)"[^"]+"', f'\\1"{new}"', text, count=1)
-    PLUGIN_JSON.write_text(updated)
+    PLUGIN_JSON.write_text(updated, encoding="utf-8")
 
 
 def write_py_version(new: str) -> None:
-    text = PLUGIN_PY.read_text()
+    text = PLUGIN_PY.read_text(encoding="utf-8")
     updated = PY_VERSION_RE.sub(lambda m: f'{m.group(1)}"{new}"', text, count=1)
-    PLUGIN_PY.write_text(updated)
+    PLUGIN_PY.write_text(updated, encoding="utf-8")
+
+
+def write_claude_md_version(new: str) -> None:
+    if not CLAUDE_MD.exists():
+        return
+    text = CLAUDE_MD.read_text(encoding="utf-8")
+    updated = re.sub(
+        r'(## Current Version: v)\S+', f'\\g<1>{new}', text, count=1
+    )
+    if updated != text:
+        CLAUDE_MD.write_text(updated, encoding="utf-8")
 
 
 def main(argv: list[str]) -> int:
@@ -68,6 +81,7 @@ def main(argv: list[str]) -> int:
 
     write_json_version(new)
     write_py_version(new)
+    write_claude_md_version(new)
 
     after_json = read_json_version()
     after_py = read_py_version()

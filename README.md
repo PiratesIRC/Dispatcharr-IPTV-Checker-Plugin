@@ -376,14 +376,16 @@ Pull requests welcome. To submit changes:
 
 ### To this repo (PiratesIRC/Dispatcharr-IPTV-Checker-Plugin)
 
-1. Bump the version (calver `1.26.{DDD}{HHMM}`, UTC) in **both** `iptv_checker/plugin.json` and `iptv_checker/plugin.py`. Note: `bump_version.py` targets a legacy root-level layout and does **not** work with the current `iptv_checker/` subfolder — edit the two files directly.
-2. Commit, push, tag, and release:
+1. Bump the version (calver `1.26.{DDD}{HHMM}`, UTC) with `python bump_version.py` — it updates `iptv_checker/plugin.json`, `iptv_checker/plugin.py`, and the "Current Version" line in `CLAUDE.md` in one shot, and verifies they agree.
+2. Validate: `python -m pytest tests -q && python -m ruff check .`
+3. Commit, tag, and push:
 
 ```bash
-git tag <version> && git push origin <version>
-gh release create <version> --title "v<version>" --notes "..."
-gh release upload <version> iptv_checker.zip
+git add -A && git commit -m "v<version> — <summary>"
+git tag <version> && git push origin main --tags
 ```
+
+CI (`.github/workflows/ci.yml`) re-runs the checks, builds `iptv_checker-v<version>.zip` (excluding `__pycache__`), and attaches it to the GitHub release automatically when the tag lands. See `DEVELOPMENT.md` for the full workflow.
 
 ### To the upstream marketplace (Dispatcharr/Plugins)
 

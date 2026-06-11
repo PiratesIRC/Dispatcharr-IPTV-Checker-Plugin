@@ -1,0 +1,23 @@
+# Tooling config only — this project is a Dispatcharr plugin, not an
+# installable package. Deployment is a straight file copy of iptv_checker/.
+# pytest config lives in pytest.ini; this file configures ruff.
+
+[tool.ruff]
+# Lint only — never reformat. Project style: no type hints, minimal docstrings,
+# existing layout preserved (see CLAUDE.md "Do NOT" list).
+line-length = 120
+target-version = "py39"
+
+[tool.ruff.lint]
+# E9: syntax/indentation errors ruff can see that py_compile reports late.
+# F:  pyflakes — undefined names, unused imports/variables, f-string bugs.
+# Deliberately conservative: no style rules, so it never fights the codebase.
+select = ["E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# plugin.py: F401 = intentionally-unused legacy alias (ProxyStream);
+# F541/F841 = pre-existing cosmetic findings, left untouched per the
+# "do not reformat existing code" project rule. New code should not add more.
+"iptv_checker/plugin.py" = ["F401", "F541", "F841"]
+# __init__.py re-exports Plugin for Dispatcharr's plugin loader.
+"iptv_checker/__init__.py" = ["F401"]

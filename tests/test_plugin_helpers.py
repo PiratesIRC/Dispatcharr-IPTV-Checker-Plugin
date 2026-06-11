@@ -5,7 +5,6 @@ coupling beyond a tmp file: cron parsing & matching, Streamlink-host URL
 classification, and the atomic JSON read/write pair. Expected values are read
 straight off the function bodies in plugin.py, not guessed.
 """
-import json
 from datetime import datetime
 
 
