@@ -1,0 +1,14 @@
+# Development / CI dependencies for the IPTV Checker plugin.
+#
+# NOTE: Django and the Dispatcharr ORM (apps.channels.models, apps.plugins.models,
+# core.utils) are provided by the Dispatcharr runtime, NOT installed here. The
+# test suite stubs them (see tests/conftest.py) so plugin.py can be imported in
+# isolation.
+#
+# pytz IS a genuine optional runtime dependency (the scheduler degrades when it
+# is absent) and the windowed-schedule tests exercise real timezone math, so it
+# is required here. rapidfuzz is NOT used by this plugin and is intentionally
+# omitted.
+
+pytest>=8.0
+pytz>=2024.1

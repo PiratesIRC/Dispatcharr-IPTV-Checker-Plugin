@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  checks:
+    name: Lint, compile, version-sync, tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tooling
+        run: python -m pip install --quiet pytest pytz ruff
+
+      - name: Syntax check (py_compile)
+        run: python -m py_compile iptv_checker/plugin.py bump_version.py
+
+      - name: Lint (ruff, errors only)
+        run: python -m ruff check .
+
+      - name: Version sync (plugin.json == plugin.py == CLAUDE.md)
+        run: python -m pytest tests/test_version_sync.py -q
+
+      - name: Tests
+        run: python -m pytest tests -q
+
+  release:
+    name: Attach plugin zip to release
+    needs: checks
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag matches plugin version
+        run: |
+          PLUGIN_VERSION=$(python -c "import json; print(json.load(open('iptv_checker/plugin.json'))['version'])")
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$PLUGIN_VERSION" != "$TAG" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match plugin version $PLUGIN_VERSION"
+            exit 1
+          fi
+
+      - name: Build plugin zip
+        run: zip -r "iptv_checker-v${GITHUB_REF_NAME#v}.zip" iptv_checker/ -x '*__pycache__*' '*.pyc'
+
+      - name: Create release and attach zip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes || true
+          gh release upload "$GITHUB_REF_NAME" "iptv_checker-v${GITHUB_REF_NAME#v}.zip" --clobber
