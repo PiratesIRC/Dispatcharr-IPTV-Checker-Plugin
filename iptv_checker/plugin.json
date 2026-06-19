@@ -1,6 +1,6 @@
 {
   "name": "IPTV Checker",
-  "version": "1.26.1582047",
+  "version": "1.26.1702112",
   "description": "A Dispatcharr Plugin that goes through a playlist to check IPTV channels",
   "author": "PiratesIRC",
   "logo": "logo.png",
@@ -107,6 +107,40 @@
       "default": "youtube.com, youtu.be, twitch.tv, kick.com",
       "placeholder": "youtube.com, twitch.tv",
       "help_text": "Comma-separated host suffixes that ffprobe cannot validate (served via Streamlink). Streams on these hosts are marked 'Skipped' instead of 'Dead' so rename/move/delete actions leave them alone. Use full domains (e.g. 'youtube.com', not 'youtube'). Leave blank to use the defaults."
+    },
+    {
+      "id": "_section_black_screen",
+      "label": "⬛ Black-Screen Detection",
+      "type": "info",
+      "description": "Optionally decode a few seconds of each Alive stream with ffmpeg and mark it Dead if it is a pure black screen. Costs extra CPU/time per Alive stream."
+    },
+    {
+      "id": "black_screen_detection",
+      "label": "⬛ Detect Black-Screen Streams",
+      "type": "boolean",
+      "default": false,
+      "help_text": "When ON, every stream that passes ffprobe is decoded for a few seconds with ffmpeg's blackdetect filter; pure-black streams are marked Dead (error_type 'Black Screen') so rename/move/delete actions handle them. Adds ~5-10s per Alive stream. Fail-open: if ffmpeg is missing or errors, the stream stays Alive. Very-dark-but-not-black 'no signal' slates are NOT detected."
+    },
+    {
+      "id": "black_screen_sample_seconds",
+      "label": "⬛ Black-Screen Sample (seconds)",
+      "type": "number",
+      "default": 6,
+      "help_text": "How many seconds of video to decode when testing for a black screen. Longer = more reliable but slower. Default: 6"
+    },
+    {
+      "id": "black_screen_min_black_seconds",
+      "label": "⬛ Continuous Black Required (seconds)",
+      "type": "number",
+      "default": 3,
+      "help_text": "Minimum continuous run of black video (within the sample) required to flag a stream as black. Should be a few seconds less than the sample to allow for connection/keyframe latency. Default: 3"
+    },
+    {
+      "id": "black_screen_ffmpeg_timeout",
+      "label": "⬛ Black-Screen ffmpeg Timeout (seconds)",
+      "type": "number",
+      "default": 20,
+      "help_text": "Hard wall-clock cap on the ffmpeg black-screen decode (connection + sampling). If exceeded, the stream is left Alive. Default: 20"
     },
     {
       "id": "_section_dead",
@@ -1557,6 +1591,14 @@
       "default": "/usr/local/bin/ffprobe",
       "placeholder": "/usr/local/bin/ffprobe",
       "help_text": "Full path to the ffprobe executable. Default: /usr/local/bin/ffprobe (Dispatcharr's default location)"
+    },
+    {
+      "id": "ffmpeg_path",
+      "label": "📍 FFmpeg Path",
+      "type": "string",
+      "default": "/usr/local/bin/ffmpeg",
+      "placeholder": "/usr/local/bin/ffmpeg",
+      "help_text": "Full path to the ffmpeg executable, used for black-screen detection. Default: /usr/local/bin/ffmpeg (Dispatcharr's default location)"
     }
   ],
   "actions": [

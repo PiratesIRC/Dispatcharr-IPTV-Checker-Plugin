@@ -282,7 +282,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.1582047"
+    version = "1.26.1702112"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -3024,6 +3024,75 @@ class Plugin:
         suffixes = self._streamlink_host_suffixes(settings)
         return any(host == s or host.endswith('.' + s) for s in suffixes)
 
+    @staticmethod
+    def _parse_blackdetect_output(stderr):
+        # Parse ffmpeg blackdetect stderr into a list of (start, end, duration)
+        # float tuples. Returns [] when no black segments are present.
+        segments = []
+        if not stderr:
+            return segments
+        pattern = re.compile(
+            r'black_start:(?P<start>[\d.]+)\s+'
+            r'black_end:(?P<end>[\d.]+)\s+'
+            r'black_duration:(?P<dur>[\d.]+)'
+        )
+        for m in pattern.finditer(stderr):
+            try:
+                segments.append((
+                    float(m.group('start')),
+                    float(m.group('end')),
+                    float(m.group('dur')),
+                ))
+            except (ValueError, TypeError):
+                continue
+        return segments
+
+    def _check_black_screen(self, url, timeout, settings, logger):
+        # Decode a few seconds of an Alive stream and detect a pure black
+        # picture. Returns True (black), False (has video), or None
+        # (undecidable -> caller leaves the stream Alive). Never raises.
+        s = settings or {}
+        ffmpeg_path = s.get('ffmpeg_path', '/usr/local/bin/ffmpeg')
+        sample_seconds = s.get('black_screen_sample_seconds', 6)
+        min_black = s.get('black_screen_min_black_seconds', 3)
+        ffmpeg_timeout = s.get('black_screen_ffmpeg_timeout', 20)
+
+        # Input options (-user_agent, -rw_timeout) MUST precede -i or ffmpeg
+        # silently ignores them. -loglevel info is required: blackdetect logs
+        # its results at info level, so -loglevel error would suppress them.
+        cmd = [
+            ffmpeg_path,
+            '-hide_banner', '-nostats', '-loglevel', 'info',
+            '-user_agent', 'VLC/3.0.21 LibVLC/3.0.21',
+            '-rw_timeout', str(int(timeout) * 1000000),
+            '-i', url,
+            '-t', str(sample_seconds),
+            '-an',
+            '-vf', f'blackdetect=d={min_black}:pic_th=0.98',
+            '-f', 'null', '-',
+        ]
+
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=ffmpeg_timeout
+            )
+        except FileNotFoundError:
+            logger.warning(f"[Black Screen] ffmpeg not found at {ffmpeg_path}; leaving stream Alive")
+            return None
+        except subprocess.TimeoutExpired:
+            logger.warning(f"[Black Screen] ffmpeg timed out after {ffmpeg_timeout}s; leaving stream Alive")
+            return None
+        except Exception as e:
+            logger.warning(f"[Black Screen] ffmpeg error ({e}); leaving stream Alive")
+            return None
+
+        segments = self._parse_blackdetect_output(result.stderr or '')
+        if segments:
+            return True
+        if result.returncode == 0:
+            return False
+        return None
+
     def check_stream(self, stream_data, timeout, retries, logger, skip_retries=False, settings=None, retry_attempt=0):
         """Check individual stream status with optional retries."""
         url, channel_name = stream_data.get('stream_url'), stream_data.get('channel_name')
@@ -3279,6 +3348,23 @@ class Plugin:
                             video_bitrate = int(round(video_bitrate))
 
                         stream_format = self._get_stream_format(resolution)
+
+                        # Optional black-screen verification. An Alive-by-ffprobe
+                        # stream can still decode to a pure black picture; mark it
+                        # Dead so destructive actions clean it up. Fail-open: any
+                        # ffmpeg problem (None) leaves the stream Alive. Null
+                        # metadata mirrors every other Dead stream so the DB stats
+                        # get cleared (see _update_dispatcharr_metadata all_none).
+                        if (settings and settings.get('black_screen_detection')
+                                and not self._stop_event.is_set()):
+                            if self._check_black_screen(url, timeout, settings, logger) is True:
+                                logger.info(f"✗ '{channel_name}' DEAD - Black Screen ({resolution})")
+                                black_return = dict(default_return)
+                                black_return['dispatcharr_metadata'] = {k: None for k in default_return['dispatcharr_metadata']}
+                                black_return['error'] = 'Stream decodes to a black screen'
+                                black_return['error_type'] = 'Black Screen'
+                                return black_return
+
                         logger.info(f"✓ '{channel_name}' ALIVE - {stream_format} {resolution} {framerate_num:.1f}fps")
 
                         # Build complete metadata for Dispatcharr integration
