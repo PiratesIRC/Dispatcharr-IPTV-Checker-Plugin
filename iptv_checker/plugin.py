@@ -3024,6 +3024,29 @@ class Plugin:
         suffixes = self._streamlink_host_suffixes(settings)
         return any(host == s or host.endswith('.' + s) for s in suffixes)
 
+    @staticmethod
+    def _parse_blackdetect_output(stderr):
+        # Parse ffmpeg blackdetect stderr into a list of (start, end, duration)
+        # float tuples. Returns [] when no black segments are present.
+        segments = []
+        if not stderr:
+            return segments
+        pattern = re.compile(
+            r'black_start:(?P<start>[\d.]+)\s+'
+            r'black_end:(?P<end>[\d.]+)\s+'
+            r'black_duration:(?P<dur>[\d.]+)'
+        )
+        for m in pattern.finditer(stderr):
+            try:
+                segments.append((
+                    float(m.group('start')),
+                    float(m.group('end')),
+                    float(m.group('dur')),
+                ))
+            except (ValueError, TypeError):
+                continue
+        return segments
+
     def check_stream(self, stream_data, timeout, retries, logger, skip_retries=False, settings=None, retry_attempt=0):
         """Check individual stream status with optional retries."""
         url, channel_name = stream_data.get('stream_url'), stream_data.get('channel_name')
