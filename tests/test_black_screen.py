@@ -45,3 +45,84 @@ def test_parse_empty_or_garbage(pmod):
     assert pmod.Plugin._parse_blackdetect_output("") == []
     assert pmod.Plugin._parse_blackdetect_output("totally unrelated text") == []
     assert pmod.Plugin._parse_blackdetect_output(None) == []
+
+
+# ---- Task 2: _check_black_screen ----------------------------------------
+
+import subprocess  # noqa: E402
+
+
+class _FakeCompleted:
+    def __init__(self, stdout="", stderr="", returncode=0):
+        self.stdout = stdout
+        self.stderr = stderr
+        self.returncode = returncode
+
+
+def _ffmpeg_run(stderr="", returncode=0, capture=None):
+    """Return a fake subprocess.run that records the ffmpeg command."""
+    def _run(cmd, *a, **k):
+        if capture is not None:
+            capture.append(cmd)
+        return _FakeCompleted(stderr=stderr, returncode=returncode)
+    return _run
+
+
+_BS_SETTINGS = {
+    "ffmpeg_path": "/usr/local/bin/ffmpeg",
+    "black_screen_sample_seconds": 6,
+    "black_screen_min_black_seconds": 3,
+    "black_screen_ffmpeg_timeout": 20,
+}
+
+
+def test_check_black_true_on_segment(plugin, pmod, monkeypatch, quiet_logger):
+    monkeypatch.setattr(pmod.subprocess, "run", _ffmpeg_run(stderr=_ONE_SEGMENT, returncode=0))
+    assert plugin._check_black_screen("http://x/1.ts", 10, _BS_SETTINGS, quiet_logger) is True
+
+
+def test_check_black_true_even_on_nonzero_exit(plugin, pmod, monkeypatch, quiet_logger):
+    # blackdetect often prints a segment then ffmpeg exits non-zero (stream ends).
+    monkeypatch.setattr(pmod.subprocess, "run", _ffmpeg_run(stderr=_ONE_SEGMENT, returncode=1))
+    assert plugin._check_black_screen("http://x/1.ts", 10, _BS_SETTINGS, quiet_logger) is True
+
+
+def test_check_black_false_no_segment_clean_exit(plugin, pmod, monkeypatch, quiet_logger):
+    monkeypatch.setattr(pmod.subprocess, "run", _ffmpeg_run(stderr=_NO_SEGMENT, returncode=0))
+    assert plugin._check_black_screen("http://x/1.ts", 10, _BS_SETTINGS, quiet_logger) is False
+
+
+def test_check_black_none_on_nonzero_without_segment(plugin, pmod, monkeypatch, quiet_logger):
+    monkeypatch.setattr(pmod.subprocess, "run", _ffmpeg_run(stderr="Server returned 500", returncode=1))
+    assert plugin._check_black_screen("http://x/1.ts", 10, _BS_SETTINGS, quiet_logger) is None
+
+
+def test_check_black_none_when_ffmpeg_missing(plugin, pmod, monkeypatch, quiet_logger):
+    def _boom(*a, **k):
+        raise FileNotFoundError("ffmpeg")
+    monkeypatch.setattr(pmod.subprocess, "run", _boom)
+    assert plugin._check_black_screen("http://x/1.ts", 10, _BS_SETTINGS, quiet_logger) is None
+
+
+def test_check_black_none_on_timeout(plugin, pmod, monkeypatch, quiet_logger):
+    def _boom(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="ffmpeg", timeout=20)
+    monkeypatch.setattr(pmod.subprocess, "run", _boom)
+    assert plugin._check_black_screen("http://x/1.ts", 10, _BS_SETTINGS, quiet_logger) is None
+
+
+def test_check_black_command_shape(plugin, pmod, monkeypatch, quiet_logger):
+    capture = []
+    monkeypatch.setattr(pmod.subprocess, "run", _ffmpeg_run(stderr=_NO_SEGMENT, capture=capture))
+    plugin._check_black_screen("http://x/1.ts", 10, _BS_SETTINGS, quiet_logger)
+    cmd = capture[0]
+    # input options precede -i; uses -rw_timeout (not -timeout); info loglevel.
+    assert cmd[0] == "/usr/local/bin/ffmpeg"
+    assert "-rw_timeout" in cmd and "-timeout" not in cmd
+    i_idx = cmd.index("-i")
+    assert cmd.index("-rw_timeout") < i_idx
+    assert cmd.index("-user_agent") < i_idx
+    assert "-loglevel" in cmd and cmd[cmd.index("-loglevel") + 1] == "info"
+    assert any(p.startswith("blackdetect=d=3:pic_th=0.98") for p in cmd)
+    assert cmd[-3:] == ["-f", "null", "-"]
+    assert cmd[i_idx + 1] == "http://x/1.ts"

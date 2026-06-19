@@ -3047,6 +3047,52 @@ class Plugin:
                 continue
         return segments
 
+    def _check_black_screen(self, url, timeout, settings, logger):
+        # Decode a few seconds of an Alive stream and detect a pure black
+        # picture. Returns True (black), False (has video), or None
+        # (undecidable -> caller leaves the stream Alive). Never raises.
+        s = settings or {}
+        ffmpeg_path = s.get('ffmpeg_path', '/usr/local/bin/ffmpeg')
+        sample_seconds = s.get('black_screen_sample_seconds', 6)
+        min_black = s.get('black_screen_min_black_seconds', 3)
+        ffmpeg_timeout = s.get('black_screen_ffmpeg_timeout', 20)
+
+        # Input options (-user_agent, -rw_timeout) MUST precede -i or ffmpeg
+        # silently ignores them. -loglevel info is required: blackdetect logs
+        # its results at info level, so -loglevel error would suppress them.
+        cmd = [
+            ffmpeg_path,
+            '-hide_banner', '-nostats', '-loglevel', 'info',
+            '-user_agent', 'VLC/3.0.21 LibVLC/3.0.21',
+            '-rw_timeout', str(int(timeout) * 1000000),
+            '-i', url,
+            '-t', str(sample_seconds),
+            '-an',
+            '-vf', f'blackdetect=d={min_black}:pic_th=0.98',
+            '-f', 'null', '-',
+        ]
+
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=ffmpeg_timeout
+            )
+        except FileNotFoundError:
+            logger.warning(f"[Black Screen] ffmpeg not found at {ffmpeg_path}; leaving stream Alive")
+            return None
+        except subprocess.TimeoutExpired:
+            logger.warning(f"[Black Screen] ffmpeg timed out after {ffmpeg_timeout}s; leaving stream Alive")
+            return None
+        except Exception as e:
+            logger.warning(f"[Black Screen] ffmpeg error ({e}); leaving stream Alive")
+            return None
+
+        segments = self._parse_blackdetect_output(result.stderr or '')
+        if segments:
+            return True
+        if result.returncode == 0:
+            return False
+        return None
+
     def check_stream(self, stream_data, timeout, retries, logger, skip_retries=False, settings=None, retry_attempt=0):
         """Check individual stream status with optional retries."""
         url, channel_name = stream_data.get('stream_url'), stream_data.get('channel_name')
