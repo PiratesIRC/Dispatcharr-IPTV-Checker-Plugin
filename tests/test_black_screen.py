@@ -126,3 +126,82 @@ def test_check_black_command_shape(plugin, pmod, monkeypatch, quiet_logger):
     assert any(p.startswith("blackdetect=d=3:pic_th=0.98") for p in cmd)
     assert cmd[-3:] == ["-f", "null", "-"]
     assert cmd[i_idx + 1] == "http://x/1.ts"
+
+
+# ---- Task 3: check_stream integration -----------------------------------
+
+def _video_stream():
+    return {
+        "codec_type": "video", "index": 0,
+        "width": 1920, "height": 1080, "r_frame_rate": "30/1",
+        "codec_name": "h264", "pix_fmt": "yuv420p",
+    }
+
+
+def _dual_run(probe_data, ffmpeg_stderr="", ffmpeg_rc=0, capture=None):
+    """Fake subprocess.run that answers ffprobe with JSON and ffmpeg
+    (any command containing a blackdetect filter) with stderr."""
+    def _run(cmd, *a, **k):
+        if capture is not None:
+            capture.append(cmd)
+        is_ffmpeg = any("blackdetect" in str(p) for p in cmd)
+        if is_ffmpeg:
+            return _FakeCompleted(stderr=ffmpeg_stderr, returncode=ffmpeg_rc)
+        return _FakeCompleted(stdout=json.dumps(probe_data), returncode=0)
+    return _run
+
+
+def _probe():
+    return {"streams": [_video_stream()], "format": {"format_name": "mpegts"}}
+
+
+def _run_check(plugin, settings, quiet_logger):
+    stream = {"stream_url": "http://x/1.ts", "channel_name": "T", "stream_id": 1}
+    base = {"probe_timeout": 1, "ffprobe_analysis_duration": 1}
+    base.update(settings)
+    return plugin.check_stream(stream, 1, 0, quiet_logger, skip_retries=True, settings=base)
+
+
+def test_black_stream_becomes_dead(plugin, pmod, monkeypatch, quiet_logger):
+    monkeypatch.setattr(pmod.subprocess, "run",
+                        _dual_run(_probe(), ffmpeg_stderr=_ONE_SEGMENT, ffmpeg_rc=0))
+    result = _run_check(plugin, {"black_screen_detection": True}, quiet_logger)
+    assert result["status"] == "Dead"
+    assert result["error_type"] == "Black Screen"
+    # Metadata must be all-null so _update_dispatcharr_metadata clears stats.
+    assert all(v is None for v in result["dispatcharr_metadata"].values())
+
+
+def test_alive_stream_stays_alive_when_not_black(plugin, pmod, monkeypatch, quiet_logger):
+    monkeypatch.setattr(pmod.subprocess, "run",
+                        _dual_run(_probe(), ffmpeg_stderr=_NO_SEGMENT, ffmpeg_rc=0))
+    result = _run_check(plugin, {"black_screen_detection": True}, quiet_logger)
+    assert result["status"] == "Alive"
+
+
+def test_toggle_off_never_invokes_ffmpeg(plugin, pmod, monkeypatch, quiet_logger):
+    capture = []
+    monkeypatch.setattr(pmod.subprocess, "run",
+                        _dual_run(_probe(), ffmpeg_stderr=_ONE_SEGMENT, capture=capture))
+    result = _run_check(plugin, {"black_screen_detection": False}, quiet_logger)
+    assert result["status"] == "Alive"
+    assert not any(any("blackdetect" in str(p) for p in c) for c in capture)
+
+
+def test_ffmpeg_error_fails_open_to_alive(plugin, pmod, monkeypatch, quiet_logger):
+    # ffmpeg returns None verdict (non-zero, no segment) -> stays Alive.
+    monkeypatch.setattr(pmod.subprocess, "run",
+                        _dual_run(_probe(), ffmpeg_stderr="boom", ffmpeg_rc=1))
+    result = _run_check(plugin, {"black_screen_detection": True}, quiet_logger)
+    assert result["status"] == "Alive"
+
+
+def test_stop_event_skips_black_check(plugin, pmod, monkeypatch, quiet_logger):
+    capture = []
+    monkeypatch.setattr(pmod.subprocess, "run",
+                        _dual_run(_probe(), ffmpeg_stderr=_ONE_SEGMENT, capture=capture))
+    plugin._stop_event.set()
+    result = _run_check(plugin, {"black_screen_detection": True}, quiet_logger)
+    assert result["status"] == "Alive"
+    assert not any(any("blackdetect" in str(p) for p in c) for c in capture)
+    plugin._stop_event.clear()

@@ -3348,6 +3348,23 @@ class Plugin:
                             video_bitrate = int(round(video_bitrate))
 
                         stream_format = self._get_stream_format(resolution)
+
+                        # Optional black-screen verification. An Alive-by-ffprobe
+                        # stream can still decode to a pure black picture; mark it
+                        # Dead so destructive actions clean it up. Fail-open: any
+                        # ffmpeg problem (None) leaves the stream Alive. Null
+                        # metadata mirrors every other Dead stream so the DB stats
+                        # get cleared (see _update_dispatcharr_metadata all_none).
+                        if (settings and settings.get('black_screen_detection')
+                                and not self._stop_event.is_set()):
+                            if self._check_black_screen(url, timeout, settings, logger) is True:
+                                logger.info(f"✗ '{channel_name}' DEAD - Black Screen ({resolution})")
+                                black_return = dict(default_return)
+                                black_return['dispatcharr_metadata'] = {k: None for k in default_return['dispatcharr_metadata']}
+                                black_return['error'] = 'Stream decodes to a black screen'
+                                black_return['error_type'] = 'Black Screen'
+                                return black_return
+
                         logger.info(f"✓ '{channel_name}' ALIVE - {stream_format} {resolution} {framerate_num:.1f}fps")
 
                         # Build complete metadata for Dispatcharr integration
