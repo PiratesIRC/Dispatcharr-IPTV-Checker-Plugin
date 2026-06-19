@@ -205,3 +205,31 @@ def test_stop_event_skips_black_check(plugin, pmod, monkeypatch, quiet_logger):
     assert result["status"] == "Alive"
     assert not any(any("blackdetect" in str(p) for p in c) for c in capture)
     plugin._stop_event.clear()
+
+# ---- Task 4: settings schema --------------------------------------------
+
+import io  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+
+def _load_fields():
+    p = Path(__file__).resolve().parents[1] / "iptv_checker" / "plugin.json"
+    data = io.open(p, encoding="utf-8").read()
+    return {f["id"]: f for f in json.loads(data)["fields"] if "id" in f}
+
+
+def test_black_screen_settings_present_with_defaults():
+    fields = _load_fields()
+    expected = {
+        "black_screen_detection": ("boolean", False),
+        "black_screen_sample_seconds": ("number", 6),
+        "black_screen_min_black_seconds": ("number", 3),
+        "black_screen_ffmpeg_timeout": ("number", 20),
+        "ffmpeg_path": ("string", "/usr/local/bin/ffmpeg"),
+    }
+    for fid, (ftype, default) in expected.items():
+        assert fid in fields, f"missing setting {fid}"
+        assert fields[fid]["type"] == ftype, f"{fid} type"
+        assert fields[fid]["default"] == default, f"{fid} default"
+        assert fields[fid].get("label"), f"{fid} needs a label"
+        assert fields[fid].get("help_text"), f"{fid} needs help_text"
