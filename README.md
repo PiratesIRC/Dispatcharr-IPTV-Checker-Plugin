@@ -24,6 +24,7 @@ Before installing or using this plugin, it is **highly recommended** that you cr
 ## Features
 
 - **Stream Status Checking:** Verify if IPTV streams are alive or dead with smart retry logic
+- **Black-Screen Detection (opt-in):** Catch streams that pass ffprobe (valid resolution/codec/bitrate) but decode to a pure black picture. When enabled, each alive stream gets a second `ffmpeg blackdetect` pass and is marked **Dead (`Black Screen`)** if it's essentially all black, so rename/move/delete actions clean it up. Fail-open: any ffmpeg problem leaves the stream Alive (v1.26.1702112+)
 - **Wildcard Group Matching:** Target groups using patterns like `US-*`, `*Sports*`, or `Movies-??`
 - **Automated Scheduler:** Schedule stream checks using cron expressions with timezone support
 - **Post-Check Automation:** Automatically rename, move, delete, export, and webhook after scheduled checks
@@ -128,9 +129,21 @@ To update the plugin:
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | FFprobe Path | string | `/usr/local/bin/ffprobe` | Full path to the ffprobe executable |
-| FFprobe Analysis Flags | string | `-show_streams,-show_frames,...` | Comma-separated FFprobe flags |
-| FFprobe Analysis Duration | number | 5 | Seconds of stream to analyze |
+| FFprobe Analysis Flags | string | `-show_streams,-show_packets,-loglevel error` | Comma-separated FFprobe flags. Do **not** add `-show_frames` — it makes ffprobe emit a combined `packets_and_frames` array that breaks the bitrate calc. |
+| FFprobe Analysis Duration | number | 8 | Seconds of stream to analyze |
 | Streamlink-Only Hosts | string | `youtube.com, youtu.be, twitch.tv, kick.com` | Comma-separated host suffixes ffprobe cannot validate (served via Streamlink). Streams matching these hosts are marked **Skipped** instead of **Dead**, so rename/move/delete actions leave them alone. Blank falls back to defaults. |
+
+### Black-Screen Detection
+
+Optional second pass that decodes a few seconds of each **alive** stream with `ffmpeg`'s `blackdetect` filter and marks it **Dead (`Black Screen`)** if it is a pure black picture. Off by default. Requires `ffmpeg` in the container (see Requirements). Adds ~5–10 s per alive stream when enabled; dead/skipped streams are unaffected.
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| Detect Black-Screen Streams | boolean | false | Master toggle. When on, every alive stream is decoded with `ffmpeg blackdetect`; pure-black streams become **Dead** with `error_type = Black Screen`. Fail-open: if ffmpeg is missing or errors, the stream stays Alive. Very-dark-but-not-black "no signal" slates are **not** detected. |
+| Black-Screen Sample (seconds) | number | 6 | How many seconds of video to decode when testing for black. Longer = more reliable but slower. |
+| Continuous Black Required (seconds) | number | 3 | Minimum continuous run of black video (within the sample) required to flag. Keep a few seconds below the sample to allow for connection/keyframe latency. |
+| Black-Screen ffmpeg Timeout (seconds) | number | 20 | Hard wall-clock cap on the ffmpeg decode (connection + sampling). If exceeded, the stream is left Alive. |
+| FFmpeg Path | string | `/usr/local/bin/ffmpeg` | Full path to the ffmpeg executable (under **Advanced**). |
 
 ### Parallel Checking
 
@@ -309,6 +322,13 @@ If you see a lot of "Server Error" or "Stream Unreachable" results that turn ali
 - Permanently deletes channels with dead streams from the database
 - **Safety gates:** Requires typing `DELETE` in the confirmation field AND confirming via dialog
 - Can be automated via scheduler with the same confirmation gate
+
+### Black-Screen Detection
+- **The problem it solves:** some streams return a perfectly valid signal (resolution, codec, framerate, bitrate) yet only ever display a black screen. ffprobe can't catch these — it reads metadata, not pixels — so they're reported Alive.
+- **How it works:** when **Detect Black-Screen Streams** is enabled, every stream that passes ffprobe is decoded for `Black-Screen Sample (seconds)` with `ffmpeg -vf blackdetect=d=<min>:pic_th=0.98`. If a continuous black run of at least `Continuous Black Required (seconds)` is found, the stream is reclassified **Dead** with `error_type = Black Screen` and its `stream_stats` are cleared — so it flows through rename/move/delete, CSV, and webhook exactly like any other dead stream.
+- **Fail-open by design:** if ffmpeg is missing, errors, or exceeds `Black-Screen ffmpeg Timeout (seconds)`, the stream is left **Alive** — a tooling glitch never falsely kills a working channel.
+- **Cost:** ~5–10 s of extra decode per **alive** stream; dead/skipped streams are skipped. Runs on both manual and scheduled checks when enabled, and respects the windowed-schedule boundary.
+- **Tuning false positives:** a channel that's legitimately black for several seconds (fade-from-black intro, station slate) can trip detection. Raise **Continuous Black Required** or **Sample** seconds if needed. Only pure black is detected; dark-grey/error-card screens are not.
 
 ### Webhook Notifications
 - Sends an HTTP POST after scheduled checks complete
