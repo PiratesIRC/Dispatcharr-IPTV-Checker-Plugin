@@ -18,6 +18,7 @@ tests/                         # pytest suite (runs OUTSIDE the container)
 ├── test_bitrate_calc.py       #   packet-based bitrate + min-sample gate
 ├── test_scheduler_window.py   #   window math + pending-resume scope guards
 ├── test_webhook.py            #   Discord/generic payload shaping + headers
+├── test_black_screen.py       #   blackdetect parse + ffmpeg wrapper + check_stream
 └── test_plugin_helpers.py     #   cron parse/match, streamlink hosts, JSON I/O
 scripts/check_version_sync.py  # standalone version-drift check (CI/pre-commit usable)
 bump_version.py                # version bump across all three files
@@ -124,7 +125,7 @@ Upstream marketplace (`Dispatcharr/Plugins`) submission rules are in
 | `py_compile` | syntax errors |
 | `ruff check` | undefined names, unused imports, f-string bugs |
 | `test_version_sync.py` | plugin.json / plugin.py / CLAUDE.md version drift |
-| full pytest | regressions in rate-limit, bitrate, window, webhook logic |
+| full pytest | regressions in rate-limit, bitrate, window, webhook, black-screen logic |
 | release job (tags only) | tag/version mismatch; builds + attaches the zip |
 
 ## Claude Code automation
@@ -155,6 +156,7 @@ of the above.
 | CSV exports | `/data/exports/` |
 | Scheduler lock | `/data/iptv_checker_scheduler.pid` (2 lines: pid + boot token) |
 | ffprobe | `/usr/local/bin/ffprobe` (configurable) |
+| ffmpeg | `/usr/local/bin/ffmpeg` (configurable; only used by opt-in black-screen detection) |
 
 ## Gotchas (the expensive ones)
 
@@ -163,6 +165,11 @@ of the above.
   fallback silently dies (tested in `test_bitrate_calc.py`).
 - Dead-channel actions act only on `status == 'Dead'`; `Skipped` (Streamlink
   hosts, HTTP 429) must stay untouched.
+- Black-screen detection (opt-in) must **fail open**: a missing/erroring/timing-out
+  ffmpeg returns `None` and leaves the stream Alive — never Dead. The Dead result
+  it produces uses all-`None` `dispatcharr_metadata` so `_update_dispatcharr_metadata`
+  hits the `all_none` clear branch instead of writing `0x0` stats. Use `ffmpeg`'s
+  `-loglevel info` (blackdetect logs at info level) and `-rw_timeout` *before* `-i`.
 - `/data` must be a local volume — the scheduler election relies on POSIX
   rename atomicity.
 - Windows dev machines: always pass `encoding="utf-8"` when reading/writing
