@@ -195,13 +195,12 @@ New:
 
 ---
 
-### Task 3: Remove the plugin.json field + orphan file
+### Task 3: Remove the plugin.json field
 
-**Files:** `iptv_checker/plugin.json`, delete `iptv_checker/zone1970.tab`.
+**Files:** `iptv_checker/plugin.json`. (NOTE: `iptv_checker/zone1970.tab` was already removed earlier on this branch in commit `0405745` — do NOT attempt to `git rm` it; it no longer exists.)
 
-- [ ] **Step 1:** Delete the entire `scheduler_timezone` field object from `plugin.json` (the `select` with label `🌍 Scheduler Timezone`, default `America/Chicago`, and its full options array). Use the surrounding sibling objects as anchors; remove exactly one object (and its trailing comma).
-- [ ] **Step 2:** Delete `iptv_checker/zone1970.tab` (`git rm`).
-- [ ] **Step 3: Validation** — JSON parses; `grep -n scheduler_timezone iptv_checker/plugin.json` returns nothing; full gate green. Commit.
+- [ ] **Step 1:** Delete the entire `scheduler_timezone` field object from `plugin.json` (the `select` with label `🌍 Scheduler Timezone`, default `America/Chicago`, and its full options array). It is mid-array: preceded by `scheduled_times` and followed by `schedule_window_enabled`. Remove exactly one object (and its trailing comma).
+- [ ] **Step 2: Validation** — JSON parses; `scheduler_timezone` returns nothing in plugin.json; full gate green. Commit.
 
 ---
 
@@ -209,7 +208,7 @@ New:
 
 - [ ] Dry-run: a throwaway script that imports the plugin via stubs, monkeypatches a fake `core.models.CoreSettings`, and prints `_dispatcharr_timezone()` for valid/invalid/missing — confirm UTC fallback. Delete the script (don't commit).
 - [ ] `python bump_version.py`.
-- [ ] README: replace "timezone support" wording + the Scheduler Settings table row (remove the Scheduler Timezone row; note times use Dispatcharr's General Settings → Time Zone). DEVELOPMENT.md / CLAUDE.md: note the timezone source + UTC fallback. Create `RELEASE_NOTES_v<NEW>.md` (source change + behavior change + UTC fallback).
+- [ ] README: replace "timezone support" wording + the Scheduler Settings table row (remove the Scheduler Timezone row; note times use Dispatcharr's General Settings → Time Zone). DEVELOPMENT.md / CLAUDE.md: note the timezone source + UTC fallback. Create `RELEASE_NOTES_v<NEW>.md` (source change + behavior change + UTC fallback). Also note the M1 nuance: an **in-flight windowed run** resumes against the `tz` already persisted in `pending_resume.json` (written under the old default) until that pending file clears — by design, to preserve the original window boundary.
 - [ ] `.wolf/` anatomy/memory/cerebrum per protocol.
 - [ ] Final gate: `python -m pytest tests -q && python -m ruff check . && python -m pytest tests/test_version_sync.py -q`. Commit.
 
