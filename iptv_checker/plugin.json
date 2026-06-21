@@ -1,6 +1,6 @@
 {
   "name": "IPTV Checker",
-  "version": "1.26.1702112",
+  "version": "1.26.1721554",
   "description": "A Dispatcharr Plugin that goes through a playlist to check IPTV channels",
   "author": "PiratesIRC",
   "logo": "logo.png",
@@ -162,6 +162,33 @@
       "type": "string",
       "default": "Graveyard",
       "help_text": "Enter the name for the group to move dead channels into."
+    },
+    {
+      "id": "_section_black",
+      "label": "\u2b1b Black / Blank Screen Handling",
+      "type": "info",
+      "description": "How to rename and relocate channels detected as a pure black/blank screen. Requires 'Detect Black-Screen Streams' to be ON. These channels are handled separately from [DEAD] channels (excluded from the Dead rename/move actions)."
+    },
+    {
+      "id": "black_screen_rename_format",
+      "label": "\u2b1b Black-Screen Channel Rename Format",
+      "type": "string",
+      "default": "{name} [Blank]",
+      "placeholder": "{name} [Blank]",
+      "help_text": "Format for renaming black/blank-screen channels. Use {name} as the placeholder. Black-screen channels are excluded from the Dead rename/move actions so they are not double-tagged."
+    },
+    {
+      "id": "move_black_screen_group",
+      "label": "\u2b1b Move Black-Screen Channels to Group",
+      "type": "string",
+      "default": "Black Screens",
+      "help_text": "Enter the name for the group to move black/blank-screen channels into."
+    },
+    {
+      "id": "_section_restore",
+      "label": "\u267b\ufe0f Restore Recovered Channels",
+      "type": "info",
+      "description": "Channels that come back Alive can be auto-cleaned: plugin name tags ([DEAD]/[Slow]/[Blank]/quality) are stripped and the channel is moved back to the original group captured when it was first moved. Use the 'Restore Recovered Channels' action or the scheduler toggle. NOTE: a channel parked in a Graveyard/Slow/Black group is only re-checked (and thus restorable) if your scan scope includes that group."
     },
     {
       "id": "_section_low_fps",
@@ -1523,6 +1550,13 @@
       "help_text": "Automatically export results to CSV after scheduled checks complete."
     },
     {
+      "id": "scheduler_restore_channels",
+      "label": "\u267b\ufe0f Restore Recovered Channels After Scheduled Checks",
+      "type": "boolean",
+      "default": false,
+      "help_text": "After each scheduled check, channels that are Alive again but were previously marked by this plugin have their name tags ([DEAD]/[Slow]/[Blank]/quality) stripped and are moved back to their original group. Runs first, before re-marking. NOTE: a channel parked in a Graveyard/Slow/Black group is only re-checked (and thus restorable) if your scan scope includes that group."
+    },
+    {
       "id": "scheduler_rename_dead_channels",
       "label": "\ud83d\udc80 Rename Dead Channels After Scheduled Checks",
       "type": "boolean",
@@ -1535,6 +1569,13 @@
       "type": "boolean",
       "default": false,
       "help_text": "Automatically rename low framerate channels after scheduled checks complete."
+    },
+    {
+      "id": "scheduler_rename_black_screen_channels",
+      "label": "\u2b1b Rename Black-Screen Channels After Scheduled Checks",
+      "type": "boolean",
+      "default": false,
+      "help_text": "Automatically rename black/blank-screen channels after scheduled checks complete. Requires 'Detect Black-Screen Streams' to be ON."
     },
     {
       "id": "scheduler_add_video_format_suffix",
@@ -1556,6 +1597,13 @@
       "type": "boolean",
       "default": false,
       "help_text": "Automatically move low framerate channels to the configured group after scheduled checks complete."
+    },
+    {
+      "id": "scheduler_move_black_screen_channels",
+      "label": "\u2b1b Move Black-Screen Channels After Scheduled Checks",
+      "type": "boolean",
+      "default": false,
+      "help_text": "Automatically move black/blank-screen channels to the configured group after scheduled checks complete."
     },
     {
       "id": "scheduler_delete_dead_channels",
@@ -1698,6 +1746,39 @@
       },
       "button_variant": "filled",
       "button_label": "\u26b0\ufe0f Move Dead"
+    },
+    {
+      "id": "rename_black_screen_channels",
+      "label": "\u2b1b Rename Black-Screen Channels",
+      "description": "Rename all channels detected as a black/blank screen in the last check using the configured format.",
+      "button_color": "red",
+      "confirm": {
+        "message": "This will rename black-screen channels. This action is irreversible. Continue?"
+      },
+      "button_variant": "filled",
+      "button_label": "\u2b1b Rename Black"
+    },
+    {
+      "id": "move_black_screen_channels",
+      "label": "\u2b1b Move Black-Screen Channels to Group",
+      "description": "Moves all channels detected as a black/blank screen in the last check to the specified group.",
+      "button_color": "red",
+      "confirm": {
+        "message": "This will move black-screen channels to the configured group. This action is irreversible. Continue?"
+      },
+      "button_variant": "filled",
+      "button_label": "\u2b1b Move Black"
+    },
+    {
+      "id": "restore_channels",
+      "label": "\u267b\ufe0f Restore Recovered Channels",
+      "description": "For channels that are Alive again but were previously marked: strip plugin name tags and move them back to their original group.",
+      "button_color": "green",
+      "confirm": {
+        "message": "This will strip plugin tags from recovered channel names and move them back to their original groups. Continue?"
+      },
+      "button_variant": "filled",
+      "button_label": "\u267b\ufe0f Restore Recovered"
     },
     {
       "id": "rename_low_framerate_channels",
