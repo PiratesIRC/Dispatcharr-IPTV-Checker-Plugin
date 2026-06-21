@@ -164,11 +164,12 @@ Optional second pass that decodes a few seconds of each **alive** stream with `f
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | Scheduled Check Times | string | *(empty)* | Cron expression (e.g., `0 4 * * *` for daily at 4 AM). When **Use Windowed Schedule** is on, this becomes the window **start** trigger. |
-| Scheduler Timezone | select | `America/Chicago` | Timezone for the scheduler |
 | Use Windowed Schedule | boolean | false | When on, each cron-fire opens a run window. The check runs until the configured end-of-window, then halts cleanly between streams. The next time the window opens, the run **resumes** from where it left off — already-checked streams are skipped. |
 | Window End Mode | select | `duration` | `duration` = run for N hours; `time` = run until a specific HH:MM (wraps past midnight if earlier than the start). |
 | Window Duration (hours) | number | 4 | Used when Window End Mode = duration. Decimals allowed (e.g. 3.5). |
-| Window End Time | string | `04:00` | Used when Window End Mode = time. 24-hour format in the Scheduler Timezone above. |
+| Window End Time | string | `04:00` | Used when Window End Mode = time. 24-hour format in Dispatcharr's timezone (see note below). |
+
+> **Timezone (v1.26.1721651+):** the scheduler no longer has its own timezone setting — it uses **Dispatcharr → Settings → General → Time Zone**. Set your timezone there and all scheduled/windowed run times follow it. Falls back to `UTC` only if Dispatcharr's timezone can't be read. *(If you previously chose a plugin timezone that differed from Dispatcharr's, your scheduled times now follow Dispatcharr's — adjust the Dispatcharr setting if needed.)*
 | Export CSV for Scheduled Checks | boolean | false | Auto-export results to CSV after scheduled checks |
 | Rename Dead Channels | boolean | false | Auto-rename dead channels after scheduled checks |
 | Rename Low Framerate Channels | boolean | false | Auto-rename slow channels after scheduled checks |
@@ -200,7 +201,7 @@ Optional second pass that decodes a few seconds of each **alive** stream with `f
 
 3. **Configure Schedule** *(Optional)*
    - Set **Scheduled Check Times** using cron format
-   - Select your **Scheduler Timezone**
+   - Set your timezone in **Dispatcharr → Settings → General → Time Zone** (the scheduler uses it automatically)
    - Enable post-check automation options as desired
    - Click **Run** on **Update Schedule** to activate
 
@@ -273,7 +274,7 @@ Use shell-style wildcards in the Group(s) to Check field:
 
 ### Automated Scheduling
 - **Cron Support:** Configure checks using standard cron syntax (e.g., `0 4 * * *`)
-- **Timezone Aware:** Schedules run according to your local timezone
+- **Timezone Aware:** Schedules run according to **Dispatcharr's** configured timezone (Settings → General → Time Zone); no separate plugin timezone to keep in sync (v1.26.1721651+)
 - **Post-Check Automation:** Chain any combination of rename, move, delete, export, and webhook actions
 - **Conflict Prevention:** Scheduler queues jobs if a manual check is already running
 
@@ -281,12 +282,12 @@ Use shell-style wildcards in the Group(s) to Check field:
 
 For overnight or off-peak runs, enable **Use Windowed Schedule**. The cron expression becomes the window **start**; the check halts cleanly when the window closes and resumes from the same place the next time the window opens.
 
-**Example — Sun–Thu, 00:00 → 04:00 CST:**
+**Example — Sun–Thu, 00:00 → 04:00 (in Dispatcharr's timezone):**
 
 | Setting | Value |
 |---|---|
 | Scheduled Check Times | `0 0 * * 0-4` |
-| Scheduler Timezone | `America/Chicago` |
+| Dispatcharr Time Zone (Settings → General) | `America/Chicago` |
 | Use Windowed Schedule | ✅ on |
 | Window End Mode | `duration` |
 | Window Duration (hours) | `4` |
