@@ -36,11 +36,19 @@ Thumbs.db
 .claude/
 .serena/
 .wolf/
+.superpowers/
 CLAUDE.md
 GEMINI.md
+
+# AI dev-process artifacts (brainstorming specs + implementation plans)
+docs/superpowers/
 
 # Local docs/files
 BUG_FIX*.md
 SCHEDULING_LOGIC.md
+RELEASE_NOTES_*.md
 *.zip
 C--Users-*
+
+# Stray CSV exports produced by the plugin
+iptv_checker_results_*.csv
