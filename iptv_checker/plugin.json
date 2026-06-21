@@ -1,6 +1,6 @@
 {
   "name": "IPTV Checker",
-  "version": "1.26.1721733",
+  "version": "1.26.1721834",
   "description": "A Dispatcharr Plugin that goes through a playlist to check IPTV channels",
   "author": "PiratesIRC",
   "logo": "logo.png",
@@ -48,7 +48,7 @@
       "id": "_section_check_behavior",
       "label": "\ud83d\udd0d Check Behavior",
       "type": "info",
-      "description": "Timeouts, retries, concurrency, cooldown, and ffprobe analysis flags. Keep worker count below your provider's concurrent-connection limit."
+      "description": "Timeouts, retries, concurrency, and cooldown. Keep worker count below your provider's concurrent-connection limit."
     },
     {
       "id": "timeout",
@@ -93,61 +93,44 @@
       "help_text": "Cooldown each worker waits after finishing a stream check, before picking up the next. Prevents provider rate-limiting / slot-reuse errors when your account has a concurrent-connection limit. Default: 2. Retry passes use 3x this value."
     },
     {
-      "id": "ffprobe_flags",
-      "label": "\ud83d\udd0d FFprobe Analysis Flags",
-      "type": "string",
-      "default": "-show_streams,-show_packets,-loglevel error",
-      "placeholder": "-show_streams, -show_packets",
-      "help_text": "Comma-separated ffprobe flags for stream analysis. Options: -show_streams (basic validation), -show_packets (per-packet data; required for video bitrate calculation on live MPEG-TS streams), -loglevel error (errors only). Default: -show_streams,-show_packets,-loglevel error. Note: do not add -show_frames — when both -show_frames and -show_packets are passed, ffprobe returns a combined packets_and_frames array instead of separate packets[], which prevents the bitrate fallback from running."
-    },
-    {
-      "id": "ffprobe_analysis_duration",
-      "label": "\u23f1\ufe0f FFprobe Analysis Duration (seconds)",
-      "type": "number",
-      "default": 8,
-      "help_text": "Duration to analyze stream when using -show_frames or -show_packets. Longer duration = more accurate bitrate/GOP analysis but slower checks. Probes that capture fewer than 30 video packets leave video_bitrate unset, so 8s gives slow-start streams enough room to clear the threshold. Default: 8 seconds"
-    },
-    {
-      "id": "streamlink_hosts",
-      "label": "\u23fc Streamlink-Only Hosts (skip ffprobe)",
-      "type": "string",
-      "default": "youtube.com, youtu.be, twitch.tv, kick.com",
-      "placeholder": "youtube.com, twitch.tv",
-      "help_text": "Comma-separated host suffixes that ffprobe cannot validate (served via Streamlink). Streams on these hosts are marked 'Skipped' instead of 'Dead' so rename/move/delete actions leave them alone. Use full domains (e.g. 'youtube.com', not 'youtube'). Leave blank to use the defaults."
-    },
-    {
       "id": "_section_black_screen",
-      "label": "⬛ Black-Screen Detection",
+      "label": "\u2b1b Blank-Screen Detection",
       "type": "info",
-      "description": "Optionally decode a few seconds of each Alive stream with ffmpeg and mark it Dead if it is a pure black screen. Costs extra CPU/time per Alive stream."
+      "description": "Optionally decode a few seconds of each Alive stream with ffmpeg and mark it Dead if it is a pure blank (all-black) screen. Costs extra CPU/time per Alive stream."
     },
     {
       "id": "black_screen_detection",
-      "label": "⬛ Detect Black-Screen Streams",
+      "label": "\u2b1b Detect Blank-Screen Streams",
       "type": "boolean",
       "default": false,
-      "help_text": "When ON, every stream that passes ffprobe is decoded for a few seconds with ffmpeg's blackdetect filter; pure-black streams are marked Dead (error_type 'Black Screen') so rename/move/delete actions handle them. Adds ~5-10s per Alive stream. Fail-open: if ffmpeg is missing or errors, the stream stays Alive. Very-dark-but-not-black 'no signal' slates are NOT detected."
+      "help_text": "When ON, every stream that passes ffprobe is decoded for a few seconds with ffmpeg's blackdetect filter; pure-blank (all-black) streams are marked Dead and reported under the `Black Screen` error type so rename/move/delete actions handle them. Adds ~5-10s per Alive stream. Fail-open: if ffmpeg is missing or errors, the stream stays Alive. Very-dark-but-not-black 'no signal' slates are NOT detected."
     },
     {
       "id": "black_screen_sample_seconds",
-      "label": "⬛ Black-Screen Sample (seconds)",
+      "label": "\u2b1b Blank-Screen Sample (seconds)",
       "type": "number",
       "default": 6,
-      "help_text": "How many seconds of video to decode when testing for a black screen. Longer = more reliable but slower. Default: 6"
+      "help_text": "How many seconds of video to decode when testing for a blank screen. Longer = more reliable but slower. Default: 6"
     },
     {
       "id": "black_screen_min_black_seconds",
-      "label": "⬛ Continuous Black Required (seconds)",
+      "label": "\u2b1b Continuous Blank Required (seconds)",
       "type": "number",
       "default": 3,
-      "help_text": "Minimum continuous run of black video (within the sample) required to flag a stream as black. Should be a few seconds less than the sample to allow for connection/keyframe latency. Default: 3"
+      "help_text": "Minimum continuous run of blank (all-black) video (within the sample) required to flag a stream as blank. Should be a few seconds less than the sample to allow for connection/keyframe latency. Default: 3"
     },
     {
       "id": "black_screen_ffmpeg_timeout",
-      "label": "⬛ Black-Screen ffmpeg Timeout (seconds)",
+      "label": "\u2b1b Blank-Screen ffmpeg Timeout (seconds)",
       "type": "number",
       "default": 20,
-      "help_text": "Hard wall-clock cap on the ffmpeg black-screen decode (connection + sampling). If exceeded, the stream is left Alive. Default: 20"
+      "help_text": "Hard wall-clock cap on the ffmpeg blank-screen decode (connection + sampling). If exceeded, the stream is left Alive. Default: 20"
+    },
+    {
+      "id": "_section_post_check",
+      "type": "info",
+      "label": "\ud83c\udff7\ufe0f Post-Check Actions",
+      "description": "What to do with channels after a check completes: rename / move them by category, and restore recovered ones. Configure the tags and destination groups below; enable auto-apply on a schedule in 'Scheduling & Automation'."
     },
     {
       "id": "_section_dead",
@@ -172,30 +155,24 @@
     },
     {
       "id": "_section_black",
-      "label": "\u2b1b Black / Blank Screen Handling",
+      "label": "\u2b1b Blank-Screen Handling",
       "type": "info",
-      "description": "How to rename and relocate channels detected as a pure black/blank screen. Requires 'Detect Black-Screen Streams' to be ON. These channels are handled separately from [DEAD] channels (excluded from the Dead rename/move actions)."
+      "description": "How to rename and relocate channels detected as a pure blank (all-black) screen. Requires 'Detect Blank-Screen Streams' to be ON. These channels are handled separately from [DEAD] channels (excluded from the Dead rename/move actions)."
     },
     {
       "id": "black_screen_rename_format",
-      "label": "\u2b1b Black-Screen Channel Rename Format",
+      "label": "\u2b1b Blank-Screen Channel Rename Format",
       "type": "string",
       "default": "{name} [Blank]",
       "placeholder": "{name} [Blank]",
-      "help_text": "Format for renaming black/blank-screen channels. Use {name} as the placeholder. Black-screen channels are excluded from the Dead rename/move actions so they are not double-tagged."
+      "help_text": "Format for renaming blank-screen channels. Use {name} as the placeholder. Blank-screen channels are excluded from the Dead rename/move actions so they are not double-tagged."
     },
     {
       "id": "move_black_screen_group",
-      "label": "\u2b1b Move Black-Screen Channels to Group",
+      "label": "\u2b1b Move Blank-Screen Channels to Group",
       "type": "string",
       "default": "Black Screens",
-      "help_text": "Enter the name for the group to move black/blank-screen channels into."
-    },
-    {
-      "id": "_section_restore",
-      "label": "\u267b\ufe0f Restore Recovered Channels",
-      "type": "info",
-      "description": "Channels that come back Alive can be auto-cleaned: plugin name tags ([DEAD]/[Slow]/[Blank]/quality) are stripped and the channel is moved back to the original group captured when it was first moved. Use the 'Restore Recovered Channels' action or the scheduler toggle. NOTE: a channel parked in a Graveyard/Slow/Black group is only re-checked (and thus restorable) if your scan scope includes that group."
+      "help_text": "Enter the name for the group to move blank-screen channels into."
     },
     {
       "id": "_section_low_fps",
@@ -232,6 +209,12 @@
       "help_text": "A comma-separated list of formats to add as a suffix (e.g., [HD]) to channel names."
     },
     {
+      "id": "_section_restore",
+      "label": "\u267b\ufe0f Restore Recovered Channels",
+      "type": "info",
+      "description": "Channels that come back Alive can be auto-cleaned: plugin name tags ([DEAD]/[Slow]/[Blank]/quality) are stripped and the channel is moved back to the original group captured when it was first moved. Use the 'Restore Recovered Channels' action or the scheduler toggle. NOTE: a channel parked in a managed group (Graveyard / Slow / blank-screen) is only re-checked (and thus restorable) if your scan scope includes that group."
+    },
+    {
       "id": "_section_webhook",
       "label": "\ud83d\udd17 Webhook",
       "type": "info",
@@ -257,40 +240,52 @@
       "type": "string",
       "default": "",
       "placeholder": "0 4 * * *,0 3 1 * *",
-      "help_text": "Comma-separated cron expressions. Format: 'minute hour day month weekday' (weekday: 0=Sunday, 6=Saturday). Examples: '0 4 * * *' (daily at 4 AM), '0 3 * * 0' (Sundays at 3 AM), '0 2 */2 * *' (every 2 days at 2 AM). Leave blank to disable scheduling. 💾 After editing this field, click \"💾 Save Schedule\" below to apply the new schedule."
+      "help_text": "Comma-separated cron expressions. Format: 'minute hour day month weekday' (weekday: 0=Sunday, 6=Saturday). Examples: '0 4 * * *' (daily at 4 AM), '0 3 * * 0' (Sundays at 3 AM), '0 2 */2 * *' (every 2 days at 2 AM). Leave blank to disable scheduling. \ud83d\udcbe After editing this field, click \"\ud83d\udcbe Save Schedule\" below to apply the new schedule."
     },
     {
       "id": "schedule_window_enabled",
-      "label": "🪟 Use Windowed Schedule (run only during a time window)",
+      "label": "\ud83e\ude9f Use Windowed Schedule (run only during a time window)",
       "type": "boolean",
       "default": false,
       "help_text": "When on, your Scheduled Times above mark the START of a run window. The check runs until the configured end-time / duration, then halts cleanly between streams. The next time the window opens it RESUMES from the same point (channels already checked are skipped). Group selection, alternative-stream and visible-only settings are read fresh at each window fire."
     },
     {
       "id": "schedule_end_mode",
-      "label": "🛑 Window End Mode",
+      "label": "\ud83d\uded1 Window End Mode",
       "type": "select",
       "default": "duration",
       "options": [
-        { "label": "Run for a fixed duration (hours)", "value": "duration" },
-        { "label": "Run until a specific time (HH:MM)", "value": "time" }
+        {
+          "label": "Run for a fixed duration (hours)",
+          "value": "duration"
+        },
+        {
+          "label": "Run until a specific time (HH:MM)",
+          "value": "time"
+        }
       ],
       "help_text": "Choose how the window ends. Duration counts forward from the cron-fire time. Time mode supports past-midnight wrap (e.g. start 22:00, end 02:00)."
     },
     {
       "id": "schedule_duration_hours",
-      "label": "⏳ Window Duration (hours)",
+      "label": "\u23f3 Window Duration (hours)",
       "type": "number",
       "default": 4,
       "help_text": "Used when Window End Mode = duration. Decimals allowed (e.g. 3.5). Default: 4 hours."
     },
     {
       "id": "schedule_end_time",
-      "label": "🕓 Window End Time (HH:MM, scheduler timezone)",
+      "label": "\ud83d\udd53 Window End Time (HH:MM, scheduler timezone)",
       "type": "string",
       "default": "04:00",
       "placeholder": "04:00",
-      "help_text": "Used when Window End Mode = time. 24-hour format in the Scheduler Timezone above. If earlier than the start time, the window is treated as wrapping past midnight."
+      "help_text": "Used when Window End Mode = time. 24-hour format in Dispatcharr's timezone. If earlier than the start time, the window is treated as wrapping past midnight."
+    },
+    {
+      "id": "_section_auto_run",
+      "type": "info",
+      "label": "\u2699\ufe0f Auto-run After Scheduled Checks",
+      "description": "Which post-check actions to apply automatically after each scheduled check completes. (Manual actions are always available on the Actions tab.)"
     },
     {
       "id": "scheduler_export_csv",
@@ -304,7 +299,7 @@
       "label": "\u267b\ufe0f Restore Recovered Channels After Scheduled Checks",
       "type": "boolean",
       "default": false,
-      "help_text": "After each scheduled check, channels that are Alive again but were previously marked by this plugin have their name tags ([DEAD]/[Slow]/[Blank]/quality) stripped and are moved back to their original group. Runs first, before re-marking. NOTE: a channel parked in a Graveyard/Slow/Black group is only re-checked (and thus restorable) if your scan scope includes that group."
+      "help_text": "After each scheduled check, channels that are Alive again but were previously marked by this plugin have their name tags ([DEAD]/[Slow]/[Blank]/quality) stripped and are moved back to their original group. Runs first, before re-marking. NOTE: a channel parked in a managed group (Graveyard / Slow / blank-screen) is only re-checked (and thus restorable) if your scan scope includes that group."
     },
     {
       "id": "scheduler_rename_dead_channels",
@@ -314,18 +309,18 @@
       "help_text": "Automatically rename dead channels after scheduled checks complete."
     },
     {
+      "id": "scheduler_rename_black_screen_channels",
+      "label": "\u2b1b Rename Blank-Screen Channels After Scheduled Checks",
+      "type": "boolean",
+      "default": false,
+      "help_text": "Automatically rename blank-screen channels after scheduled checks complete. Requires 'Detect Blank-Screen Streams' to be ON."
+    },
+    {
       "id": "scheduler_rename_low_framerate_channels",
       "label": "\ud83d\udc0c Rename Low Framerate Channels After Scheduled Checks",
       "type": "boolean",
       "default": false,
       "help_text": "Automatically rename low framerate channels after scheduled checks complete."
-    },
-    {
-      "id": "scheduler_rename_black_screen_channels",
-      "label": "\u2b1b Rename Black-Screen Channels After Scheduled Checks",
-      "type": "boolean",
-      "default": false,
-      "help_text": "Automatically rename black/blank-screen channels after scheduled checks complete. Requires 'Detect Black-Screen Streams' to be ON."
     },
     {
       "id": "scheduler_add_video_format_suffix",
@@ -342,18 +337,18 @@
       "help_text": "Automatically move dead channels to the configured group after scheduled checks complete."
     },
     {
+      "id": "scheduler_move_black_screen_channels",
+      "label": "\u2b1b Move Blank-Screen Channels After Scheduled Checks",
+      "type": "boolean",
+      "default": false,
+      "help_text": "Automatically move blank-screen channels to the configured group after scheduled checks complete."
+    },
+    {
       "id": "scheduler_move_low_framerate_channels",
       "label": "\ud83d\udcc1 Move Low Framerate Channels After Scheduled Checks",
       "type": "boolean",
       "default": false,
       "help_text": "Automatically move low framerate channels to the configured group after scheduled checks complete."
-    },
-    {
-      "id": "scheduler_move_black_screen_channels",
-      "label": "\u2b1b Move Black-Screen Channels After Scheduled Checks",
-      "type": "boolean",
-      "default": false,
-      "help_text": "Automatically move black/blank-screen channels to the configured group after scheduled checks complete."
     },
     {
       "id": "scheduler_delete_dead_channels",
@@ -383,6 +378,29 @@
       "description": "Paths and low-level overrides. Change only if your environment differs from the Dispatcharr defaults."
     },
     {
+      "id": "ffprobe_flags",
+      "label": "\ud83d\udd0d FFprobe Analysis Flags",
+      "type": "string",
+      "default": "-show_streams,-show_packets,-loglevel error",
+      "placeholder": "-show_streams, -show_packets",
+      "help_text": "Comma-separated ffprobe flags for stream analysis. Options: -show_streams (basic validation), -show_packets (per-packet data; required for video bitrate calculation on live MPEG-TS streams), -loglevel error (errors only). Default: -show_streams,-show_packets,-loglevel error. Note: do not add -show_frames \u2014 when both -show_frames and -show_packets are passed, ffprobe returns a combined packets_and_frames array instead of separate packets[], which prevents the bitrate fallback from running."
+    },
+    {
+      "id": "ffprobe_analysis_duration",
+      "label": "\u23f1\ufe0f FFprobe Analysis Duration (seconds)",
+      "type": "number",
+      "default": 8,
+      "help_text": "Duration to analyze stream when using -show_frames or -show_packets. Longer duration = more accurate bitrate/GOP analysis but slower checks. Probes that capture fewer than 30 video packets leave video_bitrate unset, so 8s gives slow-start streams enough room to clear the threshold. Default: 8 seconds"
+    },
+    {
+      "id": "streamlink_hosts",
+      "label": "\u23fc Streamlink-Only Hosts (skip ffprobe)",
+      "type": "string",
+      "default": "youtube.com, youtu.be, twitch.tv, kick.com",
+      "placeholder": "youtube.com, twitch.tv",
+      "help_text": "Comma-separated host suffixes that ffprobe cannot validate (served via Streamlink). Streams on these hosts are marked 'Skipped' instead of 'Dead' so rename/move/delete actions leave them alone. Use full domains (e.g. 'youtube.com', not 'youtube'). Leave blank to use the defaults."
+    },
+    {
       "id": "ffprobe_path",
       "label": "\ud83d\udccd FFprobe Path",
       "type": "string",
@@ -392,11 +410,11 @@
     },
     {
       "id": "ffmpeg_path",
-      "label": "📍 FFmpeg Path",
+      "label": "\ud83d\udccd FFmpeg Path",
       "type": "string",
       "default": "/usr/local/bin/ffmpeg",
       "placeholder": "/usr/local/bin/ffmpeg",
-      "help_text": "Full path to the ffmpeg executable, used for black-screen detection. Default: /usr/local/bin/ffmpeg (Dispatcharr's default location)"
+      "help_text": "Full path to the ffmpeg executable, used for blank-screen detection. Default: /usr/local/bin/ffmpeg (Dispatcharr's default location)"
     }
   ],
   "actions": [
@@ -499,25 +517,25 @@
     },
     {
       "id": "rename_black_screen_channels",
-      "label": "\u2b1b Rename Black-Screen Channels",
-      "description": "Rename all channels detected as a black/blank screen in the last check using the configured format.",
+      "label": "\u2b1b Rename Blank-Screen Channels",
+      "description": "Rename all channels detected as a blank screen in the last check using the configured format.",
       "button_color": "red",
       "confirm": {
-        "message": "This will rename black-screen channels. This action is irreversible. Continue?"
+        "message": "This will rename blank-screen channels. This action is irreversible. Continue?"
       },
       "button_variant": "filled",
-      "button_label": "\u2b1b Rename Black"
+      "button_label": "\u2b1b Rename Blank"
     },
     {
       "id": "move_black_screen_channels",
-      "label": "\u2b1b Move Black-Screen Channels to Group",
-      "description": "Moves all channels detected as a black/blank screen in the last check to the specified group.",
+      "label": "\u2b1b Move Blank-Screen Channels to Group",
+      "description": "Moves all channels detected as a blank screen in the last check to the specified group.",
       "button_color": "red",
       "confirm": {
-        "message": "This will move black-screen channels to the configured group. This action is irreversible. Continue?"
+        "message": "This will move blank-screen channels to the configured group. This action is irreversible. Continue?"
       },
       "button_variant": "filled",
-      "button_label": "\u2b1b Move Black"
+      "button_label": "\u2b1b Move Blank"
     },
     {
       "id": "restore_channels",

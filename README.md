@@ -24,7 +24,7 @@ Before installing or using this plugin, it is **highly recommended** that you cr
 ## Features
 
 - **Stream Status Checking:** Verify if IPTV streams are alive or dead with smart retry logic
-- **Black-Screen Detection (opt-in):** Catch streams that pass ffprobe (valid resolution/codec/bitrate) but decode to a pure black picture. When enabled, each alive stream gets a second `ffmpeg blackdetect` pass and is marked **Dead (`Black Screen`)** if it's essentially all black. Black/blank channels are their own category — own rename tag (`[Blank]`) and own group (`Black Screens`), separate from regular dead (v1.26.1721554+). Fail-open: any ffmpeg problem leaves the stream Alive (v1.26.1702112+)
+- **Blank-Screen Detection (opt-in):** Catch streams that pass ffprobe (valid resolution/codec/bitrate) but decode to a pure black picture. When enabled, each alive stream gets a second `ffmpeg blackdetect` pass and is marked **Dead (`Black Screen`)** if it's essentially all black. Blank channels are their own category — own rename tag (`[Blank]`) and own group (`Black Screens`), separate from regular dead (v1.26.1721554+). Fail-open: any ffmpeg problem leaves the stream Alive (v1.26.1702112+)
 - **Restore Recovered Channels (self-healing):** When a previously marked channel comes back **Alive**, strip the plugin's name tags (`[DEAD]`/`[Slow]`/`[Blank]`/quality) and move it back to its **exact original group** — captured automatically when it was first moved. Available as a manual action and a scheduler toggle that runs first each scheduled check (v1.26.1721554+)
 - **Wildcard Group Matching:** Target groups using patterns like `US-*`, `*Sports*`, or `Movies-??`
 - **Automated Scheduler:** Schedule stream checks using cron expressions with timezone support
@@ -122,13 +122,13 @@ To update the plugin:
 |---------|------|---------|-------------|
 | Dead Channel Rename Format | string | `{name} [DEAD]` | Format for renaming dead channels (excludes black/blank — see below) |
 | Move Dead Channels to Group | string | `Graveyard` | Group to move dead channels to (excludes black/blank) |
-| Black-Screen Channel Rename Format | string | `{name} [Blank]` | Format for renaming channels detected as a black/blank screen |
-| Move Black-Screen Channels to Group | string | `Black Screens` | Group to move black/blank-screen channels to |
+| Blank-Screen Channel Rename Format | string | `{name} [Blank]` | Format for renaming channels detected as a blank screen |
+| Move Blank-Screen Channels to Group | string | `Black Screens` | Group to move blank-screen channels to |
 | Low Framerate Rename Format | string | `{name} [Slow]` | Format for renaming low FPS channels (<30fps) |
 | Move Low Framerate Group | string | `Slow` | Group to move low framerate channels to |
 | Video Format Suffixes | string | `UHD, FHD, HD, SD, Unknown` | Formats to add as suffixes |
 
-> **Black/blank is a separate category (v1.26.1721554+).** When black-screen detection is on, black/blank channels are renamed/moved by the **black** actions (`[Blank]` / `Black Screens`) and are **excluded** from the regular Dead rename/move so they aren't double-tagged. They remain `status=Dead`, so **Delete Dead Channels still deletes them.** Existing users who relied on black streams getting `[DEAD]`/Graveyard should enable the new black rename/move toggles (or set the Black-Screen Rename Format to `{name} [DEAD]`).
+> **Blank-screen is a separate category (v1.26.1721554+).** When blank-screen detection is on, blank channels are renamed/moved by the **blank** actions (`[Blank]` / `Black Screens`) and are **excluded** from the regular Dead rename/move so they aren't double-tagged. They remain `status=Dead`, so **Delete Dead Channels still deletes them.** Existing users who relied on blank streams getting `[DEAD]`/Graveyard should enable the new blank rename/move toggles (or set the Blank-Screen Rename Format to `{name} [DEAD]`).
 
 ### FFprobe Settings
 
@@ -139,16 +139,16 @@ To update the plugin:
 | FFprobe Analysis Duration | number | 8 | Seconds of stream to analyze |
 | Streamlink-Only Hosts | string | `youtube.com, youtu.be, twitch.tv, kick.com` | Comma-separated host suffixes ffprobe cannot validate (served via Streamlink). Streams matching these hosts are marked **Skipped** instead of **Dead**, so rename/move/delete actions leave them alone. Blank falls back to defaults. |
 
-### Black-Screen Detection
+### Blank-Screen Detection
 
 Optional second pass that decodes a few seconds of each **alive** stream with `ffmpeg`'s `blackdetect` filter and marks it **Dead (`Black Screen`)** if it is a pure black picture. Off by default. Requires `ffmpeg` in the container (see Requirements). Adds ~5–10 s per alive stream when enabled; dead/skipped streams are unaffected.
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| Detect Black-Screen Streams | boolean | false | Master toggle. When on, every alive stream is decoded with `ffmpeg blackdetect`; pure-black streams become **Dead** with `error_type = Black Screen`. Fail-open: if ffmpeg is missing or errors, the stream stays Alive. Very-dark-but-not-black "no signal" slates are **not** detected. |
-| Black-Screen Sample (seconds) | number | 6 | How many seconds of video to decode when testing for black. Longer = more reliable but slower. |
-| Continuous Black Required (seconds) | number | 3 | Minimum continuous run of black video (within the sample) required to flag. Keep a few seconds below the sample to allow for connection/keyframe latency. |
-| Black-Screen ffmpeg Timeout (seconds) | number | 20 | Hard wall-clock cap on the ffmpeg decode (connection + sampling). If exceeded, the stream is left Alive. |
+| Detect Blank-Screen Streams | boolean | false | Master toggle. When on, every alive stream is decoded with `ffmpeg blackdetect`; pure-black streams become **Dead** with `error_type = Black Screen`. Fail-open: if ffmpeg is missing or errors, the stream stays Alive. Very-dark-but-not-black "no signal" slates are **not** detected. |
+| Blank-Screen Sample (seconds) | number | 6 | How many seconds of video to decode when testing for black. Longer = more reliable but slower. |
+| Continuous Blank Required (seconds) | number | 3 | Minimum continuous run of black video (within the sample) required to flag. Keep a few seconds below the sample to allow for connection/keyframe latency. |
+| Blank-Screen ffmpeg Timeout (seconds) | number | 20 | Hard wall-clock cap on the ffmpeg decode (connection + sampling). If exceeded, the stream is left Alive. |
 | FFmpeg Path | string | `/usr/local/bin/ffmpeg` | Full path to the ffmpeg executable (under **Advanced**). |
 
 ### Parallel Checking
@@ -180,11 +180,11 @@ Optional second pass that decodes a few seconds of each **alive** stream with `f
 | Restore Recovered Channels | boolean | false | Auto-restore channels that are Alive again but were previously marked — strips plugin tags and moves them back to their original group. Runs **first**, before re-marking. |
 | Rename Dead Channels | boolean | false | Auto-rename dead channels after scheduled checks |
 | Rename Low Framerate Channels | boolean | false | Auto-rename slow channels after scheduled checks |
-| Rename Black-Screen Channels | boolean | false | Auto-rename black/blank-screen channels after scheduled checks |
+| Rename Blank-Screen Channels | boolean | false | Auto-rename blank-screen channels after scheduled checks |
 | Add Video Format Suffix | boolean | false | Auto-add format suffix after scheduled checks |
 | Move Dead Channels | boolean | false | Auto-move dead channels after scheduled checks |
 | Move Low Framerate Channels | boolean | false | Auto-move slow channels after scheduled checks |
-| Move Black-Screen Channels | boolean | false | Auto-move black/blank-screen channels after scheduled checks |
+| Move Blank-Screen Channels | boolean | false | Auto-move blank-screen channels after scheduled checks |
 | Delete Dead Channels | boolean | false | Auto-delete dead channels after scheduled checks |
 | Send Webhook Notification | boolean | false | Send webhook after scheduled checks (payload gains a `restored` count) |
 
@@ -263,8 +263,8 @@ Optional second pass that decodes a few seconds of each **alive** stream with `f
 - **Rename Dead Channels:** Apply rename format to dead streams (excludes black/blank)
 - **Move Dead Channels to Group:** Relocate dead channels (excludes black/blank)
 - **Delete Dead Channels:** Permanently remove dead channels (requires confirmation; includes black/blank)
-- **Rename Black-Screen Channels:** Apply `[Blank]` format to channels detected as a black/blank screen
-- **Move Black-Screen Channels to Group:** Relocate black/blank-screen channels to the `Black Screens` group
+- **Rename Blank-Screen Channels:** Apply `[Blank]` format to channels detected as a blank screen
+- **Move Blank-Screen Channels to Group:** Relocate blank-screen channels to the `Black Screens` group
 - **Rename Low Framerate Channels:** Apply rename format to slow streams (<30fps)
 - **Move Low Framerate Channels:** Relocate slow channels
 - **Add Video Format Suffix:** Apply format tags ([UHD], [FHD], [HD], [SD])
@@ -343,21 +343,21 @@ If you see a lot of "Server Error" or "Stream Unreachable" results that turn ali
 - **Safety gates:** Requires typing `DELETE` in the confirmation field AND confirming via dialog
 - Can be automated via scheduler with the same confirmation gate
 
-### Black-Screen Detection
-- **The problem it solves:** some streams return a perfectly valid signal (resolution, codec, framerate, bitrate) yet only ever display a black screen. ffprobe can't catch these — it reads metadata, not pixels — so they're reported Alive.
-- **How it works:** when **Detect Black-Screen Streams** is enabled, every stream that passes ffprobe is decoded for `Black-Screen Sample (seconds)` with `ffmpeg -vf blackdetect=d=<min>:pic_th=0.98`. If a continuous black run of at least `Continuous Black Required (seconds)` is found, the stream is reclassified **Dead** with `error_type = Black Screen` and its `stream_stats` are cleared — so it flows through rename/move/delete, CSV, and webhook exactly like any other dead stream.
-- **Fail-open by design:** if ffmpeg is missing, errors, or exceeds `Black-Screen ffmpeg Timeout (seconds)`, the stream is left **Alive** — a tooling glitch never falsely kills a working channel.
+### Blank-Screen Detection
+- **The problem it solves:** some streams return a perfectly valid signal (resolution, codec, framerate, bitrate) yet only ever display a blank screen. ffprobe can't catch these — it reads metadata, not pixels — so they're reported Alive.
+- **How it works:** when **Detect Blank-Screen Streams** is enabled, every stream that passes ffprobe is decoded for `Blank-Screen Sample (seconds)` with `ffmpeg -vf blackdetect=d=<min>:pic_th=0.98`. If a continuous black run of at least `Continuous Blank Required (seconds)` is found, the stream is reclassified **Dead** with `error_type = Black Screen` and its `stream_stats` are cleared — so it flows through rename/move/delete, CSV, and webhook exactly like any other dead stream.
+- **Fail-open by design:** if ffmpeg is missing, errors, or exceeds `Blank-Screen ffmpeg Timeout (seconds)`, the stream is left **Alive** — a tooling glitch never falsely kills a working channel.
 - **Cost:** ~5–10 s of extra decode per **alive** stream; dead/skipped streams are skipped. Runs on both manual and scheduled checks when enabled, and respects the windowed-schedule boundary.
-- **Tuning false positives:** a channel that's legitimately black for several seconds (fade-from-black intro, station slate) can trip detection. Raise **Continuous Black Required** or **Sample** seconds if needed. Only pure black is detected; dark-grey/error-card screens are not.
-- **Separate category (v1.26.1721554+):** when detection is on, black/blank channels are handled by the dedicated **Rename/Move Black-Screen** actions (`[Blank]` tag, `Black Screens` group) and are **excluded** from the regular Dead rename/move so they aren't double-tagged. They stay `status=Dead`, so **Delete Dead Channels still removes them.**
+- **Tuning false positives:** a channel that's legitimately black for several seconds (fade-from-black intro, station slate) can trip detection. Raise **Continuous Blank Required** or **Sample** seconds if needed. Only pure black is detected; dark-grey/error-card screens are not.
+- **Separate category (v1.26.1721554+):** when detection is on, blank channels are handled by the dedicated **Rename/Move Blank-Screen** actions (`[Blank]` tag, `Black Screens` group) and are **excluded** from the regular Dead rename/move so they aren't double-tagged. They stay `status=Dead`, so **Delete Dead Channels still removes them.**
 
 ### Restore Recovered Channels (self-healing)
-- **The problem it solves:** once a channel is renamed `[DEAD]`/`[Slow]`/`[Blank]` and exiled to a Graveyard/Slow/Black group, there was no automatic way back when the stream recovered. It stayed tagged and stranded.
+- **The problem it solves:** once a channel is renamed `[DEAD]`/`[Slow]`/`[Blank]` and exiled to a Graveyard / Slow / blank-screen group, there was no automatic way back when the stream recovered. It stayed tagged and stranded.
 - **How it works:** for each channel whose latest status is **Alive** but which was previously marked by this plugin (it has a stored original group, or its name still carries a plugin status tag), the restore action strips **all** plugin name tags back to a clean base name and moves it back to its **exact original group**. The original group is captured to `/data/iptv_checker_channel_state.json` the moment a Move action exiles the channel (it never records a managed destination group as the "original", and never overwrites an existing capture).
 - **Eligibility is conservative:** a healthy channel that merely has a `[HD]` quality suffix and was never marked is **not** touched.
 - **Manual or scheduled:** run **Restore Recovered Channels** on demand, or enable the scheduler toggle — it runs **first** each scheduled check (heal before re-marking). The webhook payload gains a `restored` count.
 - **Edge cases:** if the original group was deleted in the meantime, the name is still restored and the channel is left where it is (a warning is logged). Deleting a dead channel prunes its stored state.
-- **Operational note:** a channel parked in a Graveyard/Slow/Black group is only re-checked — and therefore only restorable — if your scan scope **includes** that group. Add the managed groups to your scheduled scan scope (or run a full-scope scan) so self-healing actually fires.
+- **Operational note:** a channel parked in a Graveyard / Slow / blank-screen group is only re-checked — and therefore only restorable — if your scan scope **includes** that group. Add the managed groups to your scheduled scan scope (or run a full-scope scan) so self-healing actually fires.
 
 ### Webhook Notifications
 - Sends an HTTP POST after scheduled checks complete
