@@ -262,6 +262,28 @@ def test_restore_action_strips_and_moves_back(plugin, tmp_path, monkeypatch):
     assert json.load(open(plugin.channel_state_file)) == {}
 
 
+def test_restore_action_status_tag_without_state(plugin, tmp_path, monkeypatch):
+    # Channel was renamed [DEAD] but never moved (no state entry): strip the name,
+    # do NOT move, nothing to clear. Common "renamed but never moved" path.
+    plugin.channel_state_file = str(tmp_path / "state.json")
+    with open(plugin.channel_state_file, "w") as f:
+        json.dump({}, f)
+    _write(plugin, [{"channel_id": 7, "channel_name": "Sky", "status": "Alive"}])
+    monkeypatch.setattr(plugin, "_get_all_channels", lambda logger: [{"id": 7, "name": "Sky [DEAD]"}])
+    monkeypatch.setattr(plugin, "_get_all_groups", lambda logger: [{"id": 1, "name": "Sports"}])
+    payloads = []
+    monkeypatch.setattr(plugin, "_bulk_update_channels",
+                        lambda payload, fields, logger: payloads.append((fields[0], payload)) or len(payload))
+    monkeypatch.setattr(plugin, "_trigger_frontend_refresh", lambda *a, **k: True)
+    res = plugin.restore_channels_action({"dead_rename_format": "{name} [DEAD]"}, _logger())
+    assert res["status"] == "ok"
+    assert res["restored"] == 1
+    by_field = dict(payloads)
+    assert by_field["name"] == [{"id": 7, "name": "Sky"}]
+    assert by_field["channel_group_id"] == []  # no state -> no move
+    assert json.load(open(plugin.channel_state_file)) == {}
+
+
 def test_restore_action_no_recovered(plugin, tmp_path, monkeypatch):
     plugin.channel_state_file = str(tmp_path / "state.json")
     _write(plugin, [{"channel_id": 9, "channel_name": "CNN", "status": "Alive"}])

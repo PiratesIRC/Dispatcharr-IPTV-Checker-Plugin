@@ -1624,6 +1624,8 @@ class Plugin:
                 f"**IPTV Checker — check complete**\n"
                 f"Total: {len(results)}  •  ✅ Alive: {alive}  •  ❌ Dead: {dead}  •  ⏭️ Skipped: {skipped}"
             )
+            # Discord: hide the line on 0/None (noise); generic JSON below keeps an
+            # explicit "restored": 0 key for stable machine consumers.
             if restored:
                 content += f"  •  ♻️ Restored: {restored}"
             payload = json.dumps({"content": content}).encode('utf-8')
@@ -2662,7 +2664,13 @@ class Plugin:
     def _capture_original_state(self, channel_ids, settings, logger):
         """Persist each channel's current group as its 'original' before a move so
         restore can return it later. Never overwrites an existing entry and never
-        records a managed destination group. Best-effort: never aborts the move."""
+        records a managed destination group. Best-effort: never aborts the move.
+
+        The state file is read-modify-written atomically (_save_json_file = tmp +
+        os.replace), but two processes mutating it concurrently are last-writer-wins.
+        That is acceptable: a lost capture only forfeits the exact-group restore for
+        that channel (its name is still restored). Same accepted RMW model as
+        pending_resume.json; moves are not actions users typically fire in parallel."""
         try:
             channel_ids = list(channel_ids)
             if not channel_ids:

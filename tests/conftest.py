@@ -122,6 +122,7 @@ def plugin(tmp_path):
     inst.loaded_channels_file = str(tmp_path / "loaded_channels.json")
     inst.pending_resume_file = str(tmp_path / "pending_resume.json")
     inst.progress_file = str(tmp_path / "progress.json")
+    inst.channel_state_file = str(tmp_path / "channel_state.json")
     return inst
 
 
