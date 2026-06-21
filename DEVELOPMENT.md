@@ -8,7 +8,7 @@ scheduler internals see `SCHEDULING_LOGIC.md`.
 
 ```
 iptv_checker/                  # ← the plugin (this is what gets deployed/zipped)
-├── plugin.py                  #   all plugin logic (~3,400 lines, single file)
+├── plugin.py                  #   all plugin logic (~3,900 lines, single file)
 ├── plugin.json                #   fields, actions, metadata — single source of truth
 └── __init__.py                #   exports Plugin
 tests/                         # pytest suite (runs OUTSIDE the container)
@@ -19,6 +19,10 @@ tests/                         # pytest suite (runs OUTSIDE the container)
 ├── test_scheduler_window.py   #   window math + pending-resume scope guards
 ├── test_webhook.py            #   Discord/generic payload shaping + headers
 ├── test_black_screen.py       #   blackdetect parse + ffmpeg wrapper + check_stream
+├── test_restore_and_black.py  #   restore + blank-flag predicates/planners/actions
+├── test_timezone.py           #   Dispatcharr-sourced timezone resolver + UTC fallback
+├── test_group_filter.py       #   include/exclude group filtering (load_groups_action)
+├── test_settings_schema.py    #   plugin.json id-set freeze + no-"Black Screen"-in-labels
 └── test_plugin_helpers.py     #   cron parse/match, streamlink hosts, JSON I/O
 scripts/check_version_sync.py  # standalone version-drift check (CI/pre-commit usable)
 bump_version.py                # version bump across all three files
