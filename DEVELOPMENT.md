@@ -182,6 +182,11 @@ of the above.
   `-loglevel info` (blackdetect logs at info level) and `-rw_timeout` *before* `-i`.
 - `/data` must be a local volume — the scheduler election relies on POSIX
   rename atomicity.
+- Scheduler timezone comes from Dispatcharr (`core.models.CoreSettings.get_system_time_zone()`)
+  via `_dispatcharr_timezone()`, NOT a plugin setting (removed v1.26.1721651). The lazy
+  `from core.models import CoreSettings` lives inside the resolver so the module still imports
+  in tests (conftest doesn't stub `core.models` → ImportError → `_coerce_timezone` falls back to
+  `PluginConfig.DEFAULT_TIMEZONE` = `UTC`). Don't reintroduce a `scheduler_timezone` field.
 - Windows dev machines: always pass `encoding="utf-8"` when reading/writing
   the plugin files from scripts; the cp1252 default truncates on the emoji in
   plugin.py/plugin.json (this bit `bump_version.py` once).

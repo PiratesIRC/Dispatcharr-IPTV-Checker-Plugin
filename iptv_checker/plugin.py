@@ -90,7 +90,7 @@ class PluginConfig:
     SCHEDULER_RELOAD_FLAG = "/data/iptv_checker_scheduler_reload.flag"
 
     # --- Scheduler ---
-    DEFAULT_TIMEZONE = "America/Chicago"
+    DEFAULT_TIMEZONE = "UTC"
     SCHEDULER_CHECK_INTERVAL = 30  # Check every 30 seconds
     SCHEDULER_TIME_WINDOW = 30  # ±30 second window to trigger
     SCHEDULER_ERROR_WAIT = 60  # Wait 60s if error occurs
@@ -283,7 +283,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.1721554"
+    version = "1.26.1721651"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -511,12 +511,38 @@ class Plugin:
             return False
         return datetime.now(self._active_window_tz) >= self._active_window_end
 
+    @staticmethod
+    def _coerce_timezone(value):
+        """Return a valid IANA timezone name, or PluginConfig.DEFAULT_TIMEZONE as a
+        safe fallback. Accepts None / blank / non-string / invalid -> default."""
+        if not isinstance(value, str) or not value.strip():
+            return PluginConfig.DEFAULT_TIMEZONE
+        candidate = value.strip()
+        try:
+            import pytz
+            pytz.timezone(candidate)
+        except Exception:
+            return PluginConfig.DEFAULT_TIMEZONE
+        return candidate
+
+    def _dispatcharr_timezone(self):
+        """Resolve the effective timezone from Dispatcharr's global setting
+        (General Settings -> Time Zone, core.models.CoreSettings). Falls back to
+        PluginConfig.DEFAULT_TIMEZONE ('UTC') when unreadable/invalid or when
+        running outside Dispatcharr. Lazy import so the module loads in tests."""
+        try:
+            from core.models import CoreSettings
+            return self._coerce_timezone(CoreSettings.get_system_time_zone())
+        except Exception as e:
+            LOGGER.debug(f"{LOG_PREFIX} Could not read Dispatcharr timezone, using {PluginConfig.DEFAULT_TIMEZONE}: {e}")
+            return PluginConfig.DEFAULT_TIMEZONE
+
     def _setup_window_state(self, settings):
         """Resolve TZ and compute end-of-window. Stores state on self. Returns False on bad config."""
         if not PYTZ_AVAILABLE:
             LOGGER.error("Windowed schedule requires pytz")
             return False
-        tz_str = settings.get('scheduler_timezone', PluginConfig.DEFAULT_TIMEZONE)
+        tz_str = self._dispatcharr_timezone()
         try:
             tz = pytz.timezone(tz_str)
         except Exception:
@@ -582,7 +608,7 @@ class Plugin:
         if saved_end_iso:
             try:
                 saved_end = datetime.fromisoformat(saved_end_iso)
-                saved_tz = pytz.timezone(pending.get('tz') or PluginConfig.DEFAULT_TIMEZONE)
+                saved_tz = pytz.timezone(pending.get('tz') or self._dispatcharr_timezone())
                 if saved_end.tzinfo is None:
                     saved_end = saved_tz.localize(saved_end)
                 if datetime.now(saved_tz) >= saved_end:
@@ -675,7 +701,7 @@ class Plugin:
         if not pending or not pending.get("remaining_stream_ids"):
             return
         end_iso = pending.get("window_end_iso")
-        tz_str = pending.get("tz") or settings.get('scheduler_timezone', PluginConfig.DEFAULT_TIMEZONE)
+        tz_str = pending.get("tz") or self._dispatcharr_timezone()
         try:
             tz = pytz.timezone(tz_str)
             end = datetime.fromisoformat(end_iso) if end_iso else None
@@ -915,7 +941,7 @@ class Plugin:
             return
         
         # Get timezone
-        tz_str = settings.get('scheduler_timezone', PluginConfig.DEFAULT_TIMEZONE)
+        tz_str = self._dispatcharr_timezone()
         try:
             local_tz = pytz.timezone(tz_str)
         except pytz.exceptions.UnknownTimeZoneError:
@@ -951,7 +977,7 @@ class Plugin:
                         fresh = self._fresh_settings(settings)
                         new_times_str = (fresh.get("scheduled_times") or "").strip()
                         new_times = self._parse_scheduled_times(new_times_str) if new_times_str else []
-                        new_tz_str = fresh.get("scheduler_timezone", PluginConfig.DEFAULT_TIMEZONE)
+                        new_tz_str = self._dispatcharr_timezone()
                         try:
                             new_tz = pytz.timezone(new_tz_str)
                         except pytz.exceptions.UnknownTimeZoneError:
@@ -1454,17 +1480,11 @@ class Plugin:
             else:
                 validation_results.append(f"✅ Cron schedule(s) valid: {', '.join(scheduled_times)}")
                 
-            # Validate timezone
-            scheduler_timezone = settings.get("scheduler_timezone", PluginConfig.DEFAULT_TIMEZONE)
+            # Timezone comes from Dispatcharr's global setting (General Settings -> Time Zone).
             if PYTZ_AVAILABLE:
-                try:
-                    pytz.timezone(scheduler_timezone)
-                    validation_results.append(f"✅ Timezone valid: {scheduler_timezone}")
-                except pytz.exceptions.UnknownTimeZoneError:
-                    validation_results.append(f"❌ Unknown timezone: {scheduler_timezone}")
-                    has_errors = True
+                validation_results.append(f"✅ Using Dispatcharr timezone: {self._dispatcharr_timezone()}")
             else:
-                validation_results.append("⚠️ pytz not available - scheduler timezone cannot be validated")
+                validation_results.append("⚠️ pytz not available - scheduler cannot run")
 
         # Validate auto-delete settings
         if settings.get('scheduler_delete_dead_channels', False):
@@ -2844,9 +2864,9 @@ class Plugin:
         if settings.get('schedule_window_enabled', False):
             end_mode = settings.get('schedule_end_mode', 'duration')
             if end_mode == 'duration':
-                lines.append(f"#   Schedule Mode: window (duration {settings.get('schedule_duration_hours', 4)}h, tz {settings.get('scheduler_timezone', PluginConfig.DEFAULT_TIMEZONE)})")
+                lines.append(f"#   Schedule Mode: window (duration {settings.get('schedule_duration_hours', 4)}h, tz {self._dispatcharr_timezone()})")
             else:
-                lines.append(f"#   Schedule Mode: window (until {settings.get('schedule_end_time', '04:00')}, tz {settings.get('scheduler_timezone', PluginConfig.DEFAULT_TIMEZONE)})")
+                lines.append(f"#   Schedule Mode: window (until {settings.get('schedule_end_time', '04:00')}, tz {self._dispatcharr_timezone()})")
         lines.append(f"#   Connection Timeout: {settings.get('timeout', 10)} seconds")
         lines.append(f"#   Probe Timeout: {settings.get('probe_timeout', 20)} seconds")
         lines.append(f"#   Dead Connection Retries: {settings.get('dead_connection_retries', 3)}")
@@ -3011,7 +3031,7 @@ class Plugin:
         """Update the scheduler configuration and restart the scheduler."""
         try:
             scheduled_times_str = settings.get("scheduled_times", "").strip()
-            scheduler_timezone = settings.get("scheduler_timezone", PluginConfig.DEFAULT_TIMEZONE)
+            scheduler_timezone = self._dispatcharr_timezone()
             
             # If scheduled times are empty, signal the elected scheduler to go idle
             # rather than tearing the loop down. Killing the thread leaves no
@@ -3033,16 +3053,8 @@ class Plugin:
                     "message": f"❌ Invalid cron expression format: '{scheduled_times_str}'\n\nPlease use cron format (e.g., '0 4 * * *' for daily at 4 AM).\nFormat: minute hour day month weekday"
                 }
             
-            # Validate timezone
-            if PYTZ_AVAILABLE:
-                try:
-                    pytz.timezone(scheduler_timezone)
-                except pytz.exceptions.UnknownTimeZoneError:
-                    return {
-                        "status": "error",
-                        "message": f"❌ Unknown timezone: {scheduler_timezone}\n\nPlease select a valid timezone from the dropdown."
-                    }
-            else:
+            # Timezone comes from Dispatcharr's global setting; only pytz is required.
+            if not PYTZ_AVAILABLE:
                 return {
                     "status": "error",
                     "message": "❌ Scheduler requires pytz library but it is not installed.\n\nPlease install pytz to use scheduling features."
@@ -3063,7 +3075,7 @@ class Plugin:
             
             message = f"✅ Schedule updated successfully!\n\n"
             message += f"Cron Schedules: {times_display}\n"
-            message += f"Timezone: {scheduler_timezone}\n"
+            message += f"Timezone (from Dispatcharr): {scheduler_timezone}\n"
             message += f"Status: Enabled ✓\n\n"
             message += f"The scheduler will run checks at the configured times."
             
@@ -3223,7 +3235,7 @@ class Plugin:
             else:
                 cron_lines.append("  • (none configured)")
 
-            tz_name = settings.get("scheduler_timezone", PluginConfig.DEFAULT_TIMEZONE)
+            tz_name = self._dispatcharr_timezone()
             now_str = "?"
             if PYTZ_AVAILABLE:
                 try:
