@@ -283,7 +283,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.1721651"
+    version = "1.26.1721733"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -566,6 +566,7 @@ class Plugin:
             'group_names': settings.get('group_names', ''),
             'check_alternative_streams': bool(settings.get('check_alternative_streams', True)),
             'only_visible_channels': bool(settings.get('only_visible_channels', False)),
+            'group_names_exclude': settings.get('group_names_exclude', ''),
         }
 
     def _seed_pending_from_loaded_channels(self, settings):
@@ -714,7 +715,6 @@ class Plugin:
             return
         now = datetime.now(tz)
         if now >= end:
-            LOGGER.info("⏰ WINDOW: pending state exists but its window already closed — discarding dead pending state")
             self._clear_pending_resume()
             return
         LOGGER.info(f"⏰ WINDOW: pending state detected (ends {end.isoformat()}); resuming check after restart")
@@ -1449,6 +1449,20 @@ class Plugin:
                     has_errors = True
             else:
                 validation_results.append("ℹ️ No groups specified (will check all)")
+
+            # Validate the exclude filter (applied after the include filter)
+            exclude_str = settings.get("group_names_exclude", "").strip()
+            if exclude_str:
+                try:
+                    all_group_names = {g['name'] for g in self._get_all_groups(logger)}
+                    ex_matched = self._match_group_names(exclude_str, all_group_names)
+                    if ex_matched:
+                        validation_results.append(f"✅ Exclude filter matches {len(ex_matched)} group(s): {', '.join(sorted(ex_matched))}")
+                    else:
+                        validation_results.append("ℹ️ Exclude filter matches no current groups")
+                except Exception as e:
+                    validation_results.append(f"❌ Failed to validate exclude filter: {str(e)}")
+                    has_errors = True
         except Exception as e:
             validation_results.append(f"❌ DB error: {str(e)[:100]}")
             has_errors = True
@@ -1765,6 +1779,21 @@ class Plugin:
             logger.info(f"Created new group '{name}' (ID: {group.id})")
         return group
 
+    @staticmethod
+    def _match_group_names(patterns_str, all_group_names):
+        """Return the set of group names matching any comma-separated pattern.
+        Wildcards (containing * ? [) use fnmatch.fnmatchcase (case-sensitive);
+        literals use case-sensitive exact membership — symmetric with the include path."""
+        matched = set()
+        for pattern in (p.strip() for p in (patterns_str or '').split(',')):
+            if not pattern:
+                continue
+            if any(c in pattern for c in '*?['):
+                matched |= {g for g in all_group_names if fnmatch.fnmatchcase(g, pattern)}
+            elif pattern in all_group_names:
+                matched.add(pattern)
+        return matched
+
     def load_groups_action(self, settings, logger):
         """Load channels and streams from specified Dispatcharr groups."""
         try:
@@ -1782,8 +1811,8 @@ class Plugin:
                 logger.warning(f"⚠️ Total groups found: {len(group_name_to_id)}")
                 logger.warning(f"⚠️ Groups: {', '.join(sorted(group_name_to_id.keys()))}")
 
-                target_group_names, target_group_ids = set(group_name_to_id.keys()), set(group_name_to_id.values())
-                if not target_group_ids: return {"status": "error", "message": "No groups found in Dispatcharr."}
+                target_group_names = set(group_name_to_id.keys())
+                if not target_group_names: return {"status": "error", "message": "No groups found in Dispatcharr."}
             else:
                 input_names = [name.strip() for name in group_names_str.split(',') if name.strip()]
                 all_group_names = set(group_name_to_id.keys())
@@ -1804,17 +1833,27 @@ class Plugin:
                     else:
                         unmatched_patterns.append(pattern)
 
-                target_group_ids = {group_name_to_id[name] for name in target_group_names}
-
                 # Log which groups are being loaded
                 if target_group_names:
                     logger.info(f"✓ Loading specified groups: {', '.join(sorted(target_group_names))}")
                 if unmatched_patterns:
                     logger.warning(f"⚠️ No groups matched: {', '.join(unmatched_patterns)}")
 
-                if not target_group_ids:
+                if not target_group_names:
                     return {"status": "error", "message": f"No groups matched: {', '.join(unmatched_patterns)}"}
 
+            # Exclude filter — remove any matching groups AFTER the include filter.
+            exclude_str = settings.get("group_names_exclude", "").strip()
+            if exclude_str:
+                excluded = self._match_group_names(exclude_str, set(group_name_to_id.keys()))
+                removed = target_group_names & excluded
+                if removed:
+                    logger.info(f"🚫 Excluding {len(removed)} group(s) from check: {', '.join(sorted(removed))}")
+                    target_group_names = target_group_names - excluded
+                if not target_group_names:
+                    return {"status": "error", "message": "All target groups were excluded by the 'Group(s) to Exclude' filter. Nothing to check."}
+
+            target_group_ids = {group_name_to_id[name] for name in target_group_names}
             channels_in_groups = self._get_all_channels(logger, group_ids=target_group_ids)
 
             only_visible = bool(settings.get("only_visible_channels", False))
@@ -1878,6 +1917,9 @@ class Plugin:
         """Build success message for load groups action"""
         total_streams = sum(len(c.get('streams', [])) for c in loaded_channels)
         group_msg = "all groups" if not group_names_str else f"group(s): {', '.join(target_group_names)}"
+        exclude_str = settings.get("group_names_exclude", "").strip()
+        if exclude_str:
+            group_msg += f" (excluding: {exclude_str})"
         if settings.get("only_visible_channels", False):
             group_msg += " (visible channels only)"
 
@@ -2860,6 +2902,7 @@ class Plugin:
         # Add plugin settings (excluding sensitive information)
         lines.append("# Plugin Settings:")
         lines.append(f"#   Group(s) Checked: {settings.get('group_names', 'All groups')}")
+        lines.append(f"#   Group(s) Excluded: {settings.get('group_names_exclude', '') or '(none)'}")
         lines.append(f"#   Only Visible Channels: {settings.get('only_visible_channels', False)}")
         if settings.get('schedule_window_enabled', False):
             end_mode = settings.get('schedule_end_mode', 'duration')

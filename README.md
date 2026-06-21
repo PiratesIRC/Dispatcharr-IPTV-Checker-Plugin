@@ -110,6 +110,7 @@ To update the plugin:
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | Group(s) to Check | string | *(empty = all)* | Comma-separated group names. Supports wildcards: `US-*`, `*Sports*` |
+| Group(s) to EXCLUDE | string | *(empty)* | Comma-separated groups to skip, applied **after** the include filter. Supports wildcards. With a blank "Group(s) to Check" this means "all groups except these". If a group matches both fields, exclude wins. (v1.26.1721733+) |
 | Check Alternative Streams | boolean | true | Check all alternative/backup streams for each channel |
 | Connection Timeout | number | 10 | Seconds to wait for stream connection |
 | Probe Timeout | number | 20 | Seconds to wait for FFprobe stream analysis |
@@ -199,6 +200,7 @@ Optional second pass that decodes a few seconds of each **alive** stream with `f
 
 1. **Configure Preferences**
    - Set your **Group(s) to Check** (supports wildcards like `US-*`)
+   - Optionally set **Group(s) to EXCLUDE** to skip groups (applied after the include filter)
    - Configure checking preferences (Alternative Streams, Timeouts, Retries)
    - Optionally enable **Parallel Checking** for faster processing
    - Click **Save Settings**
@@ -282,6 +284,12 @@ Use shell-style wildcards in the Group(s) to Check field:
 - `*Sports*` — matches any group containing "Sports"
 - `Movies-??` — matches Movies-US, Movies-UK, etc.
 - Multiple patterns: `US-*, UK-*, *Sports*` (comma-separated)
+
+### Excluding Groups (v1.26.1721733+)
+Use the **Group(s) to EXCLUDE** field to skip groups that would otherwise be checked. Same comma-separated wildcard syntax. Exclude is applied **after** the include filter, so it composes:
+- Check `US-*` but skip the pay-per-view groups → Check `US-*`, Exclude `US-PPV-*`
+- Check everything except one group → leave Check blank, Exclude `Adult`
+- Matching is case-sensitive (same as the include field). If a group matches both fields, **exclude wins**. If the filters leave nothing, the load reports an error rather than silently checking all groups.
 
 ### Automated Scheduling
 - **Cron Support:** Configure checks using standard cron syntax (e.g., `0 4 * * *`)
