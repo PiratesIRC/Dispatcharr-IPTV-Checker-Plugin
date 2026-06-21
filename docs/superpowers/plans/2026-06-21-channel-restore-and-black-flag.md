@@ -299,6 +299,13 @@ def test_capture_state_skips_existing_and_managed(pmod):
     assert "3" not in new   # already tracked -> not overwritten
     assert new["1"]["original_group_name"] == "USA Sports"
     assert new["1"]["moved_at"] == "T0"
+
+
+def test_capture_state_skips_channel_with_no_group(pmod):
+    P = pmod.Plugin
+    # gid None -> nothing to restore to; do not record (name-strip still covers it on restore).
+    new = P._compute_capture_state([1], {1: None}, {}, ["Graveyard"], {}, "T0")
+    assert new == {}
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -369,7 +376,9 @@ Insert directly after the Task 1 helpers (above `rename_channels_action`):
             if key in existing_state:
                 continue
             gid = current_group_by_id.get(cid)
-            gname = group_name_by_id.get(gid, '') if gid is not None else ''
+            if gid is None:
+                continue  # no current group -> nothing to restore TO; name-strip eligibility still covers it
+            gname = group_name_by_id.get(gid, '')
             if gname and gname.strip().lower() in managed:
                 continue
             new_entries[key] = {
@@ -1124,6 +1133,19 @@ with:
         ]
 ```
 
+- [ ] **Step 3e: Add black settings to the CSV audit header**
+
+The CSV is exported BEFORE restore runs in the scheduled flow (line ~1120 vs ~1134), so a `restored` *count* cannot appear in the CSV — restored is reported via webhook + logs only. But the new black settings belong in the CSV's settings audit dump. `plugin.py:2555` — after:
+```python
+        lines.append(f"#   Move Dead to Group: {settings.get('move_to_group_name', 'Graveyard')}")
+```
+insert:
+```python
+        lines.append(f"#   Black-Screen Rename Format: {settings.get('black_screen_rename_format', '{name} [Blank]')}")
+        lines.append(f"#   Move Black-Screen to Group: {settings.get('move_black_screen_group', 'Black Screens')}")
+```
+(The error-type distribution already reports the `Black Screen` count automatically.)
+
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests -q`
@@ -1197,7 +1219,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - G3 Manual + scheduled → Task 4 (action/button) + Task 5 (scheduler flag) ✓
 - G4 Tests + docs → all tasks include tests; Task 6 docs ✓
 - Original-state capture (§5.2) → Task 2 planner + Task 3 wrapper + move-action wiring ✓
-- Reporting (§5.5) → Task 5 (webhook restored, view_results black count); CSV error-type distribution already counts Black Screen ✓
+- Reporting (§5.5) → Task 5 (webhook restored, view_results black count, CSV settings dump gains black settings); CSV error-type distribution already counts Black Screen. NOTE: `restored` count is webhook/log only — CSV is generated before restore runs, so a CSV restored-count line is intentionally omitted ✓
 - Delete unchanged but black still deletable (§5.1) → delete keeps `status=='Dead'`; Task 5 only adds state pruning ✓
 - Error handling (§8): missing/corrupt state → `or {}`; missing group → name kept, entry dropped, warn; capture/prune best-effort try/except ✓
 
