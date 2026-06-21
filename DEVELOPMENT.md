@@ -153,6 +153,7 @@ of the above.
 |------|-------|
 | Plugin install dir | `/data/plugins/iptv_checker/` |
 | Data files | `/data/iptv_checker_*.json` |
+| Channel state (restore) | `/data/iptv_checker_channel_state.json` (orig group per channel; captured on Move, consumed by Restore) |
 | CSV exports | `/data/exports/` |
 | Scheduler lock | `/data/iptv_checker_scheduler.pid` (2 lines: pid + boot token) |
 | ffprobe | `/usr/local/bin/ffprobe` (configurable) |
@@ -164,7 +165,16 @@ of the above.
   `-show_packets`, ffprobe emits `packets_and_frames` and the bitrate
   fallback silently dies (tested in `test_bitrate_calc.py`).
 - Dead-channel actions act only on `status == 'Dead'`; `Skipped` (Streamlink
-  hosts, HTTP 429) must stay untouched.
+  hosts, HTTP 429) must stay untouched. **Black/blank exception (v1.26.1721554+):**
+  the Dead *rename/move* filters use `_is_dead_nonblack` (excludes
+  `error_type == 'Black Screen'`) — black channels are renamed/moved by the
+  dedicated black actions. Dead *delete* still includes them.
+- Restore (`restore_channels_action`) acts on `status == 'Alive'` channels that were
+  previously marked (have stored state OR a status tag). It strips tags via
+  `_derive_strippable_tags` and moves back to the captured original group. The
+  state file is read-modify-written last-writer-wins across processes — a lost
+  capture only forfeits the exact-group restore (name still restored), same
+  accepted model as `pending_resume.json`.
 - Black-screen detection (opt-in) must **fail open**: a missing/erroring/timing-out
   ffmpeg returns `None` and leaves the stream Alive — never Dead. The Dead result
   it produces uses all-`None` `dispatcharr_metadata` so `_update_dispatcharr_metadata`

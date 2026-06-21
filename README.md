@@ -24,7 +24,8 @@ Before installing or using this plugin, it is **highly recommended** that you cr
 ## Features
 
 - **Stream Status Checking:** Verify if IPTV streams are alive or dead with smart retry logic
-- **Black-Screen Detection (opt-in):** Catch streams that pass ffprobe (valid resolution/codec/bitrate) but decode to a pure black picture. When enabled, each alive stream gets a second `ffmpeg blackdetect` pass and is marked **Dead (`Black Screen`)** if it's essentially all black, so rename/move/delete actions clean it up. Fail-open: any ffmpeg problem leaves the stream Alive (v1.26.1702112+)
+- **Black-Screen Detection (opt-in):** Catch streams that pass ffprobe (valid resolution/codec/bitrate) but decode to a pure black picture. When enabled, each alive stream gets a second `ffmpeg blackdetect` pass and is marked **Dead (`Black Screen`)** if it's essentially all black. Black/blank channels are their own category — own rename tag (`[Blank]`) and own group (`Black Screens`), separate from regular dead (v1.26.1721554+). Fail-open: any ffmpeg problem leaves the stream Alive (v1.26.1702112+)
+- **Restore Recovered Channels (self-healing):** When a previously marked channel comes back **Alive**, strip the plugin's name tags (`[DEAD]`/`[Slow]`/`[Blank]`/quality) and move it back to its **exact original group** — captured automatically when it was first moved. Available as a manual action and a scheduler toggle that runs first each scheduled check (v1.26.1721554+)
 - **Wildcard Group Matching:** Target groups using patterns like `US-*`, `*Sports*`, or `Movies-??`
 - **Automated Scheduler:** Schedule stream checks using cron expressions with timezone support
 - **Post-Check Automation:** Automatically rename, move, delete, export, and webhook after scheduled checks
@@ -118,11 +119,15 @@ To update the plugin:
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| Dead Channel Rename Format | string | `{name} [DEAD]` | Format for renaming dead channels |
-| Move Dead Channels to Group | string | `Graveyard` | Group to move dead channels to |
+| Dead Channel Rename Format | string | `{name} [DEAD]` | Format for renaming dead channels (excludes black/blank — see below) |
+| Move Dead Channels to Group | string | `Graveyard` | Group to move dead channels to (excludes black/blank) |
+| Black-Screen Channel Rename Format | string | `{name} [Blank]` | Format for renaming channels detected as a black/blank screen |
+| Move Black-Screen Channels to Group | string | `Black Screens` | Group to move black/blank-screen channels to |
 | Low Framerate Rename Format | string | `{name} [Slow]` | Format for renaming low FPS channels (<30fps) |
 | Move Low Framerate Group | string | `Slow` | Group to move low framerate channels to |
 | Video Format Suffixes | string | `UHD, FHD, HD, SD, Unknown` | Formats to add as suffixes |
+
+> **Black/blank is a separate category (v1.26.1721554+).** When black-screen detection is on, black/blank channels are renamed/moved by the **black** actions (`[Blank]` / `Black Screens`) and are **excluded** from the regular Dead rename/move so they aren't double-tagged. They remain `status=Dead`, so **Delete Dead Channels still deletes them.** Existing users who relied on black streams getting `[DEAD]`/Graveyard should enable the new black rename/move toggles (or set the Black-Screen Rename Format to `{name} [DEAD]`).
 
 ### FFprobe Settings
 
@@ -170,13 +175,16 @@ Optional second pass that decodes a few seconds of each **alive** stream with `f
 | Window Duration (hours) | number | 4 | Used when Window End Mode = duration. Decimals allowed (e.g. 3.5). |
 | Window End Time | string | `04:00` | Used when Window End Mode = time. 24-hour format in the Scheduler Timezone above. |
 | Export CSV for Scheduled Checks | boolean | false | Auto-export results to CSV after scheduled checks |
+| Restore Recovered Channels | boolean | false | Auto-restore channels that are Alive again but were previously marked — strips plugin tags and moves them back to their original group. Runs **first**, before re-marking. |
 | Rename Dead Channels | boolean | false | Auto-rename dead channels after scheduled checks |
 | Rename Low Framerate Channels | boolean | false | Auto-rename slow channels after scheduled checks |
+| Rename Black-Screen Channels | boolean | false | Auto-rename black/blank-screen channels after scheduled checks |
 | Add Video Format Suffix | boolean | false | Auto-add format suffix after scheduled checks |
 | Move Dead Channels | boolean | false | Auto-move dead channels after scheduled checks |
 | Move Low Framerate Channels | boolean | false | Auto-move slow channels after scheduled checks |
+| Move Black-Screen Channels | boolean | false | Auto-move black/blank-screen channels after scheduled checks |
 | Delete Dead Channels | boolean | false | Auto-delete dead channels after scheduled checks |
-| Send Webhook Notification | boolean | false | Send webhook after scheduled checks |
+| Send Webhook Notification | boolean | false | Send webhook after scheduled checks (payload gains a `restored` count) |
 
 ### Destructive Settings
 
@@ -249,12 +257,15 @@ Optional second pass that decodes a few seconds of each **alive** stream with `f
 - **View Last Results:** View summary of the last completed stream check
 
 ### Channel Management
-- **Rename Dead Channels:** Apply rename format to dead streams
-- **Move Dead Channels to Group:** Relocate dead channels
-- **Delete Dead Channels:** Permanently remove dead channels (requires confirmation)
+- **Rename Dead Channels:** Apply rename format to dead streams (excludes black/blank)
+- **Move Dead Channels to Group:** Relocate dead channels (excludes black/blank)
+- **Delete Dead Channels:** Permanently remove dead channels (requires confirmation; includes black/blank)
+- **Rename Black-Screen Channels:** Apply `[Blank]` format to channels detected as a black/blank screen
+- **Move Black-Screen Channels to Group:** Relocate black/blank-screen channels to the `Black Screens` group
 - **Rename Low Framerate Channels:** Apply rename format to slow streams (<30fps)
 - **Move Low Framerate Channels:** Relocate slow channels
 - **Add Video Format Suffix:** Apply format tags ([UHD], [FHD], [HD], [SD])
+- **Restore Recovered Channels:** For channels Alive again but previously marked, strip all plugin tags from the name and move them back to their **exact original group** (captured when they were first moved). Original group remembered in `/data/iptv_checker_channel_state.json`. If the original group was deleted, the name is still restored.
 
 ### Data & Maintenance
 - **View Results Table:** Detailed tabular format for copy/paste
@@ -329,11 +340,20 @@ If you see a lot of "Server Error" or "Stream Unreachable" results that turn ali
 - **Fail-open by design:** if ffmpeg is missing, errors, or exceeds `Black-Screen ffmpeg Timeout (seconds)`, the stream is left **Alive** — a tooling glitch never falsely kills a working channel.
 - **Cost:** ~5–10 s of extra decode per **alive** stream; dead/skipped streams are skipped. Runs on both manual and scheduled checks when enabled, and respects the windowed-schedule boundary.
 - **Tuning false positives:** a channel that's legitimately black for several seconds (fade-from-black intro, station slate) can trip detection. Raise **Continuous Black Required** or **Sample** seconds if needed. Only pure black is detected; dark-grey/error-card screens are not.
+- **Separate category (v1.26.1721554+):** when detection is on, black/blank channels are handled by the dedicated **Rename/Move Black-Screen** actions (`[Blank]` tag, `Black Screens` group) and are **excluded** from the regular Dead rename/move so they aren't double-tagged. They stay `status=Dead`, so **Delete Dead Channels still removes them.**
+
+### Restore Recovered Channels (self-healing)
+- **The problem it solves:** once a channel is renamed `[DEAD]`/`[Slow]`/`[Blank]` and exiled to a Graveyard/Slow/Black group, there was no automatic way back when the stream recovered. It stayed tagged and stranded.
+- **How it works:** for each channel whose latest status is **Alive** but which was previously marked by this plugin (it has a stored original group, or its name still carries a plugin status tag), the restore action strips **all** plugin name tags back to a clean base name and moves it back to its **exact original group**. The original group is captured to `/data/iptv_checker_channel_state.json` the moment a Move action exiles the channel (it never records a managed destination group as the "original", and never overwrites an existing capture).
+- **Eligibility is conservative:** a healthy channel that merely has a `[HD]` quality suffix and was never marked is **not** touched.
+- **Manual or scheduled:** run **Restore Recovered Channels** on demand, or enable the scheduler toggle — it runs **first** each scheduled check (heal before re-marking). The webhook payload gains a `restored` count.
+- **Edge cases:** if the original group was deleted in the meantime, the name is still restored and the channel is left where it is (a warning is logged). Deleting a dead channel prunes its stored state.
+- **Operational note:** a channel parked in a Graveyard/Slow/Black group is only re-checked — and therefore only restorable — if your scan scope **includes** that group. Add the managed groups to your scheduled scan scope (or run a full-scope scan) so self-healing actually fires.
 
 ### Webhook Notifications
 - Sends an HTTP POST after scheduled checks complete
 - **Discord:** paste your Discord webhook URL as-is — the plugin auto-detects Discord hosts (`discord.com` / `discordapp.com`) and sends a native message Discord renders directly. No need to append `/slack` or edit the URL.
-- **Custom endpoints / integrations:** non-Discord URLs receive a machine-readable JSON payload (`{plugin, event, total, alive, dead, skipped, timestamp}`)
+- **Custom endpoints / integrations:** non-Discord URLs receive a machine-readable JSON payload (`{plugin, event, total, alive, dead, skipped, timestamp}`; scheduled runs with restore enabled also include `restored`)
 - Sends an explicit `User-Agent` header so Cloudflare-fronted services (like Discord) don't silently reject the request
 - No additional dependencies (uses Python's built-in `urllib`)
 
@@ -376,6 +396,7 @@ docker restart dispatcharr
 - **Results:** `/data/iptv_checker_results.json`
 - **Loaded Channels:** `/data/iptv_checker_loaded_channels.json`
 - **Progress State:** `/data/iptv_checker_progress.json`
+- **Channel State (original group for restore):** `/data/iptv_checker_channel_state.json`
 - **Settings:** `/data/iptv_checker_settings.json`
 - **CSV Exports:** `/data/exports/iptv_checker_results_YYYYMMDD_HHMMSS.csv`
 
