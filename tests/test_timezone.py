@@ -52,3 +52,18 @@ def test_dispatcharr_timezone_coerces_bad_value(plugin, pmod, monkeypatch):
     mod.CoreSettings = CoreSettings
     monkeypatch.setitem(sys.modules, "core.models", mod)
     assert plugin._dispatcharr_timezone() == pmod.PluginConfig.DEFAULT_TIMEZONE
+
+
+def test_dispatcharr_timezone_fallback_when_coresettings_raises(plugin, pmod, monkeypatch):
+    # Live-but-migrating container: the accessor exists but raises (AppRegistryNotReady,
+    # DB OperationalError, ...). Must degrade to the default, not break the scheduler.
+    mod = types.ModuleType("core.models")
+
+    class CoreSettings:
+        @staticmethod
+        def get_system_time_zone():
+            raise RuntimeError("apps not ready")
+
+    mod.CoreSettings = CoreSettings
+    monkeypatch.setitem(sys.modules, "core.models", mod)
+    assert plugin._dispatcharr_timezone() == pmod.PluginConfig.DEFAULT_TIMEZONE
