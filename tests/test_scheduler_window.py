@@ -99,12 +99,19 @@ def test_fingerprint_tracks_scope_settings(plugin):
         "group_names": "STL",
         "check_alternative_streams": False,
         "only_visible_channels": True,
+        "group_names_exclude": "",
     }
 
 
 def test_fingerprint_differs_on_group_change(plugin):
     a = plugin._settings_fingerprint({"group_names": "STL"})
     b = plugin._settings_fingerprint({"group_names": "KC"})
+    assert a != b
+
+
+def test_fingerprint_differs_on_exclude_change(plugin):
+    a = plugin._settings_fingerprint({"group_names": "STL"})
+    b = plugin._settings_fingerprint({"group_names": "STL", "group_names_exclude": "US-PPV-*"})
     assert a != b
 
 

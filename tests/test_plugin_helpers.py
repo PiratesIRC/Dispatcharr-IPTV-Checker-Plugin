@@ -176,3 +176,29 @@ def test_save_serializes_non_native_via_default_str(plugin, tmp_path):
     plugin._save_json_file(path, {"when": datetime(2026, 6, 10, 4, 0)})
     loaded = plugin._load_json_file(path)
     assert loaded["when"] == "2026-06-10 04:00:00"
+
+
+# --- _match_group_names (group include/exclude matcher) ---
+
+def test_match_group_names_exact_and_wildcard(pmod):
+    P = pmod.Plugin
+    groups = {"US Sports", "US-PPV-1", "US-PPV-2", "Movies", "Graveyard"}
+    assert P._match_group_names("Movies", groups) == {"Movies"}
+    assert P._match_group_names("US-PPV-*", groups) == {"US-PPV-1", "US-PPV-2"}
+    assert P._match_group_names("Movies, US-PPV-*", groups) == {"Movies", "US-PPV-1", "US-PPV-2"}
+
+
+def test_match_group_names_no_match_and_blank(pmod):
+    P = pmod.Plugin
+    groups = {"Movies", "Graveyard"}
+    assert P._match_group_names("Nope", groups) == set()
+    assert P._match_group_names("", groups) == set()
+    assert P._match_group_names("  ,  ", groups) == set()
+
+
+def test_match_group_names_case_sensitive(pmod):
+    P = pmod.Plugin
+    groups = {"Graveyard"}
+    assert P._match_group_names("graveyard", groups) == set()   # exact is case-sensitive
+    assert P._match_group_names("grave*", groups) == set()      # fnmatchcase is case-sensitive
+    assert P._match_group_names("Grave*", groups) == {"Graveyard"}

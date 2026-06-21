@@ -24,6 +24,13 @@
       "help_text": "The name of the Dispatcharr Channel Group(s) to check. Supports wildcards: US-* matches US-Movies, US-Sports, etc. Leave blank to check all groups."
     },
     {
+      "id": "group_names_exclude",
+      "label": "\ud83d\udcc2 Group(s) to EXCLUDE (comma-separated, wildcards supported)",
+      "type": "string",
+      "default": "",
+      "help_text": "Groups to skip even if they match 'Group(s) to Check'. Supports wildcards (e.g. US-PPV-*). Applied AFTER the include filter; with a blank include this means 'all groups except these'. If a group matches both fields, exclude wins. Leave blank to exclude nothing."
+    },
+    {
       "id": "check_alternative_streams",
       "label": "\ud83d\udd04 Check Alternative Streams",
       "type": "boolean",
