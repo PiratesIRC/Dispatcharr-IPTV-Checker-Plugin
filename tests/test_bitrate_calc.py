@@ -118,10 +118,12 @@ def test_audio_packets_excluded_from_video_bitrate(plugin, pmod, monkeypatch, qu
     assert result["dispatcharr_metadata"]["video_bitrate"] == 1000
 
 
-def test_no_video_stream_is_dead(plugin, pmod, monkeypatch, quiet_logger):
+def test_no_video_stream_is_skipped(plugin, pmod, monkeypatch, quiet_logger):
+    """Audio-only streams (e.g. radio) carry no video track but are working
+    streams — classify as Skipped so destructive actions leave them alone."""
     result = _alive_probe(plugin, pmod, monkeypatch, quiet_logger, {
         "streams": [{"codec_type": "audio", "index": 0, "codec_name": "aac"}],
         "format": {"format_name": "mpegts"},
     })
-    assert result["status"] == "Dead"
+    assert result["status"] == "Skipped"
     assert result["error_type"] == "No Video Stream"

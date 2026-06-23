@@ -15,7 +15,7 @@ tests/                         # pytest suite (runs OUTSIDE the container)
 ├── conftest.py                #   stubs Dispatcharr/Django modules in sys.modules
 ├── test_version_sync.py       #   plugin.json == plugin.py == CLAUDE.md
 ├── test_rate_limit_guard.py   #   429 classification + cooldown logic
-├── test_bitrate_calc.py       #   packet-based bitrate + min-sample gate
+├── test_bitrate_calc.py       #   packet-based bitrate + min-sample gate + audio-only->Skipped
 ├── test_scheduler_window.py   #   window math + pending-resume scope guards
 ├── test_webhook.py            #   Discord/generic payload shaping + headers
 ├── test_black_screen.py       #   blackdetect parse + ffmpeg wrapper + check_stream
@@ -23,6 +23,7 @@ tests/                         # pytest suite (runs OUTSIDE the container)
 ├── test_timezone.py           #   Dispatcharr-sourced timezone resolver + UTC fallback
 ├── test_group_filter.py       #   include/exclude group filtering (load_groups_action)
 ├── test_settings_schema.py    #   plugin.json id-set freeze + no-"Black Screen"-in-labels
+├── test_csv_and_status_fixes.py #  CSV no-dup header, PAL-safe low-fps, ffprobe-flags default, View-Last-Results date
 └── test_plugin_helpers.py     #   cron parse/match, streamlink hosts, JSON I/O
 scripts/check_version_sync.py  # standalone version-drift check (CI/pre-commit usable)
 bump_version.py                # version bump across all three files

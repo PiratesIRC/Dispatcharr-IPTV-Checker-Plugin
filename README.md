@@ -43,10 +43,12 @@ Before installing or using this plugin, it is **highly recommended** that you cr
 - **Enhanced Error Categorization:** Detailed error types (Timeout, 404, 403, Connection Refused, etc.)
 - **Webhook Notifications:** Send HTTP POST notifications after scheduled checks complete
 - **Auto-Delete Dead Channels:** Permanently remove dead channels with safety confirmation gate
-- **CSV Exports:** Export results with comprehensive statistics and URL masking. Scheduled sessions emit a CSV every time a run ends — including windowed runs that close mid-list — so each window has its own audit record (v1.26.1191257+; the hoist regressed via the subfolder/root sync drift and was re-applied in v1.26.1212238).
+- **CSV Exports:** Export results with comprehensive statistics and URL masking. Scheduled sessions emit a CSV every time a run ends — including windowed runs that close mid-list — so each window has its own audit record (v1.26.1191257+; the hoist regressed via the subfolder/root sync drift and was re-applied in v1.26.1212238). The header no longer duplicates the `ffprobe_monitoring_seconds` column, and the audit preamble's `FFprobe Flags:` line now reports the flags actually used (v1.26.1741204+).
 - **Video Bitrate Reporting:** Per-stream `video_bitrate` (kbps) captured via ffprobe per-packet data and stored in Dispatcharr's `stream_stats`, so the channel-menu UI can display it. Live MPEG-TS / HLS streams almost never expose container-level `bit_rate`, so the plugin computes the average from `packets[].size / packets[].duration_time` for the video stream. Rounded to the nearest whole kbps before write (v1.26.1220052+). Probes that capture fewer than 30 video packets (≈1s of 30fps video) leave `video_bitrate` unset rather than persist a noisy average — short samples were producing wildly inflated values (observed: 22924 kbps from 2 packets) that polluted the channel-menu display (v1.26.1221035+). The default `ffprobe_analysis_duration` was bumped from 5 s → 8 s in v1.26.1221101 to give slow-start streams enough room to clear the 30-packet trust gate; verified runs jumped from 97% to 100% bitrate coverage on alive streams with median packet count rising from 200–400 → 662 (default-only change, existing deployments keep their saved value). The default `ffprobe_flags` was changed to `-show_streams,-show_packets,-loglevel error` in v1.26.1211342 — passing both `-show_frames` and `-show_packets` makes ffprobe emit a combined `packets_and_frames` array instead of separate `packets[]`, which silently breaks the bitrate calc. If you've customized `ffprobe_flags`, do **not** include `-show_frames`.
 - **Window-Aware Retry Pass:** When a windowed run closes mid-list, the parallel/sequential retry passes now also bail on `_past_window_end()` so transient-error retries cannot overshoot the window boundary (v1.26.1212238+; previously observed up to 14 minutes of overrun).
 - **Adaptive Rate-Limit Guard:** Detects upstream HTTP 429 responses, classifies them as **Skipped (Rate Limited)** instead of Dead so destructive actions never act on a throttled stream, and applies an exponentially-doubling cooldown when 429s spike (v1.26.1181025+). The cooldown counter is shared across the whole container — Dispatcharr's multiple worker processes can no longer reset it independently (v1.26.1181126+).
+- **Audio-Only / Radio Streams Skipped:** Streams that ffprobe validates but that carry **no video track** (e.g. radio stations like BBC Radio 1) are classified **Skipped (`No Video Stream`)** instead of Dead, so rename/move/delete actions leave them alone (v1.26.1741204+). `Skipped` now has three triggers: Streamlink-only hosts, HTTP 429 rate-limiting, and audio-only streams.
+- **PAL-Safe Low-Framerate Threshold:** The low-framerate flag now triggers below **24 fps** (was 30 fps), so 25 fps PAL/European broadcasts and 24 fps film-rate feeds are no longer mis-tagged `[Slow]` — only genuinely choppy streams qualify (v1.26.1741204+).
 - **Single-Scheduler Election:** Dispatcharr runs ~9 separate Python processes; a file-based PID lock at `/data/iptv_checker_scheduler.pid` ensures exactly one of them hosts the cron scheduler. Prior versions could fire each cron N times in parallel (v1.26.1181126+). Module-reload duplicate-thread protection added in v1.26.1191257 (Django/uwsgi could re-import the plugin module within the elected process and spawn additional scheduler threads, defeating the PID lock). Cross-worker UI-restart protection added in v1.26.1220951: any UI button click landed in whichever uwsgi worker the load balancer picked, and `update_schedule_action` / `Plugin.run()` previously called `_start_background_scheduler` directly without checking the PID lock — so non-owner workers spawned rogue scheduler threads (observed: `'59 23 * * *'` fired twice 27 ms apart on 2026-05-02). Non-owners now write a `/data/iptv_checker_scheduler_reload.flag` file that the owner's scheduler loop polls every 30 s; the owner re-reads settings via `_fresh_settings` and swaps its cron expressions in place.
 
 ## Requirements
@@ -124,7 +126,7 @@ To update the plugin:
 | Move Dead Channels to Group | string | `Graveyard` | Group to move dead channels to (excludes black/blank) |
 | Blank-Screen Channel Rename Format | string | `{name} [Blank]` | Format for renaming channels detected as a blank screen |
 | Move Blank-Screen Channels to Group | string | `Black Screens` | Group to move blank-screen channels to |
-| Low Framerate Rename Format | string | `{name} [Slow]` | Format for renaming low FPS channels (<30fps) |
+| Low Framerate Rename Format | string | `{name} [Slow]` | Format for renaming low FPS channels (<24fps — 25fps PAL and 24fps film are not flagged) |
 | Move Low Framerate Group | string | `Slow` | Group to move low framerate channels to |
 | Video Format Suffixes | string | `UHD, FHD, HD, SD, Unknown` | Formats to add as suffixes |
 
@@ -257,7 +259,7 @@ Optional second pass that decodes a few seconds of each **alive** stream with `f
 - **Start Stream Check:** Begin checking all loaded streams in background thread
 - **View Check Progress:** View current progress and ETA of the running check
 - **Cancel Stream Check:** Stop the currently running stream check (confirmation dialog; queued and in-flight streams abort, already-probed results are kept)
-- **View Last Results:** View summary of the last completed stream check
+- **View Last Results:** View summary of the last completed stream check, including the date/time the check was produced
 
 ### Channel Management
 - **Rename Dead Channels:** Apply rename format to dead streams (excludes black/blank)
@@ -265,7 +267,7 @@ Optional second pass that decodes a few seconds of each **alive** stream with `f
 - **Delete Dead Channels:** Permanently remove dead channels (requires confirmation; includes black/blank)
 - **Rename Blank-Screen Channels:** Apply `[Blank]` format to channels detected as a blank screen
 - **Move Blank-Screen Channels to Group:** Relocate blank-screen channels to the `Black Screens` group
-- **Rename Low Framerate Channels:** Apply rename format to slow streams (<30fps)
+- **Rename Low Framerate Channels:** Apply rename format to slow streams (<24fps; PAL 25fps / film 24fps excluded)
 - **Move Low Framerate Channels:** Relocate slow channels
 - **Add Video Format Suffix:** Apply format tags ([UHD], [FHD], [HD], [SD])
 - **Restore Recovered Channels:** For channels Alive again but previously marked, strip all plugin tags from the name and move them back to their **exact original group** (captured when they were first moved). Original group remembered in `/data/iptv_checker_channel_state.json`. If the original group was deleted, the name is still restored.

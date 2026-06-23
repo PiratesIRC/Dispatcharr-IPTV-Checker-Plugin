@@ -105,6 +105,21 @@ class PluginConfig:
     # a fresh shot. 30 ≈ 1s of 30fps video; healthy probes return 200-400.
     MIN_PACKETS_FOR_BITRATE_CALC = 30
 
+    # --- Low framerate detection ---
+    # A stream is flagged "low framerate" (eligible for [Slow]/Slow group) when
+    # 0 < fps < this threshold. Kept below 25 so PAL/European broadcasts (25fps)
+    # and film-rate feeds (24fps; NTSC 23.976 rounds to 24.0) are NOT flagged —
+    # only genuinely choppy streams are. See _is_low_framerate.
+    LOW_FRAMERATE_THRESHOLD = 24
+
+    # --- FFprobe defaults ---
+    # Single source of truth for the default ffprobe flags. -show_packets is
+    # required for the packet-based video_bitrate fallback; -loglevel error keeps
+    # stderr usable for error classification. Both check_stream and the CSV audit
+    # preamble fall back to this so the recorded flags match the flags actually
+    # used (the preamble previously fell back to just '-show_streams').
+    DEFAULT_FFPROBE_FLAGS = '-show_streams,-show_packets,-loglevel error'
+
     # --- ETA Estimation ---
     # Fallback only; _estimate_check_seconds models a realistic mix.
     ESTIMATED_SECONDS_PER_STREAM = 10
@@ -283,7 +298,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.1721834"
+    version = "1.26.1741204"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -1580,6 +1595,28 @@ class Plugin:
 
         return {"status": "ok", "message": f"✅ Stream check cancelled.\n\nProcessed {current}/{total} streams before cancellation.\n\nPartial results have been saved and can be viewed with '📋 View Last Results'."}
 
+    def _results_timestamp_str(self):
+        """Best-effort 'when were these results produced' string, or None.
+
+        Prefers the check's recorded end_time; falls back to the results file mtime
+        (e.g. results restored from disk after a restart, where progress was reset).
+        """
+        ts = None
+        progress = self.check_progress if isinstance(self.check_progress, dict) else {}
+        if progress.get('end_time'):
+            ts = progress['end_time']
+        else:
+            try:
+                ts = os.path.getmtime(self.results_file)
+            except OSError:
+                ts = None
+        if not ts:
+            return None
+        try:
+            return datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+        except (OverflowError, OSError, ValueError):
+            return None
+
     def view_results_action(self, settings, logger):
         """View summary of the last completed stream check."""
         # Reload progress from file to get latest state
@@ -1602,8 +1639,13 @@ class Plugin:
                 formats[r.get('format', 'Unknown')] += 1
 
         black = sum(1 for r in results if self._is_black_screen(r))
+        checked_at = self._results_timestamp_str()
         summary = [
             f"📊 Last Check Results ({len(results)} streams):",
+        ]
+        if checked_at:
+            summary.append(f"🕐 Checked: {checked_at}")
+        summary += [
             f"✅ Alive: {alive}",
             f"❌ Dead: {dead}" + (f"  (⬛ {black} black/blank)" if black else ""),
             f"⤼ Skipped: {skipped}\n",
@@ -2563,6 +2605,15 @@ class Plugin:
         except Exception as e:
             return {"status": "error", "message": f"Error deleting channels: {str(e)}"}
 
+    @staticmethod
+    def _is_low_framerate(fps):
+        """True when fps is a known, sub-threshold framerate (PAL 25 / film 24 are safe)."""
+        try:
+            fps = float(fps)
+        except (TypeError, ValueError):
+            return False
+        return 0 < fps < PluginConfig.LOW_FRAMERATE_THRESHOLD
+
     def rename_low_framerate_channels_action(self, settings, logger):
         """Rename channels with low framerate streams."""
         rename_format = settings.get("low_framerate_rename_format", "{name} [Slow]").strip()
@@ -2577,7 +2628,7 @@ class Plugin:
         if results is None:
             return {"status": "error", "message": "No check results found (or data corrupted). Please run 'Check Streams' first."}
 
-        low_fps_channels = {r['channel_id']: r['channel_name'] for r in results if 0 < r.get('framerate_num', 0) < 30}
+        low_fps_channels = {r['channel_id']: r['channel_name'] for r in results if self._is_low_framerate(r.get('framerate_num', 0))}
         if not low_fps_channels: return {"status": "ok", "message": "No low framerate channels found."}
 
         payload = []
@@ -2605,7 +2656,7 @@ class Plugin:
         if results is None:
             return {"status": "error", "message": "No check results found (or data corrupted). Please run 'Check Streams' first."}
         
-        low_fps_channel_ids = {r['channel_id'] for r in results if 0 < r.get('framerate_num', 0) < 30}
+        low_fps_channel_ids = {r['channel_id'] for r in results if self._is_low_framerate(r.get('framerate_num', 0))}
         if not low_fps_channel_ids: return {"status": "ok", "message": "No low framerate channels found to move."}
 
         try:
@@ -2922,7 +2973,7 @@ class Plugin:
         lines.append(f"#   Video Format Suffixes: {settings.get('video_format_suffixes', 'UHD, FHD, HD, SD, Unknown')}")
         lines.append(f"#   Parallel Checking Enabled: {settings.get('enable_parallel_checking', False)}")
         lines.append(f"#   Parallel Workers: {settings.get('parallel_workers', 2)}")
-        lines.append(f"#   FFprobe Flags: {settings.get('ffprobe_flags', '-show_streams')}")
+        lines.append(f"#   FFprobe Flags: {settings.get('ffprobe_flags', PluginConfig.DEFAULT_FFPROBE_FLAGS)}")
         lines.append(f"#   FFprobe Analysis Duration: {settings.get('ffprobe_analysis_duration', 5)} seconds")
         lines.append("#")
 
@@ -2970,9 +3021,9 @@ class Plugin:
             lines.append(f"#   Average Framerate (Alive): {avg_framerate:.1f} fps")
 
         # Low framerate streams
-        low_fps_count = sum(1 for r in results if r.get('status') == 'Alive' and 0 < r.get('framerate_num', 0) < 30)
+        low_fps_count = sum(1 for r in results if r.get('status') == 'Alive' and self._is_low_framerate(r.get('framerate_num', 0)))
         if low_fps_count > 0:
-            lines.append(f"#   Low Framerate Streams (<30fps): {low_fps_count}")
+            lines.append(f"#   Low Framerate Streams (<{PluginConfig.LOW_FRAMERATE_THRESHOLD}fps): {low_fps_count}")
 
         if error_counts:
             lines.append("#")
@@ -2986,6 +3037,22 @@ class Plugin:
         lines.append("#")
 
         return lines
+
+    @staticmethod
+    def _compute_csv_fieldnames(results):
+        """Ordered CSV columns: fixed base columns + any dynamic ffprobe_* keys.
+
+        ffprobe_monitoring_seconds lives in base_fieldnames AND is emitted on each
+        result under its ffprobe_-prefixed key, so it must be excluded from the
+        auto-collected set or it lands in the header twice (bug-csv-dup-monitoring-col).
+        """
+        base_fieldnames = ['channel_id', 'channel_name', 'stream_id', 'status', 'format', 'framerate_num', 'error_type', 'error', 'retry_count', 'connection_timeout_seconds', 'probe_timeout_seconds', 'ffprobe_monitoring_seconds']
+        ffprobe_fieldnames = set()
+        for result in results:
+            for key in result.keys():
+                if key.startswith('ffprobe_') and key not in base_fieldnames:
+                    ffprobe_fieldnames.add(key)
+        return base_fieldnames + sorted(ffprobe_fieldnames)
 
     def export_results_action(self, settings, logger):
         """Export results to CSV"""
@@ -3004,15 +3071,7 @@ class Plugin:
                     result[f'ffprobe_{key}'] = value
 
         # Determine all possible fieldnames including dynamic ffprobe fields
-        base_fieldnames = ['channel_id', 'channel_name', 'stream_id', 'status', 'format', 'framerate_num', 'error_type', 'error', 'retry_count', 'connection_timeout_seconds', 'probe_timeout_seconds', 'ffprobe_monitoring_seconds']
-        ffprobe_fieldnames = set()
-        for result in results:
-            for key in result.keys():
-                if key.startswith('ffprobe_'):
-                    ffprobe_fieldnames.add(key)
-
-        # Create complete fieldnames list
-        fieldnames = base_fieldnames + sorted(list(ffprobe_fieldnames))
+        fieldnames = self._compute_csv_fieldnames(results)
 
         filepath = f"/data/exports/iptv_checker_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         os.makedirs(PluginConfig.EXPORTS_DIR, exist_ok=True)
@@ -3531,7 +3590,7 @@ class Plugin:
         max_attempts = 1 if skip_retries else (retries + 1)
 
         # Parse ffprobe flags from settings
-        ffprobe_flags_str = settings.get('ffprobe_flags', '-show_streams,-show_packets,-loglevel error') if settings else '-show_streams,-show_packets,-loglevel error'
+        ffprobe_flags_str = settings.get('ffprobe_flags', PluginConfig.DEFAULT_FFPROBE_FLAGS) if settings else PluginConfig.DEFAULT_FFPROBE_FLAGS
         ffprobe_flags = [flag.strip() for flag in ffprobe_flags_str.split(',') if flag.strip()]
 
         # Get ffprobe path from settings
@@ -3813,6 +3872,17 @@ class Plugin:
             default_return['status'] = 'Skipped'
             default_return['error'] = masked_error
             default_return['error_type'] = 'Rate Limited'
+            return default_return
+
+        # Audio-only streams (e.g. radio stations) return "No video stream found"
+        # with a clean ffprobe exit — they are working streams that simply carry no
+        # video track, not dead channels. Classify as Skipped so destructive actions
+        # (rename/move/delete) leave them alone.
+        if last_error_type == 'No Video Stream':
+            logger.info(f"⤼ '{channel_name}' SKIPPED - No Video Stream (audio-only)")
+            default_return['status'] = 'Skipped'
+            default_return['error'] = masked_error
+            default_return['error_type'] = 'No Video Stream'
             return default_return
 
         # Log final result once if stream is dead after all attempts
