@@ -298,7 +298,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.1741204"
+    version = "1.26.1751208"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -359,34 +359,151 @@ class Plugin:
             except Exception as e:
                 LOGGER.warning(f"Could not load settings for scheduler on init: {e}")
 
+    @staticmethod
+    def _read_scheduler_lock(lock_path):
+        """Return (holder_pid, holder_token, readable) for the lock file.
+
+        holder_pid is 0 and readable is False when the file is missing, blank,
+        or corrupt — callers treat an unreadable existing lock as reclaimable.
+        """
+        try:
+            with open(lock_path, 'r') as f:
+                raw = f.read().splitlines()
+        except OSError:
+            return 0, '', False
+        try:
+            holder_pid = int((raw[0].strip() if raw else '') or '0')
+        except ValueError:
+            return 0, '', False
+        holder_token = raw[1].strip() if len(raw) > 1 else ''
+        return holder_pid, holder_token, True
+
+    @staticmethod
+    def _write_lock_fd(fd, my_pid, my_token):
+        """Write `pid\n{token}` through a buffered stream, then close fd.
+
+        os.fdopen's write loops until every byte is flushed, avoiding the
+        short-write hazard of a bare os.write — a truncated body would drop the
+        token line and silently degrade the lock to legacy single-line form.
+        """
+        with os.fdopen(fd, 'w') as f:
+            f.write(f"{my_pid}\n{my_token}")
+            f.flush()
+            os.fsync(f.fileno())
+
+    @staticmethod
+    def _scheduler_holder_alive(holder_pid, holder_token, my_token):
+        """True iff the lock holder is a live process we must respect.
+
+        A boot-token mismatch means the lock belongs to a previous container
+        (after a restart the recycled PID often collides with a live unrelated
+        process, so os.kill() alone can't be trusted) — treat as not alive.
+        """
+        if my_token and holder_token and holder_token != my_token:
+            return False
+        try:
+            os.kill(holder_pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True   # alive, owned by another uid
+        except OSError:
+            return True   # unknown — don't steal a possibly-live lock
+
+    def _reclaim_scheduler_lock(self, lock_path, my_pid, my_token):
+        """Reclaim a stale lock under an exclusive guard file so concurrent
+        reclaimers can't both install themselves. Returns (outcome, owner_pid)
+        where outcome is 'won', 'skip', or 'retry'.
+
+        os.open(O_CREAT|O_EXCL) on the guard elects a single reclaimer; only it
+        clears the stale lock and installs a fresh one, so the read->remove->
+        create sequence is atomic with respect to other reclaimers. Losers get
+        'retry' and re-race the top-level create, where they find the fresh
+        (current-token) lock and skip.
+        """
+        guard = f"{lock_path}.reclaim"
+        try:
+            gfd = os.open(guard, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            # Another reclaimer holds the guard. If it was left by a previous
+            # container, clear it; otherwise back off and let it finish.
+            _gp, g_token, g_read = self._read_scheduler_lock(guard)
+            if g_read and my_token and g_token and g_token != my_token:
+                try:
+                    os.unlink(guard)
+                except OSError:
+                    pass
+            return ('retry', 0)
+        except OSError:
+            return ('retry', 0)
+        try:
+            self._write_lock_fd(gfd, my_pid, my_token)
+            # Exclusive section: no other reclaimer is here, and a still-present
+            # stale lock blocks any top-level creator, so the lock can't change
+            # under us until we replace it.
+            holder_pid, holder_token, readable = self._read_scheduler_lock(lock_path)
+            if readable and holder_pid and holder_pid != my_pid and \
+                    self._scheduler_holder_alive(holder_pid, holder_token, my_token):
+                return ('skip', holder_pid)
+            # Atomically swap our lock in over the stale one (os.replace leaves no
+            # empty-slot gap a top-level creator could win, on POSIX or Windows).
+            new_path = f"{lock_path}.new.{my_pid}"
+            try:
+                with open(new_path, 'w') as f:
+                    f.write(f"{my_pid}\n{my_token}")
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(new_path, lock_path)
+            except OSError:
+                try:
+                    os.unlink(new_path)
+                except OSError:
+                    pass
+                return ('retry', 0)
+            return ('won', my_pid)
+        finally:
+            # Always release the guard, even if writing it raised.
+            try:
+                os.unlink(guard)
+            except OSError:
+                pass
+
     def _acquire_scheduler_lock(self):
         """Cross-process lock — return True iff this PID should host the scheduler.
 
-        Claims SCHEDULER_LOCK_FILE by writing PID to a tmp file and renaming
-        it onto the lock path (POSIX atomic rename). After the rename, every
-        contender re-reads the file; only the last writer's PID survives, so
-        exactly one process wins regardless of how many race. If the existing
-        lock points to a dead PID, reclaim it. The lock is "released" only by
-        the next startup detecting the holder is dead — there's no failover
-        if the elected holder exits mid-container-lifetime, but Dispatcharr's
-        processes (uwsgi/celery/daphne) are long-lived so this is acceptable.
-        Note: requires /data to be a local volume — NFS weakens rename atomicity.
+        Mutual exclusion comes from os.open(O_CREAT|O_EXCL): the kernel
+        guarantees exactly one of any number of racing processes creates the lock
+        file, so exactly one wins. (The previous write-tmp -> rename ->
+        read-back-and-confirm protocol was a TOCTOU, not mutual exclusion: a
+        contender could read back its own PID in the gap before another
+        contender's rename overwrote it, so several processes each confirmed they
+        had won and the cron fired once per duplicate owner — the 2026-06-24
+        double-fire, where PIDs 235 and 246 both logged "Scheduler lock acquired"
+        3ms apart.)
+
+        A lock left behind by a previous container (boot-token mismatch) or held
+        by a dead PID is reclaimed by _reclaim_scheduler_lock, which serializes
+        reclaimers under an exclusive guard so they can't both install
+        themselves. The file is still 2 lines — `pid\n{boot_token}` — so
+        _owns_scheduler_lock and the triage tooling are unchanged. The lock is
+        "released" only by the next startup reclaiming it; Dispatcharr's
+        processes are long-lived so there's no mid-lifetime failover. Requires
+        /data to be a local volume — NFS weakens O_EXCL atomicity.
         """
         lock_path = PluginConfig.SCHEDULER_LOCK_FILE
         my_pid = os.getpid()
         my_token = _container_boot_token()
 
-        if os.path.exists(lock_path):
+        # Bounded: each iteration either returns or clears one stale obstacle.
+        for _attempt in range(8):
             try:
-                with open(lock_path, 'r') as f:
-                    raw = f.read().splitlines()
-                holder_pid = int((raw[0].strip() if raw else '') or '0')
-                holder_token = raw[1].strip() if len(raw) > 1 else ''
-                if holder_pid and holder_pid != my_pid:
-                    # A lock written by a previous container instance: after a
-                    # restart the recycled PID often collides with a live
-                    # unrelated process, so os.kill() can't be trusted. The
-                    # boot token is the authoritative staleness signal.
+                fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            except FileExistsError:
+                holder_pid, holder_token, readable = self._read_scheduler_lock(lock_path)
+                if holder_pid == my_pid:
+                    return True
+                if readable and holder_pid:
                     if my_token and holder_token and holder_token != my_token:
                         LOGGER.info(f"Stale scheduler lock from a previous container (PID {holder_pid}, token mismatch); reclaiming as PID {my_pid}.")
                     else:
@@ -397,39 +514,25 @@ class Plugin:
                         except ProcessLookupError:
                             LOGGER.info(f"Stale scheduler lock for dead PID {holder_pid}; reclaiming as PID {my_pid}.")
                         except PermissionError:
-                            # Holder is alive but owned by another user (shouldn't
-                            # happen in this container). Treat as held.
                             LOGGER.info(f"Scheduler lock held by PID {holder_pid} (different uid); skipping.")
                             return False
-                        # Other OSError (EINTR, transient FS errors): skip rather
-                        # than risk stealing a live lock.
-            except (ValueError, OSError):
-                pass
+                        except OSError:
+                            # Transient error probing the holder — don't steal.
+                            return False
+                outcome, owner_pid = self._reclaim_scheduler_lock(lock_path, my_pid, my_token)
+                if outcome == 'won':
+                    LOGGER.info(f"Scheduler lock acquired by PID {my_pid}.")
+                    return True
+                if outcome == 'skip':
+                    LOGGER.info(f"Scheduler already owned by PID {owner_pid or holder_pid}; this process ({my_pid}) will skip scheduler bootstrap.")
+                    return False
+                continue  # 'retry' — guard contended; re-race the create
+            else:
+                self._write_lock_fd(fd, my_pid, my_token)
+                LOGGER.info(f"Scheduler lock acquired by PID {my_pid}.")
+                return True
 
-        tmp = f"{lock_path}.{my_pid}.tmp"
-        try:
-            with open(tmp, 'w') as f:
-                # Line 1: PID. Line 2: container boot token (staleness signal).
-                f.write(f"{my_pid}\n{my_token}")
-                f.flush()
-                os.fsync(f.fileno())
-            os.rename(tmp, lock_path)
-        except OSError as e:
-            LOGGER.warning(f"Could not write scheduler lock file: {e}")
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            return False
-
-        try:
-            with open(lock_path, 'r') as f:
-                won = int((f.readline().strip() or '0')) == my_pid
-        except (ValueError, OSError):
-            won = False
-        if won:
-            LOGGER.info(f"Scheduler lock acquired by PID {my_pid}.")
-        return won
+        return False
 
     def _owns_scheduler_lock(self):
         """True iff this process is the elected scheduler holder.

@@ -298,6 +298,7 @@ Use the **Group(s) to EXCLUDE** field to skip groups that would otherwise be che
 - **Timezone Aware:** Schedules run according to **Dispatcharr's** configured timezone (Settings → General → Time Zone); no separate plugin timezone to keep in sync (v1.26.1721651+)
 - **Post-Check Automation:** Chain any combination of rename, move, delete, export, and webhook actions
 - **Conflict Prevention:** Scheduler queues jobs if a manual check is already running
+- **Single-Owner Election:** Across Dispatcharr's ~9 worker processes, exactly one hosts the scheduler — elected via an atomic `O_EXCL` lock with a container boot-token. A race in the prior protocol could let two processes win on a restart and fire the cron twice (two overlapping runs/CSVs); fixed in v1.26.1751208+
 
 #### Windowed Schedules with Resume
 

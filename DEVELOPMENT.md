@@ -171,9 +171,19 @@ of the above.
 
 - `-show_frames` must NOT be added to default `ffprobe_flags` — combined with
   `-show_packets`, ffprobe emits `packets_and_frames` and the bitrate
-  fallback silently dies (tested in `test_bitrate_calc.py`).
+  fallback silently dies (tested in `test_bitrate_calc.py`). The default lives
+  in one place: `PluginConfig.DEFAULT_FFPROBE_FLAGS` (used by both `check_stream`
+  and the CSV preamble — keep them sharing it, v1.26.1741204+).
+- CSV header columns come from `_compute_csv_fieldnames`: any `base_fieldnames`
+  entry that also starts with `ffprobe_` (i.e. `ffprobe_monitoring_seconds`) is
+  excluded from the `ffprobe_`-prefix auto-collector, else it appears twice
+  (`bug-csv-dup-monitoring-col`, v1.26.1741204+).
+- Low-framerate eligibility goes through `_is_low_framerate(fps)` /
+  `PluginConfig.LOW_FRAMERATE_THRESHOLD` (=24, PAL/film-safe), NOT a hardcoded
+  `< 30` — route every new low-fps site through the helper (v1.26.1741204+).
 - Dead-channel actions act only on `status == 'Dead'`; `Skipped` (Streamlink
-  hosts, HTTP 429) must stay untouched. **Black/blank exception (v1.26.1721554+):**
+  hosts, HTTP 429, and audio-only/`No Video Stream` — v1.26.1741204+) must stay
+  untouched. **Black/blank exception (v1.26.1721554+):**
   the Dead *rename/move* filters use `_is_dead_nonblack` (excludes
   `error_type == 'Black Screen'`) — black channels are renamed/moved by the
   dedicated black actions. Dead *delete* still includes them.
@@ -188,8 +198,15 @@ of the above.
   it produces uses all-`None` `dispatcharr_metadata` so `_update_dispatcharr_metadata`
   hits the `all_none` clear branch instead of writing `0x0` stats. Use `ffmpeg`'s
   `-loglevel info` (blackdetect logs at info level) and `-rw_timeout` *before* `-i`.
-- `/data` must be a local volume — the scheduler election relies on POSIX
-  rename atomicity.
+- `/data` must be a local volume — the scheduler election relies on
+  `os.open(O_CREAT|O_EXCL)` + `os.replace` atomicity (v1.26.1751208+; was POSIX
+  rename). The winner is whoever atomically *creates* the lock; never reintroduce
+  a "rename then read-back my own PID" confirmation — it's a TOCTOU that let two
+  processes win on a restart and double-fire the cron (`bug-sched-double-election`,
+  2026-06-24). Stale-lock reclaim is serialized under the `<lock>.reclaim` guard
+  in `_reclaim_scheduler_lock`. The concurrency regression test
+  (`test_scheduler_lock.py`) is **POSIX-only** — Windows can't delete/replace a
+  file open for reading, so verify that path in the Linux container, not on dev.
 - Scheduler timezone comes from Dispatcharr (`core.models.CoreSettings.get_system_time_zone()`)
   via `_dispatcharr_timezone()`, NOT a plugin setting (removed v1.26.1721651). The lazy
   `from core.models import CoreSettings` lives inside the resolver so the module still imports
