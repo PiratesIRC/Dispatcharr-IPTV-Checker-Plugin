@@ -35,6 +35,19 @@ jobs:
       - name: Tests
         run: python -m pytest tests -q
 
+      # Guards against backslash-separator release zips (Stream-Mapparr bug-087):
+      # validates any committed release zip; no-op when none is checked in.
+      - name: Validate committed release zip(s)
+        run: |
+          shopt -s globstar nullglob
+          zips=(**/*.zip)
+          if [ ${#zips[@]} -eq 0 ]; then echo "No committed release zip — skipping."; exit 0; fi
+          rc=0
+          for z in "${zips[@]}"; do
+            echo "::group::$z"; python scripts/validate_zip.py "$z" || rc=1; echo "::endgroup::"
+          done
+          exit $rc
+
   release:
     name: Attach plugin zip to release
     needs: checks
@@ -56,6 +69,9 @@ jobs:
 
       - name: Build plugin zip
         run: zip -r "iptv_checker-v${GITHUB_REF_NAME#v}.zip" iptv_checker/ -x '*__pycache__*' '*.pyc'
+
+      - name: Validate built zip (forward slashes, package root) — bug-087 guard
+        run: python scripts/validate_zip.py "iptv_checker-v${GITHUB_REF_NAME#v}.zip"
 
       - name: Create release and attach zip
         env:
