@@ -116,7 +116,10 @@ git tag <version> && git push origin main --tags
 
 Pushing the tag triggers the CI release job: it re-validates, checks the tag
 matches `plugin.json`, builds `iptv_checker-v<version>.zip` (no
-`__pycache__`), and creates/uploads the GitHub release.
+`__pycache__`) with Linux `zip` (forward-slash separators), validates it with
+`scripts/validate_zip.py` (bug-087 guard — a backslash-separator zip, as Windows
+`Compress-Archive` / .NET `ZipFile.CreateFromDirectory` produce, fails install on
+Dispatcharr's Linux host), and creates/uploads the GitHub release.
 
 Upstream marketplace (`Dispatcharr/Plugins`) submission rules are in
 `README.md` → "To the upstream marketplace".
