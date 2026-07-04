@@ -79,6 +79,32 @@ def test_live_current_owner_is_respected(plugin, pmod, monkeypatch, tmp_path):
     assert plugin._acquire_scheduler_lock() is False
 
 
+def test_recycled_pid_does_not_double_elect(plugin, pmod, monkeypatch, tmp_path):
+    """Root cause of the 2026-07-03 double-fire: after a container restart the OS
+    recycles low PIDs, so a previous-container stale lock naming PID 243 collides
+    with the NEW container's own PID 243. The `holder_pid == my_pid` shortcut used
+    to return True without checking the boot token, so the recycled PID silently
+    "already owned" the stale lock while another process reclaimed it — TWO winners,
+    two scheduler loops, duplicate cron fires. The shortcut must ignore a lock whose
+    token is from a previous container.
+    """
+    lock_file = _install_patches(plugin, pmod, monkeypatch, tmp_path)
+    with open(lock_file, "w") as f:
+        f.write("243\noldboot:100")  # previous-container lock, holder PID 243
+
+    # The new container's recycled PID 243 races another new process (256).
+    _install_patches.tl.pid = 243
+    won_243 = plugin._acquire_scheduler_lock()
+    _install_patches.tl.pid = 256
+    won_256 = plugin._acquire_scheduler_lock()
+
+    assert [won_243, won_256].count(True) == 1, "exactly one process may win the election"
+    # The winner must have stamped the CURRENT container token, replacing the stale one.
+    with open(lock_file) as f:
+        lines = f.read().splitlines()
+    assert lines[1] == "newboot:200"
+
+
 @pytest.mark.skipif(os.name != "posix", reason="relies on POSIX delete-under-read semantics")
 def test_concurrent_reclaim_of_previous_container_lock(plugin, pmod, monkeypatch, tmp_path):
     """Restart scenario: many workers reclaim a previous-container (stale-token)

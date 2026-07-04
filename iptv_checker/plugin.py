@@ -71,6 +71,16 @@ _scheduler_initialized = False  # Set True after the first Plugin instance boots
 # _start_background_scheduler can call _stop_background_scheduler while holding
 # it. Distinct from _scheduler_init_lock to avoid a deadlock with _init_scheduler.
 _scheduler_lifecycle_lock = threading.RLock()
+# Process-shared "already fired this minute" guard. The fire-claim in
+# scheduler_loop reads-and-sets this atomically under _scheduler_fire_lock, so
+# if a lifecycle race ever leaves two scheduler_loop threads alive in one
+# process, only ONE fires a given (cron_expr, minute). Replaces the old
+# loop-local `last_run` dict, which gave each duplicate loop its own guard and
+# let '0 23 * * *' fire twice 4s apart on 2026-07-03 (buglog
+# bug-sched-double-fire-dup-loop-thread). Cross-process is separately prevented
+# by the single-owner O_EXCL election lock.
+_scheduler_fire_lock = threading.Lock()
+_scheduler_last_fired = {}  # cron_expr -> current_minute datetime of last claim
 # _RATE_LIMIT_GUARD is initialized eagerly below the RateLimitGuard class
 # definition so all Plugin instances share one guard counter.
 
@@ -298,7 +308,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.1751208"
+    version = "1.26.1841039"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -501,7 +511,16 @@ class Plugin:
                 fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
             except FileExistsError:
                 holder_pid, holder_token, readable = self._read_scheduler_lock(lock_path)
-                if holder_pid == my_pid:
+                if holder_pid == my_pid and not (my_token and holder_token and holder_token != my_token):
+                    # We already hold it THIS container life — idempotent re-entry.
+                    # But only when the token matches: after a restart the OS
+                    # recycles low PIDs, so a previous-container stale lock can name
+                    # our new PID (recycled PID 243 colliding with the prior holder
+                    # 243 on 2026-07-02). Honoring the bare PID match there let the
+                    # recycled PID silently "already own" the stale lock while
+                    # another process reclaimed it — two winners, two scheduler
+                    # loops, the 2026-07-03 cron double-fire. On a token mismatch we
+                    # fall through to the reclaim path so exactly one process wins.
                     return True
                 if readable and holder_pid:
                     if my_token and holder_token and holder_token != my_token:
@@ -547,6 +566,19 @@ class Plugin:
                 return int((f.readline().strip() or '0')) == os.getpid()
         except (OSError, ValueError):
             return False
+
+    def _scheduler_lock_taken_over(self):
+        """True iff the election lock now names a DIFFERENT readable PID than this
+        process — i.e. this scheduler_loop has been superseded and must stop firing.
+
+        Defense-in-depth against a duplicate cross-process election: if two
+        processes ever both bootstrap a scheduler (e.g. the recycled-PID double-win
+        this guards against at the source), the one whose PID is NOT in the lock
+        file yields instead of zombie-firing cron. An unreadable/missing lock
+        returns False (don't kill the real owner on a transient read glitch).
+        """
+        holder_pid, _token, readable = self._read_scheduler_lock(PluginConfig.SCHEDULER_LOCK_FILE)
+        return bool(readable and holder_pid and holder_pid != os.getpid())
 
     def _request_scheduler_reload(self):
         """Signal the elected scheduler process to re-read settings from DB."""
@@ -1038,6 +1070,23 @@ class Plugin:
         except ValueError:
             return False
     
+    @staticmethod
+    def _claim_scheduler_fire(cron_expr, current_minute):
+        """Atomically claim (cron_expr, current_minute) for firing.
+
+        Returns True for the first caller in this process to claim this minute
+        and False for every caller after — so if a lifecycle race leaves two
+        scheduler_loop threads alive (each formerly with its own last_run),
+        they can't both fire the same cron minute (the 2026-07-03 double-fire).
+        Process-scoped is sufficient: cross-process double-fire is prevented by
+        the single-owner election lock.
+        """
+        with _scheduler_fire_lock:
+            if _scheduler_last_fired.get(cron_expr) == current_minute:
+                return False
+            _scheduler_last_fired[cron_expr] = current_minute
+            return True
+
     def _start_background_scheduler(self, settings):
         """Start the background scheduler thread."""
         global _bg_scheduler_thread, _scheduler_pending_run
@@ -1071,7 +1120,6 @@ class Plugin:
         def scheduler_loop():
             global _scheduler_pending_run
             nonlocal local_tz, tz_str, scheduled_times
-            last_run = {}  # Track last run timestamp for each cron expression (to minute precision)
 
             LOGGER.info(f"Scheduler started. Timezone: {tz_str}, Cron expressions: {scheduled_times}")
 
@@ -1083,6 +1131,14 @@ class Plugin:
                     # lifecycle lock so an orphaned loop can never double-fire.
                     if _bg_scheduler_thread is not threading.current_thread():
                         LOGGER.info("Scheduler loop superseded by a newer thread — exiting orphaned loop")
+                        return
+
+                    # Cross-process guard: if another process now holds the election
+                    # lock, this loop belongs to a de-elected process (a duplicate
+                    # election could have started it) — yield so cron fires once.
+                    if self._scheduler_lock_taken_over():
+                        LOGGER.warning("Scheduler loop no longer owns the election lock; "
+                                       "exiting to avoid duplicate cron fire")
                         return
 
                     # Reload schedule from DB if a non-owner worker requested it
@@ -1109,7 +1165,6 @@ class Plugin:
                             scheduled_times = new_times
                             tz_str = new_tz_str
                             local_tz = new_tz
-                            last_run = {}
 
                     now = datetime.now(local_tz)
                     # Truncate to minute precision for matching (ignore seconds)
@@ -1118,15 +1173,17 @@ class Plugin:
                     for cron_expr in scheduled_times:
                         # Check if this cron expression matches the current time
                         if self._cron_matches(cron_expr, now):
-                            # Check if we already ran this minute
-                            if last_run.get(cron_expr) == current_minute:
-                                continue  # Already ran this minute
-                            
+                            # Claim this minute atomically across every scheduler_loop
+                            # thread in this process. If a lifecycle race leaves two
+                            # loops alive (each formerly with its own last_run), only
+                            # the first claimant fires — the guard against the
+                            # 2026-07-03 double-fire where '0 23 * * *' fired twice
+                            # 4s apart from the same owner PID.
+                            if not self._claim_scheduler_fire(cron_expr, current_minute):
+                                continue  # Already fired this minute (this or a sibling loop)
+
                             LOGGER.info(f"⏰ SCHEDULED RUN triggered at {now.strftime('%Y-%m-%d %H:%M:%S')} for cron: {cron_expr}")
-                            
-                            # Mark as run for this minute immediately to prevent duplicate triggers
-                            last_run[cron_expr] = current_minute
-                            
+
                             # Check if a check is already running
                             if self.check_progress.get('status') == 'running':
                                 if getattr(self, '_restart_resume_active', False):
@@ -1187,11 +1244,20 @@ class Plugin:
         with _scheduler_lifecycle_lock:
             if _bg_scheduler_thread and _bg_scheduler_thread.is_alive():
                 LOGGER.info("Stopping scheduler thread...")
+                prev_thread = _bg_scheduler_thread
                 _scheduler_stop_event.set()
-                _bg_scheduler_thread.join(timeout=PluginConfig.SCHEDULER_STOP_TIMEOUT)
+                prev_thread.join(timeout=PluginConfig.SCHEDULER_STOP_TIMEOUT)
                 _scheduler_stop_event.clear()
                 _scheduler_pending_run = False
                 _bg_scheduler_thread = None
+                if prev_thread.is_alive():
+                    # The old loop didn't exit within the join timeout (the shared
+                    # stop_event was cleared for the incoming thread). It self-evicts
+                    # at its next iteration via the _bg_scheduler_thread identity
+                    # check; until then the shared fire-claim guard prevents it from
+                    # double-firing. Surfaced so a recurring leak is visible.
+                    LOGGER.warning("Previous scheduler thread still alive after stop timeout; "
+                                   "it will self-evict on its next iteration")
                 LOGGER.info("Scheduler thread stopped")
     
     def _execute_scheduled_check(self, settings, preserved_window_end=None, preserved_window_tz=None):
@@ -3425,12 +3491,31 @@ class Plugin:
         global _bg_scheduler_thread, _scheduler_pending_run
 
         try:
-            if _bg_scheduler_thread is None:
-                thread_status = "❌ Not running"
-            elif _bg_scheduler_thread.is_alive():
+            # The scheduler runs in exactly ONE elected process; a UI status click
+            # lands in whatever worker the load balancer picks — almost never the
+            # owner (often daphne). Checking only the process-local
+            # _bg_scheduler_thread reported "Not running" in every other worker even
+            # when the scheduler was healthy (GitHub #25). Consult the cross-process
+            # election lock file: a live holder PID means it's running somewhere.
+            if _bg_scheduler_thread is not None and _bg_scheduler_thread.is_alive():
                 thread_status = "✅ Running"
+                scheduler_running = True
             else:
-                thread_status = "⚠️ Stopped"
+                holder_pid, holder_token, readable = self._read_scheduler_lock(
+                    PluginConfig.SCHEDULER_LOCK_FILE)
+                other_owner_alive = bool(
+                    readable and holder_pid and holder_pid != os.getpid()
+                    and self._scheduler_holder_alive(holder_pid, holder_token, _container_boot_token())
+                )
+                if other_owner_alive:
+                    thread_status = f"✅ Running (owner PID {holder_pid})"
+                    scheduler_running = True
+                elif _bg_scheduler_thread is not None:
+                    thread_status = "⚠️ Stopped"
+                    scheduler_running = False
+                else:
+                    thread_status = "❌ Not running"
+                    scheduler_running = False
 
             scheduled_times_str = settings.get("scheduled_times", "").strip()
             cron_lines = []
@@ -3460,7 +3545,7 @@ class Plugin:
                 hint = "⚠️ Set cron expressions and click 💾 Save Schedule"
             elif not PYTZ_AVAILABLE:
                 hint = "⚠️ pytz not available"
-            elif not _bg_scheduler_thread or not _bg_scheduler_thread.is_alive():
+            elif not scheduler_running:
                 hint = "⚠️ Click 📅 Save Schedule to start the scheduler"
             else:
                 hint = "✅ Scheduler healthy"
