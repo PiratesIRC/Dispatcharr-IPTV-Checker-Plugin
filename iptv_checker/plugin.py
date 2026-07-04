@@ -98,6 +98,11 @@ class PluginConfig:
     CHANNEL_STATE_FILE = "/data/iptv_checker_channel_state.json"
     SCHEDULER_LOCK_FILE = "/data/iptv_checker_scheduler.pid"
     SCHEDULER_RELOAD_FLAG = "/data/iptv_checker_scheduler_reload.flag"
+    # Process types that must NOT host the scheduler (GitHub #25). The daphne
+    # ASGI server can win the election but never brings a live scheduler loop up,
+    # wedging every uwsgi worker into deferring to it. Matched (case-insensitive)
+    # against /proc/self/cmdline; a process we can't fingerprint stays eligible.
+    SCHEDULER_INELIGIBLE_HOST_MARKERS = ("daphne", "dispatcharr.asgi")
 
     # --- Scheduler ---
     DEFAULT_TIMEZONE = "UTC"
@@ -308,7 +313,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.1841039"
+    version = "1.26.1851155"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -479,6 +484,42 @@ class Plugin:
             except OSError:
                 pass
 
+    @staticmethod
+    def _cmdline_is_ineligible_scheduler_host(cmdline):
+        """Pure classifier: True if this process command line names a process
+        type that must not host the scheduler (daphne/ASGI).
+
+        Each marker is matched against the BASENAME of a command-line token, not
+        as a raw substring of the whole string, so an install PATH or username
+        containing 'daphne' (e.g. /home/daphne/... or a uwsgi ini under it) can't
+        accidentally exclude a uwsgi/celery worker and leave the deployment with
+        no scheduler host — the very silent failure #25 fixes. A marker matches a
+        token when the token's basename equals it (executable, e.g.
+        '/venv/bin/daphne') or begins with 'marker:' (module target, e.g.
+        'dispatcharr.asgi:app'). Fail-open: a blank command line is eligible."""
+        if not cmdline:
+            return False
+        markers = PluginConfig.SCHEDULER_INELIGIBLE_HOST_MARKERS
+        for token in cmdline.lower().split():
+            base = token.rsplit("/", 1)[-1]
+            for marker in markers:
+                if base == marker or base.startswith(marker + ":"):
+                    return True
+        return False
+
+    def _read_own_cmdline(self):
+        """This process's command line as a space-joined string, or '' if it
+        can't be read (non-Linux / no /proc) so the caller fails open."""
+        try:
+            with open("/proc/self/cmdline", "rb") as f:
+                return f.read().replace(b"\x00", b" ").decode("utf-8", "replace").strip()
+        except OSError:
+            return ""
+
+    def _is_ineligible_scheduler_host(self):
+        """True iff this process must be excluded from scheduler election (#25)."""
+        return self._cmdline_is_ineligible_scheduler_host(self._read_own_cmdline())
+
     def _acquire_scheduler_lock(self):
         """Cross-process lock — return True iff this PID should host the scheduler.
 
@@ -501,6 +542,16 @@ class Plugin:
         processes are long-lived so there's no mid-lifetime failover. Requires
         /data to be a local volume — NFS weakens O_EXCL atomicity.
         """
+        # GitHub #25: the daphne/ASGI process must never win the election. It can
+        # acquire the lock during a boot import (before the DB-backed schedule is
+        # readable) and then hold it without hosting a live loop, wedging every
+        # uwsgi worker into deferring to it so the cron never fires. Exclude it as
+        # a candidate so a uwsgi worker reliably hosts the scheduler.
+        if self._is_ineligible_scheduler_host():
+            LOGGER.info(f"Process {os.getpid()} is the daphne/ASGI server (not a uwsgi "
+                        "worker); not eligible to host the scheduler.")
+            return False
+
         lock_path = PluginConfig.SCHEDULER_LOCK_FILE
         my_pid = os.getpid()
         my_token = _container_boot_token()
