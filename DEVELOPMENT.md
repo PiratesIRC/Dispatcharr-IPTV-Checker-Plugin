@@ -17,6 +17,9 @@ tests/                         # pytest suite (runs OUTSIDE the container)
 ├── test_rate_limit_guard.py   #   429 classification + cooldown logic
 ├── test_bitrate_calc.py       #   packet-based bitrate + min-sample gate + audio-only->Skipped
 ├── test_scheduler_window.py   #   window math + pending-resume scope guards
+├── test_scheduler_lock.py     #   O_EXCL election + boot-token reclaim + recycled-PID guard (POSIX concurrency)
+├── test_scheduler_double_fire.py # process-shared fire-claim + status false-negative (#25 display half)
+├── test_scheduler_host_eligibility.py # daphne/ASGI excluded from election (#25 root cause)
 ├── test_webhook.py            #   Discord/generic payload shaping + headers
 ├── test_black_screen.py       #   blackdetect parse + ffmpeg wrapper + check_stream
 ├── test_restore_and_black.py  #   restore + blank-flag predicates/planners/actions
