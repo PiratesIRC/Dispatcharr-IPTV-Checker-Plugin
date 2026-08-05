@@ -57,8 +57,20 @@ def test_bump_version_can_actually_rewrite_claude_md():
     pattern stopped matching after CLAUDE.md was restructured: the guard is
     `if updated != text`, so a miss is indistinguishable from a no-op and the
     next release would have shipped a stale version line. Assert the rewrite
-    really lands rather than trusting the bump's exit code."""
+    really lands rather than trusting the bump's exit code.
+
+    SKIPPED rather than failed when CLAUDE.md is absent: it is gitignored in
+    this repository, so a clean CI clone does not have it. Skipping is stated
+    out loud rather than returning silently, because a test that quietly does
+    nothing looks identical to one that passed. The sibling test above returns
+    early for the same reason; this one says so in the report.
+    """
     import importlib.util
+
+    import pytest
+
+    if not CLAUDE_MD.exists():
+        pytest.skip("CLAUDE.md is gitignored and absent in a clean clone")
 
     spec = importlib.util.spec_from_file_location("bump_version", PROJECT_ROOT / "bump_version.py")
     bump = importlib.util.module_from_spec(spec)
