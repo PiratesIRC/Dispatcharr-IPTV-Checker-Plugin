@@ -620,11 +620,20 @@ def render_html(model):
     health = model.get("run_health") if isinstance(model.get("run_health"), dict) else {}
     sections = model.get("sections") or []
 
-    generated = model.get("generated_at")
-    try:
-        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(generated)))
-    except (TypeError, ValueError):
-        stamp = "unknown time"
+    # LOCAL time is correct for the operator, so that is the default. But a
+    # local rendering is machine-dependent, which made the committed fixture
+    # render differently on a Central developer machine and a UTC CI runner and
+    # broke the build. An explicit label overrides it, which is how the sample
+    # fixture is pinned without changing what a real report shows.
+    label = model.get("generated_label")
+    if isinstance(label, str) and label.strip():
+        stamp = label.strip()
+    else:
+        generated = model.get("generated_at")
+        try:
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(generated)))
+        except (TypeError, ValueError):
+            stamp = "unknown time"
 
     logo = _logo_data_uri(model.get("plugin_dir"))
 

@@ -20,6 +20,7 @@ _spec.loader.exec_module(reports)
 # A fixed timestamp, so regenerating without a code change produces no diff.
 SAMPLE_NOW = 1754400000
 SAMPLE_VERSION = "0.0.0-sample"
+SAMPLE_LABEL = "2026-08-05 12:00:00"
 
 # One channel per verdict, so the fixture exercises every section and every
 # glyph. Names are obviously synthetic: this file is committed to a public
@@ -56,6 +57,13 @@ SAMPLE_SETTINGS = {"black_screen_detection": True, "placeholder_file_detection":
 def build():
     model = reports.build_model(SAMPLE_RESULTS, SAMPLE_SETTINGS,
                                 now=SAMPLE_NOW, version=SAMPLE_VERSION)
+    # PIN THE TIMESTAMP TEXT, not just the epoch. A real report renders LOCAL
+    # time, which is right for the operator but machine-dependent: the same
+    # epoch produced 08:20:00 on a Central developer machine and 13:20:00 on a
+    # UTC CI runner, so the committed fixture failed the build on a difference
+    # that was not a code change. time.tzset() is not available on Windows, so
+    # the environment cannot simply be forced.
+    model["generated_label"] = SAMPLE_LABEL
     # No plugin_dir is set, so no logo is embedded. The fixture stays small and
     # its diff stays readable.
     return reports.render_html(model)
