@@ -348,7 +348,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.2171145"
+    version = "1.26.2171157"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -2637,6 +2637,61 @@ class Plugin:
     STANDARD_QUALITY_TAGS = ('UHD', 'FHD', 'HD', 'SD', 'Unknown')
 
     @staticmethod
+    def _is_low_framerate_row(result):
+        """Row-level form of the low-framerate test, for use as a predicate."""
+        try:
+            return Plugin._is_low_framerate(float((result or {}).get('framerate_num', 0) or 0))
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _channels_where(results, predicate, among=None):
+        """channel_id -> channel_name for channels whose EVERY considered stream
+        matches `predicate`, and which have at least one considered stream.
+
+        WHY EVERY, NOT ANY. Check results are recorded per STREAM, while every
+        rename, move and delete acts per CHANNEL. Selecting on any single row
+        marked a channel dead because ONE of its streams failed, even when a
+        backup stream was Alive. Dispatcharr fails over to that backup, so the
+        channel plays perfectly, and it was eligible for rename, move and
+        permanent deletion. Measured 2026-08-05.
+
+        `Skipped` is not evidence in either direction and so fails the
+        predicate, which excludes the channel. A channel with one Dead and one
+        rate-limited stream has NOT been shown to be dead: the rate-limited
+        stream may work fine. A not-proven-bad verdict never authorises an
+        action.
+
+        `among` optionally restricts which rows are considered, for judgements
+        that only make sense over streams that actually play: a framerate is
+        read from the Alive streams, because a dead stream cannot be played and
+        says nothing about how the channel looks. A channel with NO considered
+        rows is EXCLUDED rather than vacuously matching, which is what `all()`
+        over an empty sequence would otherwise do.
+        """
+        considered = {}
+        for row in (results or []):
+            if not isinstance(row, dict):
+                continue
+            cid = row.get('channel_id')
+            if cid is None:
+                continue
+            if among is not None and not among(row):
+                continue
+            considered.setdefault(cid, []).append(row)
+
+        # No emptiness guard here on purpose: setdefault(...).append(row)
+        # above means every key holds at least one row, so `rows` cannot be
+        # empty. A channel whose rows were ALL filtered out by `among` never
+        # becomes a key at all, which is what excludes it -- rather than
+        # reaching an all() over an empty sequence, which returns True.
+        out = {}
+        for cid, rows in considered.items():
+            if all(predicate(r) for r in rows):
+                out[cid] = rows[0].get('channel_name')
+        return out
+
+    @staticmethod
     def _is_dead_nonblack(result):
         """Dead due to a probing failure, NOT a black/blank screen."""
         return result.get('status') == 'Dead' and result.get('error_type') != 'Black Screen'
@@ -2762,7 +2817,7 @@ class Plugin:
         if results is None:
             return {"status": "error", "message": "No check results found (or data corrupted). Please run 'Check Streams' first."}
 
-        dead_channels = {r['channel_id']: r['channel_name'] for r in results if self._is_dead_nonblack(r)}
+        dead_channels = self._channels_where(results, self._is_dead_nonblack)
         if not dead_channels: return {"status": "ok", "message": "No dead channels found in the last check."}
 
         payload = []
@@ -2790,7 +2845,7 @@ class Plugin:
         if results is None:
             return {"status": "error", "message": "No check results found (or data corrupted). Please run 'Check Streams' first."}
         
-        dead_channel_ids = {r['channel_id'] for r in results if self._is_dead_nonblack(r)}
+        dead_channel_ids = set(self._channels_where(results, self._is_dead_nonblack))
         if not dead_channel_ids: return {"status": "ok", "message": "No dead channels were found in the last check."}
 
         try:
@@ -2820,7 +2875,8 @@ class Plugin:
         if results is None:
             return {"status": "error", "message": "No check results found (or data corrupted). Please run 'Check Streams' first."}
 
-        dead_channel_ids = {r['channel_id'] for r in results if r['status'] == 'Dead'}
+        dead_channel_ids = set(self._channels_where(
+            results, lambda r: r.get('status') == 'Dead'))
         if not dead_channel_ids:
             return {"status": "ok", "message": "No dead channels were found in the last check."}
 
@@ -2893,7 +2949,9 @@ class Plugin:
         if results is None:
             return {"status": "error", "message": "No check results found (or data corrupted). Please run 'Check Streams' first."}
 
-        low_fps_channels = {r['channel_id']: r['channel_name'] for r in results if self._is_low_framerate(r.get('framerate_num', 0))}
+        low_fps_channels = self._channels_where(
+            results, self._is_low_framerate_row,
+            among=lambda r: r.get('status') == 'Alive')
         if not low_fps_channels: return {"status": "ok", "message": "No low framerate channels found."}
 
         payload = []
@@ -2921,7 +2979,9 @@ class Plugin:
         if results is None:
             return {"status": "error", "message": "No check results found (or data corrupted). Please run 'Check Streams' first."}
         
-        low_fps_channel_ids = {r['channel_id'] for r in results if self._is_low_framerate(r.get('framerate_num', 0))}
+        low_fps_channel_ids = set(self._channels_where(
+            results, self._is_low_framerate_row,
+            among=lambda r: r.get('status') == 'Alive'))
         if not low_fps_channel_ids: return {"status": "ok", "message": "No low framerate channels found to move."}
 
         try:
@@ -3085,7 +3145,7 @@ class Plugin:
         if results is None:
             return {"status": "error", "message": "No check results found (or data corrupted). Please run 'Check Streams' first."}
 
-        black_channels = {r['channel_id']: r['channel_name'] for r in results if self._is_black_screen(r)}
+        black_channels = self._channels_where(results, self._is_black_screen)
         if not black_channels:
             return {"status": "ok", "message": "No black-screen channels found in the last check."}
 
@@ -3114,7 +3174,7 @@ class Plugin:
         if results is None:
             return {"status": "error", "message": "No check results found (or data corrupted). Please run 'Check Streams' first."}
 
-        black_channel_ids = {r['channel_id'] for r in results if self._is_black_screen(r)}
+        black_channel_ids = set(self._channels_where(results, self._is_black_screen))
         if not black_channel_ids:
             return {"status": "ok", "message": "No black-screen channels found to move."}
         try:
