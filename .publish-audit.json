@@ -1,0 +1,108 @@
+{
+  "_comment": [
+    "Rules for the workspace pre-publish audit, run against whatever ref is",
+    "about to be pushed:",
+    "",
+    "  python ../.claude/skills/pre-publish-audit/audit_publish.py \\",
+    "      --ref main --rules .publish-audit.json",
+    "",
+    "`deny` holds strings the built-in patterns cannot know about, because they",
+    "look like ordinary words to a generic scanner: the provider's brand host,",
+    "its CDN host label, the M3U account name suffixes, this installation's LAN",
+    "prefix, and this machine's drive mappings. Every pattern here is written",
+    "with a character class so that this rules file does not itself become the",
+    "leak it is meant to prevent.",
+    "",
+    "`allow` holds expected placeholders and fixtures. Each needs a reason.",
+    "Loosening a pattern to silence a finding is how the next real one gets",
+    "through: add an allow entry with a reason instead.",
+    "",
+    "THIS REPOSITORY IS PUBLIC AND IS PUSHED DIRECTLY, with no orphan branch",
+    "between the development history and GitHub. Measured 2026-08-05: public,",
+    "50 stars, 4 forks. There is therefore no second chance and no staging",
+    "step. Everything reachable from a pushed ref is world-readable the moment",
+    "the push completes, and with forks in existence a history rewrite cannot",
+    "take it back.",
+    "",
+    "ALREADY PUBLISHED, recorded here so nobody rediscovers it as if it were",
+    "new: 33 blob references under docs/superpowers/ are reachable from",
+    "origin/main. Commit c40014c removed those design documents from the tree",
+    "and gitignored them, but removing a file from HEAD does not remove it from",
+    "history. An old settings-field placeholder carrying the private address",
+    "An old settings-field placeholder carrying a private address is likewise",
+    "reachable, from commits facb5f8 and 173efc2. The value itself is not",
+    "repeated here: this file is published, and the allow entry below's",
+    "pattern is the authority on it.",
+    "Neither is a credential. The decision, taken by the operator on",
+    "2026-08-05, is to accept both rather than rewrite history: a rewrite does",
+    "not reach the 4 forks or any cached view, and it would create a false",
+    "impression that the content had been withdrawn."
+  ],
+  "deny": [
+    {
+      "pattern": "strea[m]q",
+      "why": "the provider's real brand host, written as a pattern so this file does not contain it"
+    },
+    {
+      "pattern": "cf\\.li[v]e",
+      "why": "the provider's real CDN host label, in any form. Swapping only the top-level domain is not a redaction: it still names the provider. Use edge-NN.example in fixtures instead, so this rule can stay absolute"
+    },
+    {
+      "pattern": "\\bb[k](1[5]|2[69])\\b",
+      "why": "the real M3U account name suffixes, one per provider login. They look like ordinary short words to a generic scanner"
+    },
+    {
+      "pattern": "19[2]\\.16[8]\\.2[1]1\\.",
+      "why": "this installation's LAN prefix, which names the operator's internal network. The built-in private-address rule also catches it, but only at medium severity; naming it here makes it high"
+    },
+    {
+      "pattern": "19[2]\\.16[8]\\.1\\.5[3]",
+      "why": "the live Dispatcharr host on this installation's LAN, as distinct from a documentation example"
+    },
+    {
+      "pattern": "[O]:\\\\\\\\?docker",
+      "why": "this machine's Windows drive mapping of the container volumes"
+    },
+    {
+      "pattern": "/data/plugi[n]_backups",
+      "why": "an internal backup location on the live box, not a path any user of this plugin has"
+    },
+    {
+      "pattern": "workspace-note[s]-backups",
+      "why": "the operator's notes backup location, which names a private directory on a separate drive"
+    }
+  ],
+  "allow": [
+    {
+      "pattern": "names = \\{n\\.lower\\(\\) for n in",
+      "reason": "The line in tests/test_publish_hygiene.py that lists the notes filenames the test refuses to let become tracked. A guard has to name what it guards against, and the built-in notes-reference rule is case-insensitive so it matches those names. Anchored to this one line so the same strings are still reported everywhere else in the repository"
+    },
+    {
+      "pattern": "CLAUDE\\.md",
+      "reason": "Textual references to the notes FILENAME, in .gitignore (the ignore rule itself), DEVELOPMENT.md, README.md, bump_version.py, pyproject.toml, .github/workflows/ci.yml and tests/test_version_sync.py. No notes file is tracked and none of these lines carry notes CONTENT. This allowance also silences the scanner's file-NAME check for that string, so the real risk is covered precisely by tests/test_publish_hygiene.py, which fails if any file named CLAUDE.md or CLAUDE-HISTORY.md ever becomes tracked. Do not remove that test while this entry exists"
+    },
+    {
+      "pattern": "superpowers",
+      "reason": "Textual references to the design-document directory NAME, in .gitignore (the ignore rules) and one docstring in tests/test_black_screen.py citing the spec a feature came from. Nothing under docs/superpowers/ is tracked. As with the CLAUDE.md entry above, the file-NAME check is covered instead by tests/test_publish_hygiene.py, which fails if any tracked path contains that directory"
+    },
+    {
+      "pattern": "/home/daphne/",
+      "reason": "A deliberate test fixture in iptv_checker/plugin.py and tests/test_scheduler_host_eligibility.py. The scheduler excludes the daphne ASGI process from the cross-process election by matching a command-line token BASENAME rather than a raw substring, so that a plugin installed under a path like /home/daphne/ is not wrongly excluded, which would leave the deployment with no scheduler host at all. It is a path shape under test, not anyone's home directory"
+    },
+    {
+      "pattern": "12[7]\\.0\\.0\\.1|19[2]\\.16[8]\\.1\\.1[0]\\b",
+      "reason": "Documentation placeholders for a Dispatcharr URL in plugin settings help text and README examples. Neither is this installation's address: the live host is covered by its own deny entry above. The second alternative in this pattern is additionally present in already-published history, recorded in the comment block at the top of this file"
+    }
+  ],
+  "_private_remotes_comment": [
+    "Remotes that legitimately receive the development history, including the",
+    "notes and any design documents. The pre-push hook skips its content audit",
+    "for these and only for these.",
+    "",
+    "THIS REPOSITORY HAS NO SUCH REMOTE. origin is a PUBLIC publication target,",
+    "so it must always be audited. An unrecognised remote is audited, which",
+    "means the default stays deny and this empty list is the correct state, not",
+    "an oversight. Do not add origin here to silence a finding."
+  ],
+  "private_remotes": []
+}
