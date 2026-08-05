@@ -58,14 +58,26 @@ def write_py_version(new: str) -> None:
 
 
 def write_claude_md_version(new: str) -> None:
+    # The line has been written both as a heading ("## Current Version: vX")
+    # and as a bold line ("**Current Version: vX**"), so match neither prefix
+    # nor suffix. The version stops at the first character that cannot be part
+    # of one, otherwise a trailing "**" gets swallowed into the capture.
     if not CLAUDE_MD.exists():
         return
     text = CLAUDE_MD.read_text(encoding="utf-8")
-    updated = re.sub(
-        r'(## Current Version: v)\S+', f'\\g<1>{new}', text, count=1
+    updated, count = re.subn(
+        r'(Current Version: v)[0-9][0-9.]*', f'\\g<1>{new}', text, count=1
     )
-    if updated != text:
-        CLAUDE_MD.write_text(updated, encoding="utf-8")
+    if count == 0:
+        # Do NOT fail silently. The previous version of this function guarded
+        # on `updated != text`, so a pattern that stopped matching read as a
+        # no-op and the release shipped a stale version line.
+        print(
+            f"warning: no 'Current Version: v...' line found in {CLAUDE_MD}; not updated",
+            file=sys.stderr,
+        )
+        return
+    CLAUDE_MD.write_text(updated, encoding="utf-8")
 
 
 def main(argv: list[str]) -> int:

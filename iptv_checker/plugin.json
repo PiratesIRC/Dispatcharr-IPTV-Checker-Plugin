@@ -1,6 +1,6 @@
 {
   "name": "IPTV Checker",
-  "version": "1.26.1851155",
+  "version": "1.26.2171014",
   "description": "A Dispatcharr Plugin that goes through a playlist to check IPTV channels",
   "author": "PiratesIRC",
   "logo": "logo.png",
@@ -125,6 +125,19 @@
       "type": "number",
       "default": 20,
       "help_text": "Hard wall-clock cap on the ffmpeg blank-screen decode (connection + sampling). If exceeded, the stream is left Alive. Default: 20"
+    },
+    {
+      "id": "_section_placeholder_file",
+      "label": "\ud83d\udcc4 Placeholder-File Detection",
+      "type": "info",
+      "description": "A continuous live stream reports no fixed duration. A stream that DOES report one is serving a finite file, which providers use as a dead-channel placeholder. Costs nothing extra: the duration is already read during the normal ffprobe check."
+    },
+    {
+      "id": "placeholder_file_detection",
+      "label": "\ud83d\udcc4 Detect Placeholder-File Streams",
+      "type": "boolean",
+      "default": false,
+      "help_text": "When ON, any stream reporting a fixed container duration is marked Dead under the `Placeholder File` error type, so the dead-channel rename/move/delete actions handle it. Adds no probe time. Measured against a full sweep of 156 provider channels: all 138 healthy channels reported no duration, while all 19 that did were serving a placeholder file. The duration and container bitrate are recorded in the CSV for every stream even when this is OFF, so you can check the evidence before turning it on. Leave OFF if any channel here is fed by a genuinely finite file you want to keep."
     },
     {
       "id": "_section_post_check",

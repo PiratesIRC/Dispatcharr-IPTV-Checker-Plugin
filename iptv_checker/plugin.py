@@ -313,7 +313,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.1851155"
+    version = "1.26.2171014"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -3701,6 +3701,57 @@ class Plugin:
                 continue
         return segments
 
+    @staticmethod
+    def _parse_container_duration(probe_data):
+        # Container duration in seconds, or None when the stream does not
+        # report one. A continuous live mpegts has no duration at all; a
+        # finite value means ffprobe is reading a FILE, not a broadcast.
+        try:
+            raw = (probe_data or {}).get('format') or {}
+            raw = raw.get('duration')
+        except AttributeError:
+            return None
+        if raw in (None, '', 'N/A'):
+            return None
+        try:
+            seconds = float(raw)
+        except (ValueError, TypeError):
+            return None
+        if seconds != seconds or seconds <= 0:   # NaN or non-positive
+            return None
+        return seconds
+
+    @staticmethod
+    def _parse_container_bitrate_kbps(probe_data):
+        # Container-level bit_rate in whole kbps, or None. Recorded as
+        # evidence beside the duration: the provider placeholder measured on
+        # 2026-07-11 reported 192953 bps on every one of 18 dead channels.
+        try:
+            raw = (probe_data or {}).get('format') or {}
+            raw = raw.get('bit_rate')
+        except AttributeError:
+            return None
+        if raw in (None, '', 'N/A'):
+            return None
+        try:
+            return int(round(float(raw) / 1000.0))
+        except (ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _is_placeholder_file(probe_data):
+        # True when a stream reports a fixed container duration. Measured on a
+        # full ffprobe sweep of 156 provider channels (2026-07-11): all 138
+        # healthy channels reported no duration, while 19 reported one -- 18 of
+        # them the same 10-minute black placeholder file reused under many
+        # content ids, the 19th a 22.6 second file on a 24/7 channel.
+        #
+        # Deliberately NOT gated on resolution or on the exact bitrate. All 18
+        # dead channels were 1920x1080, but so were ten HEALTHY ones, so frame
+        # size discriminates nothing; and requiring the exact 192953 bps would
+        # miss the short file, which reported no bitrate at all.
+        return Plugin._parse_container_duration(probe_data) is not None
+
     def _check_black_screen(self, url, timeout, settings, logger):
         # Decode a few seconds of an Alive stream and detect a pure black
         # picture. Returns True (black), False (has video), or None
@@ -4002,6 +4053,41 @@ class Plugin:
                             video_bitrate = int(round(video_bitrate))
 
                         stream_format = self._get_stream_format(resolution)
+
+                        # Placeholder-file evidence. Recorded for EVERY stream
+                        # that reports a container duration, whether or not the
+                        # detection setting is on, so the operator can see the
+                        # fingerprint in the CSV before deciding to act on it.
+                        # Costs nothing: -show_format is already requested and
+                        # the format block is already parsed above.
+                        container_duration = self._parse_container_duration(probe_data)
+                        if container_duration is not None:
+                            ffprobe_extra_data['container_duration_seconds'] = container_duration
+                            container_bitrate = self._parse_container_bitrate_kbps(probe_data)
+                            if container_bitrate is not None:
+                                ffprobe_extra_data['container_bitrate_kbps'] = container_bitrate
+
+                        # Optional placeholder-file classification. A live
+                        # stream reporting a fixed duration is serving a finite
+                        # file, which on this provider is a black slate reused
+                        # across many dead channels. Null metadata mirrors
+                        # every other Dead stream so the DB stats get cleared
+                        # (see _update_dispatcharr_metadata all_none).
+                        if (settings and settings.get('placeholder_file_detection')
+                                and self._is_placeholder_file(probe_data)):
+                            logger.info(
+                                f"✗ '{channel_name}' DEAD - Placeholder File "
+                                f"({container_duration:.1f}s fixed duration)"
+                            )
+                            placeholder_return = dict(default_return)
+                            placeholder_return['dispatcharr_metadata'] = {k: None for k in default_return['dispatcharr_metadata']}
+                            placeholder_return['error'] = (
+                                f'Stream reports a fixed {container_duration:.1f}s duration; '
+                                'a continuous live stream reports none'
+                            )
+                            placeholder_return['error_type'] = 'Placeholder File'
+                            placeholder_return['ffprobe_data'] = ffprobe_extra_data
+                            return placeholder_return
 
                         # Optional black-screen verification. An Alive-by-ffprobe
                         # stream can still decode to a pure black picture; mark it
