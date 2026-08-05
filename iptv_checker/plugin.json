@@ -1,6 +1,6 @@
 {
   "name": "IPTV Checker",
-  "version": "1.26.2171340",
+  "version": "1.26.2171410",
   "description": "A Dispatcharr Plugin that goes through a playlist to check IPTV channels",
   "author": "PiratesIRC",
   "logo": "logo.png",
@@ -345,6 +345,13 @@
       "help_text": "Automatically export results to CSV after scheduled checks complete."
     },
     {
+      "id": "scheduler_email_report",
+      "label": "\ud83d\udce7 Email Report After Scheduled Check",
+      "type": "boolean",
+      "default": false,
+      "help_text": "When ON, each scheduled check builds the HTML report and queues it for delivery by email through Newsflasharr. Runs beside the CSV export and on the same terms, so a window that closes part way through the channel list still leaves a report. Requires the Newsflasharr plugin, its SMTP settings, and a routing rule matching source iptv_checker and event usage_report with channel smtp. Without that rule the report is delivered somewhere else, so the plugin checks for it first and refuses rather than reporting a success you cannot verify."
+    },
+    {
       "id": "scheduler_restore_channels",
       "label": "\u267b\ufe0f Restore Recovered Channels After Scheduled Checks",
       "type": "boolean",
@@ -639,6 +646,11 @@
       "button_variant": "filled",
       "button_color": "green",
       "button_label": "\ud83d\udcbe Export CSV"
+    },
+    {
+      "id": "email_report",
+      "label": "\ud83d\udce7 Email Report",
+      "description": "Build the HTML report from the last check and queue it for delivery by email through Newsflasharr. The report is always written to disk first, so a delivery problem never costs you the report."
     },
     {
       "id": "cleanup_orphaned_tasks",

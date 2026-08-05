@@ -91,6 +91,20 @@ class PluginConfig:
     # --- File Paths ---
     DATA_DIR = "/data"
     EXPORTS_DIR = "/data/exports"
+
+    # --- Report output ---
+    # /config/<plugin>/ sits under Dispatcharr's existing bind mount, so it is a
+    # real folder on the host that the operator can open by double-clicking.
+    #
+    # DELIBERATELY NOT /data/logos/: Dispatcharr's nginx serves that path to the
+    # whole LAN with NO AUTHENTICATION, which would publish an unauthenticated
+    # page listing every channel in this install. There is also no report URL
+    # setting, because there is nothing to point one at and a setting is an
+    # invitation to serve the directory again.
+    #
+    # DELIBERATELY NOT /data/<plugin>/: that is a named volume with no host
+    # path, so nothing the operator must read may live there.
+    REPORT_DIR = "/config/iptv_checker"
     RESULTS_FILE = "/data/iptv_checker_results.json"
     LOADED_CHANNELS_FILE = "/data/iptv_checker_loaded_channels.json"
     PROGRESS_FILE = "/data/iptv_checker_progress.json"
@@ -348,7 +362,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.2171340"
+    version = "1.26.2171410"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -1429,6 +1443,28 @@ class Plugin:
             except Exception as e:
                 LOGGER.error(f"⏰ SCHEDULED: CSV export failed: {e}", exc_info=True)
 
+            # Emailed report, beside the CSV export and on the same terms: it
+            # runs on every scheduled session, BEFORE the mid-list gate, so a
+            # window that closes part-way still leaves a report. Wrapped in
+            # try/except so a delivery failure never aborts the post-actions.
+            if settings.get('scheduler_email_report', False):
+                LOGGER.info("⏰ SCHEDULED: Building and emailing the report...")
+                try:
+                    written, problems = self._build_and_deliver_report(
+                        settings, scheduled_logger, email=True)
+                    path = (written or {}).get('html_path')
+                    if path:
+                        LOGGER.info(f"⏰ SCHEDULED: Report written to {path}")
+                    if problems:
+                        # Loud, because a routing mistake delivers the report
+                        # somewhere else and every other signal reads healthy.
+                        LOGGER.warning("⏰ SCHEDULED: Report email problem: %s"
+                                       % "; ".join(problems))
+                    elif path:
+                        LOGGER.info("⏰ SCHEDULED: Report queued for delivery")
+                except Exception as e:
+                    LOGGER.error(f"⏰ SCHEDULED: Report step failed: {e}", exc_info=True)
+
             # In window mode, only run post-actions when the channel list completed
             # (pending_resume.json deleted = nothing left). Otherwise defer until the
             # next window finishes the remaining streams.
@@ -1621,6 +1657,7 @@ class Plugin:
                 "add_video_format_suffix": self.add_video_format_suffix_action,
                 "view_table": self.view_table_action,
                 "export_results": self.export_results_action,
+                "email_report": self.email_report_action,
                 "clear_csv_exports": self.clear_csv_exports_action,
                 "update_schedule": self.update_schedule_action,
                 "reset_progress": self.reset_progress_action,
@@ -3384,6 +3421,115 @@ class Plugin:
                 if key.startswith('ffprobe_') and key not in base_fieldnames:
                     ffprobe_fieldnames.add(key)
         return base_fieldnames + sorted(ffprobe_fieldnames)
+
+    def _newsflasharr_settings(self, logger):
+        """Newsflasharr's stored settings, or None when they cannot be read.
+
+        The Django import is FUNCTION-LOCAL: a module-scope one breaks the
+        plugin loader, which imports this file outside Dispatcharr in tests.
+
+        None is distinct from an empty dict. It means the question could not be
+        asked, so a caller must not conclude that the routing is fine.
+        """
+        try:
+            from apps.plugins.models import PluginConfig as _PluginConfigModel
+            row = _PluginConfigModel.objects.filter(key="newsflasharr").first()
+        except Exception as e:
+            logger.warning(f"Could not read Newsflasharr settings: {type(e).__name__}")
+            return None
+        if row is None:
+            return None
+        return row.settings or {}
+
+    def _build_and_deliver_report(self, settings, logger, email):
+        """Build the HTML report, then optionally queue it for delivery.
+
+        Returns (written, problems) where `written` is write_report's dict and
+        `problems` is a list of plain sentences. An empty list means nothing
+        went wrong.
+
+        THE REPORT IS BUILT FIRST, ALWAYS, and its path is returned even when
+        the delivery half fails, so a routing mistake never costs the operator
+        the report as well.
+
+        A GREEN RESULT MUST NOT MEAN "wrote nothing". The counts come from the
+        model, which exists before anything is written, so callers gate on a
+        truthy html_path rather than on the counts.
+        """
+        from . import notify_report, reports
+
+        results = self._load_json_file(self.results_file)
+        if not results:
+            return None, ["No check results found. Run Check Streams first."]
+
+        now = time.time()
+        model = reports.build_model(results, settings, now=now,
+                                    version=getattr(self, "version", ""))
+        model["plugin_dir"] = os.path.dirname(os.path.abspath(__file__))
+
+        written = reports.write_report(model, PluginConfig.REPORT_DIR,
+                                       PluginConfig.REPORT_DIR, now)
+        if not written.get("html_path"):
+            return written, ["The report could not be written. %s"
+                             % (written.get("error") or "")]
+
+        written["model"] = model
+        if not email:
+            return written, []
+
+        nf_settings = self._newsflasharr_settings(logger)
+        if nf_settings is None:
+            return written, ["Newsflasharr settings could not be read, so where the "
+                             "email would go is unknown. Is that plugin installed?"]
+
+        # Refuse LOUDLY. Without a matching routing rule the event still spools
+        # SUCCESSFULLY and is delivered somewhere else, which is
+        # indistinguishable from working.
+        ok, problems = notify_report.preflight(nf_settings)
+        if not ok:
+            return written, problems
+
+        from .notify_client import notify
+        queued, reason = notify_report.emit_report(
+            notify, model, attachment_path=written["html_path"])
+        if not queued:
+            return written, ["The email was not queued. %s" % (reason or "")]
+        return written, []
+
+    def email_report_action(self, settings, logger):
+        """Build the report and queue it for delivery by email.
+
+        ONE BUTTON, NOT TWO. A build-only button beside an email-only button
+        would run the same job and differ solely in whether the mail step runs.
+        Pressing a button labelled Email Report means the operator wants it
+        emailed, so this always tries.
+        """
+        written, problems = self._build_and_deliver_report(settings, logger, email=True)
+
+        path = (written or {}).get("html_path")
+        if not path:
+            return {"status": "error",
+                    "error": self._fit(" ".join(problems) or "The report could not be built.",
+                                       PluginConfig.TOAST_BUDGET)}
+
+        totals = (written.get("model") or {}).get("totals", {})
+        headline = ("%s channels checked, %s playing, %s listed."
+                    % (totals.get("channels", 0), totals.get("channels_working", 0),
+                       totals.get("channels_listed", 0)))
+
+        if problems:
+            # The report exists; say so beside the path, and make the delivery
+            # failure the RED persistent half so it is not missed.
+            logger.warning("Report email problem: %s" % "; ".join(problems))
+            return {"status": "error", "file": path,
+                    "error": self._fit("Report written, but it will NOT arrive by email. "
+                                       + " ".join(problems), PluginConfig.TOAST_BUDGET)}
+
+        # "Queued for delivery", never "sent": notify() returning True means
+        # durably SPOOLED, and Newsflasharr delivers later on its own retries.
+        return {"status": "ok", "file": path,
+                "message": self._fit("Report written and queued for delivery. " + headline,
+                                     PluginConfig.TOAST_BUDGET)}
 
     def export_results_action(self, settings, logger):
         """Export results to CSV"""
