@@ -1,6 +1,6 @@
 {
   "name": "IPTV Checker",
-  "version": "1.26.2171416",
+  "version": "1.26.2171428",
   "description": "A Dispatcharr Plugin that goes through a playlist to check IPTV channels",
   "author": "PiratesIRC",
   "logo": "logo.png",
@@ -650,7 +650,10 @@
     {
       "id": "email_report",
       "label": "\ud83d\udce7 Email Report",
-      "description": "Build the HTML report from the last check and queue it for delivery by email through Newsflasharr. The report is always written to disk first, so a delivery problem never costs you the report."
+      "description": "Build the HTML report from the last check and queue it for delivery by email through Newsflasharr. The report is always written to disk first, so a delivery problem never costs you the report.",
+      "button_label": "\ud83d\udce7 Email Report",
+      "button_variant": "filled",
+      "button_color": "cyan"
     },
     {
       "id": "cleanup_orphaned_tasks",

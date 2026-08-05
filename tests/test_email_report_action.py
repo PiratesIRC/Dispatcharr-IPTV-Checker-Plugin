@@ -222,3 +222,38 @@ def test_a_delivery_failure_cannot_abort_the_scheduled_post_actions():
     start = source.index("SCHEDULED: Building and emailing the report")
     window = source[start:start + 1200]
     assert "try:" in window and "except Exception" in window
+
+
+# ---- the button text ----------------------------------------------------
+
+def test_the_button_is_not_labelled_Run():
+    """Without button_label, Dispatcharr renders the default text "Run", which
+    says nothing about what the button does."""
+    act = next(a for a in _DATA["actions"] if a["id"] == "email_report")
+    label = act.get("button_label", "")
+    assert label, "button_label is missing, so the button renders as Run"
+    assert label.strip().lower() != "run"
+    assert "Email Report" in label
+
+
+def test_the_button_carries_a_colour_and_a_variant():
+    """House convention: cyan for an action that leaves the box, filled because
+    it acts rather than only reading. Both are plain strings to Dispatcharr's
+    serializer, so the constraint is the frontend's palette, not validation."""
+    act = next(a for a in _DATA["actions"] if a["id"] == "email_report")
+    assert act.get("button_color") == "cyan"
+    assert act.get("button_variant") == "filled"
+
+
+def test_the_button_values_are_ones_the_frontend_understands():
+    """A colour outside the frontend palette is the real risk here. These are
+    the names already proven to render by sibling plugins on this Dispatcharr
+    version."""
+    known_colors = {"dark", "gray", "red", "pink", "grape", "violet", "indigo",
+                    "blue", "cyan", "teal", "green", "lime", "yellow", "orange"}
+    known_variants = {"filled", "light", "outline", "subtle", "default", "white"}
+    for act in _DATA["actions"]:
+        if act.get("button_color"):
+            assert act["button_color"] in known_colors, (act["id"], act["button_color"])
+        if act.get("button_variant"):
+            assert act["button_variant"] in known_variants, (act["id"], act["button_variant"])
