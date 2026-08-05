@@ -1,6 +1,6 @@
 {
   "name": "IPTV Checker",
-  "version": "1.26.2171124",
+  "version": "1.26.2171145",
   "description": "A Dispatcharr Plugin that goes through a playlist to check IPTV channels",
   "author": "PiratesIRC",
   "logo": "logo.png",
@@ -279,20 +279,6 @@
       "description": "Channels that come back Alive can be auto-cleaned: plugin name tags ([DEAD]/[Slow]/[Blank]/quality) are stripped and the channel is moved back to the original group captured when it was first moved. Use the 'Restore Recovered Channels' action or the scheduler toggle. NOTE: a channel parked in a managed group (Graveyard / Slow / blank-screen) is only re-checked (and thus restorable) if your scan scope includes that group."
     },
     {
-      "id": "_section_webhook",
-      "label": "\ud83d\udd17 Webhook",
-      "type": "info",
-      "description": "Optional HTTP POST notification after every stream check completes."
-    },
-    {
-      "id": "webhook_url",
-      "label": "\ud83d\udd17 Webhook URL",
-      "type": "string",
-      "default": "",
-      "placeholder": "http://localhost:9000/api/some/endpoint",
-      "help_text": "URL to send an HTTP POST request to after stream checks complete. Payload includes check summary (total, alive, dead counts). Leave blank to disable."
-    },
-    {
       "id": "_section_scheduling",
       "label": "\u23f0 Scheduling & Automation",
       "type": "info",
@@ -427,13 +413,6 @@
       "type": "string",
       "default": "",
       "help_text": "SAFETY GATE: You must type the word DELETE (all caps) in this field to enable auto-deletion. This prevents accidental deletion of channels. If this field does not contain exactly DELETE, the delete function will refuse to run even if the toggle is enabled."
-    },
-    {
-      "id": "scheduler_fire_webhook",
-      "label": "\ud83d\udd17 Send Webhook Notification After Scheduled Checks",
-      "type": "boolean",
-      "default": false,
-      "help_text": "Send an HTTP POST notification to the Webhook URL above after each scheduled check finishes. The payload includes total, alive, and dead channel counts. Useful for alerting Discord, Slack, or other external services. Requires a Webhook URL to be configured."
     },
     {
       "id": "_section_advanced",

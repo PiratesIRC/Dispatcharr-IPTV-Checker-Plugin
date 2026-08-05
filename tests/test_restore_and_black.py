@@ -296,46 +296,10 @@ def test_restore_action_no_recovered(plugin, tmp_path, monkeypatch):
     assert res["restored"] == 0
 
 
-# ---- Task 5: webhook restored + delete hygiene --------------------------
-
-class _Resp:
-    status = 200
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-
-def test_webhook_includes_restored_json(plugin, monkeypatch):
-    _write(plugin, [{"channel_id": 1, "status": "Alive"}, {"channel_id": 2, "status": "Dead"}])
-    sent = {}
-
-    def _fake_urlopen(req, timeout=10):
-        sent["body"] = json.loads(req.data.decode())
-        return _Resp()
-
-    monkeypatch.setattr(plugin, "version", "9.9.9", raising=False)
-    monkeypatch.setattr(plugin, "key", "iptv_checker", raising=False)
-    import iptv_checker.plugin as pm
-    monkeypatch.setattr(pm.urllib.request, "urlopen", _fake_urlopen)
-    res = plugin._fire_webhook({"webhook_url": "https://example.com/hook"}, _logger(), restored=4)
-    assert res["status"] == "ok"
-    assert sent["body"]["restored"] == 4
-
-
-def test_webhook_omits_restored_when_none(plugin, monkeypatch):
-    _write(plugin, [{"channel_id": 1, "status": "Alive"}])
-    sent = {}
-
-    monkeypatch.setattr(plugin, "version", "9.9.9", raising=False)
-    monkeypatch.setattr(plugin, "key", "iptv_checker", raising=False)
-    import iptv_checker.plugin as pm
-    monkeypatch.setattr(pm.urllib.request, "urlopen",
-                        lambda req, timeout=10: (sent.update(body=json.loads(req.data.decode())) or _Resp()))
-    plugin._fire_webhook({"webhook_url": "https://example.com/hook"}, _logger())
-    assert "restored" not in sent["body"]
+# ---- Task 5: delete hygiene ---------------------------------------------
+#
+# The webhook tests that lived here were removed with the webhook feature on
+# 2026-08-05. Notification is moving to the Newsflasharr integration.
 
 
 def test_delete_prunes_restore_state(plugin, tmp_path, monkeypatch):

@@ -127,6 +127,13 @@ class PluginConfig:
     # only genuinely choppy streams are. See _is_low_framerate.
     LOW_FRAMERATE_THRESHOLD = 24
 
+    # --- Action result sizing ---
+    # Dispatcharr renders a transient toast of roughly 280 characters, clipped
+    # from the MIDDLE with no ellipsis, and newlines collapse into one
+    # paragraph. Anything longer loses its middle silently, which reads as a
+    # complete sentence with the finding removed. Sized just under that.
+    TOAST_BUDGET = 270
+
     # --- Channel group selection ---
     # One list plus a mode, replacing the old separate include and exclude
     # boxes. Include is the default because it is the pre-existing meaning of a
@@ -341,7 +348,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.2171124"
+    version = "1.26.2171145"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -1351,7 +1358,7 @@ class Plugin:
 
         Honors `schedule_window_enabled`. Per-stream progress is persisted to
         pending_resume.json so the next window resumes where the last left off.
-        Post-check actions (rename/move/delete/webhook) only run on the window
+        Post-check actions (rename/move/delete) only run on the window
         that finishes the list.
 
         preserved_window_end / preserved_window_tz come from
@@ -1487,15 +1494,6 @@ class Plugin:
                     LOGGER.info(f"⏰ SCHEDULED: {delete_result.get('message')}")
                 else:
                     LOGGER.warning(f"⏰ SCHEDULED: {delete_result.get('message')}")
-
-            # Step 10: Fire webhook if enabled
-            if settings.get('scheduler_fire_webhook', False):
-                LOGGER.info("⏰ SCHEDULED: Firing webhook...")
-                webhook_result = self._fire_webhook(settings, scheduled_logger, restored=restored_count)
-                if webhook_result.get('status') == 'ok':
-                    LOGGER.info(f"⏰ SCHEDULED: {webhook_result.get('message')}")
-                else:
-                    LOGGER.warning(f"⏰ SCHEDULED: {webhook_result.get('message')}")
 
             LOGGER.info("⏰ SCHEDULED: Check sequence completed successfully")
 
@@ -1674,20 +1672,32 @@ class Plugin:
             return {"status": "error", "message": str(e)}
 
     def validate_settings_action(self, settings, logger):
-        """Validate all plugin settings including database connectivity and groups."""
-        validation_results = []
-        has_errors = False
+        """Validate the settings and return a result that FITS THE TOAST.
 
-        # Test database connectivity directly
+        Dispatcharr renders a transient toast of roughly 280 characters,
+        clipped from the MIDDLE with no ellipsis, and newlines collapse into
+        one paragraph. A longer result does not scroll: its middle is silently
+        removed, so the operator reads the start and the end of a sentence with
+        the finding cut out from between them.
+
+        So this reports COUNTS, never group names. Measured 2026-08-05 on a
+        952-group install, enumerating the skipped groups produced a single
+        4,690 character line, 16.8 times the whole budget, while the counts
+        that carry the same meaning cost about 50.
+
+        Problems always survive; the short confirmations are dropped first when
+        space runs out, because a confirmation the operator cannot read costs
+        nothing and a problem they cannot read costs everything.
+        """
+        problems = []   # must be fixed; never dropped
+        facts = []      # confirmations; dropped first when space is tight
+
         try:
             channel_count = Channel.objects.count()
             group_count = ChannelGroup.objects.count()
             stream_count = Stream.objects.count()
-            validation_results.append(
-                f"✅ DB OK ({channel_count} channels, {group_count} groups, {stream_count} streams)"
-            )
+            facts.append(f"DB {channel_count}ch/{group_count}grp/{stream_count}str")
 
-            # Validate the channel-group list against its mode.
             group_names_str, groups_mode, legacy_exclude = self._resolve_channel_groups(settings)
             if group_names_str:
                 try:
@@ -1698,101 +1708,87 @@ class Plugin:
                     ]
                     selected = self._select_groups(group_names_str, groups_mode, all_group_names)
 
+                    # The count the operator is actually validating: how many
+                    # groups this run will touch.
                     if groups_mode == 'exclude':
-                        skipped = all_group_names - selected
-                        validation_results.append(
-                            f"✅ Mode EXCLUDE: skipping {len(skipped)} group(s), checking {len(selected)}"
-                        )
-                        if skipped:
-                            validation_results.append(f"   Skipping: {', '.join(sorted(skipped))}")
+                        skipped = len(all_group_names) - len(selected)
+                        facts.insert(0, f"checking {len(selected)} groups, skipping {skipped}")
                     else:
-                        validation_results.append(f"✅ Mode INCLUDE: checking {len(selected)} group(s)")
-                        if selected:
-                            validation_results.append(f"   Checking: {', '.join(sorted(selected))}")
+                        facts.insert(0, f"checking {len(selected)} of {len(all_group_names)} groups")
 
                     # A pattern matching nothing is an error in BOTH modes. In
                     # exclude mode a typo leaves the group being checked and
                     # acted on, which is the outcome the operator was avoiding.
                     if unmatched:
-                        validation_results.append(f"⚠️ No groups matched: {', '.join(unmatched)}")
-                        has_errors = True
+                        problems.append(f"no groups matched: {self._fit(', '.join(unmatched), 90)}")
                     if not selected:
-                        validation_results.append("⚠️ Nothing left to check with this list and mode")
-                        has_errors = True
+                        problems.append("nothing left to check with this list and mode")
                 except Exception as e:
-                    validation_results.append(f"❌ Failed to validate groups: {str(e)}")
-                    has_errors = True
+                    problems.append(f"group validation failed: {str(e)[:60]}")
             else:
-                validation_results.append("ℹ️ No groups specified (will check all)")
+                facts.insert(0, f"checking all {group_count} groups")
 
             if legacy_exclude:
-                validation_results.append(
-                    f"⚠️ Old settings in use: also excluding '{legacy_exclude}'. This install had "
-                    "both a check list and an exclude list. Save the Channel Groups setting to "
-                    "complete the migration."
+                problems.append(
+                    f"old settings in use, also excluding '{self._fit(legacy_exclude, 30)}'; "
+                    "save Channel Groups to migrate"
                 )
         except Exception as e:
-            validation_results.append(f"❌ DB error: {str(e)[:100]}")
-            has_errors = True
+            problems.append(f"DB error: {str(e)[:60]}")
 
-        # Validate other settings - simplified display
-        timeout = settings.get("timeout", 10)
-        if timeout <= 0:
-            validation_results.append(f"⚠️ Timeout must be > 0 (current: {timeout})")
-            has_errors = True
+        if settings.get("timeout", 10) <= 0:
+            problems.append("timeout must be > 0")
+        if settings.get("parallel_workers", 2) < 1:
+            problems.append("workers must be >= 1")
+        if settings.get("ffprobe_analysis_duration", 5) <= 0:
+            problems.append("analysis duration must be > 0")
 
-        parallel_workers = settings.get("parallel_workers", 2)
-        if parallel_workers < 1:
-            validation_results.append(f"⚠️ Workers must be >= 1 (current: {parallel_workers})")
-            has_errors = True
-
-        analysis_duration = settings.get("ffprobe_analysis_duration", 5)
-        if analysis_duration <= 0:
-            validation_results.append(f"⚠️ Analysis duration must be > 0 (current: {analysis_duration})")
-            has_errors = True
-
-        # Validate scheduler settings if configured
-        scheduled_times_str = settings.get("scheduled_times", "").strip()
+        scheduled_times_str = (settings.get("scheduled_times", "") or "").strip()
         if scheduled_times_str:
             scheduled_times = self._parse_scheduled_times(scheduled_times_str)
             if not scheduled_times:
-                validation_results.append(f"❌ Invalid cron expression(s): '{scheduled_times_str}'")
-                validation_results.append("   Format: 'minute hour day month weekday' (e.g., '0 4 * * *')")
-                has_errors = True
+                problems.append(f"invalid cron '{self._fit(scheduled_times_str, 30)}'")
+            elif not PYTZ_AVAILABLE:
+                problems.append("pytz missing, scheduler cannot run")
             else:
-                validation_results.append(f"✅ Cron schedule(s) valid: {', '.join(scheduled_times)}")
-                
-            # Timezone comes from Dispatcharr's global setting (General Settings -> Time Zone).
-            if PYTZ_AVAILABLE:
-                validation_results.append(f"✅ Using Dispatcharr timezone: {self._dispatcharr_timezone()}")
-            else:
-                validation_results.append("⚠️ pytz not available - scheduler cannot run")
+                facts.append(f"cron {', '.join(scheduled_times)} {self._dispatcharr_timezone()}")
 
-        # Validate auto-delete settings
         if settings.get('scheduler_delete_dead_channels', False):
-            confirmation = settings.get('auto_delete_confirmation', '').strip()
-            if confirmation != 'DELETE':
-                validation_results.append("❌ Auto-delete dead channels is enabled but confirmation field does not contain 'DELETE'. Deletion will not run.")
-                has_errors = True
+            if (settings.get('auto_delete_confirmation', '') or '').strip() != 'DELETE':
+                problems.append("auto-delete on but confirmation is not DELETE, so it will not run")
             else:
-                validation_results.append("⚠️ Auto-delete dead channels is ENABLED. Dead channels will be PERMANENTLY DELETED after scheduled checks.")
-            if settings.get('scheduler_rename_dead_channels', False) or settings.get('scheduler_move_dead_channels', False):
-                validation_results.append("⚠️ Rename/move dead channels is enabled alongside delete. Rename and move operations are unnecessary if channels will be deleted afterward.")
+                # Not an error: the operator asked for it. It is stated anyway,
+                # because it is the one setting that destroys data.
+                facts.insert(0, "AUTO-DELETE ON, dead channels will be removed")
 
-        # Check for plugin updates
-        _, version_message = self._get_latest_version()
-        validation_results.append(f"\n{version_message}")
+        # Only mention the version when there is something to DO about it.
+        try:
+            _, version_message = self._get_latest_version()
+            if version_message and 'up to date' not in version_message.lower():
+                facts.append(self._fit(version_message, 60))
+        except Exception:
+            pass
 
-        # Return results
-        status = "error" if has_errors else "ok"
-        message = "\n".join(validation_results)
+        if problems:
+            body = f"{len(problems)} problem(s): " + "; ".join(problems)
+            return {"status": "error", "error": self._fit(body, PluginConfig.TOAST_BUDGET)}
+        body = "Settings valid. " + " | ".join(facts)
+        return {"status": "ok", "message": self._fit(body, PluginConfig.TOAST_BUDGET)}
 
-        if has_errors:
-            message += "\n\n⚠️ Please fix the errors above."
-        else:
-            message += "\n\n✅ Settings valid. Ready to use!"
+    @staticmethod
+    def _fit(text, budget):
+        """Trim to `budget` characters, cutting from the END.
 
-        return {"status": status, "message": message}
+        Dispatcharr clips an over-long toast from the MIDDLE with no ellipsis,
+        which removes the finding and leaves a sentence that still reads as
+        complete. Trimming from the end with a visible marker keeps the loss
+        obvious and keeps the front of the message, which is where the counts
+        and the first problem are.
+        """
+        text = ' '.join((text or '').split())
+        if len(text) <= budget:
+            return text
+        return text[:max(0, budget - 3)].rstrip() + '...'
 
     def view_progress_action(self, settings, logger):
         """View the current progress of a running operation (load groups or stream check)."""
@@ -1923,78 +1919,6 @@ class Plugin:
         except Exception as e:
             logger.warning(f"Could not trigger frontend refresh: {e}")
         return False
-
-    def _fire_webhook(self, settings, logger, restored=None):
-        """Send check results summary to the configured webhook URL via HTTP POST."""
-        webhook_url = settings.get('webhook_url', '').strip()
-        if not webhook_url:
-            return {"status": "error", "message": "No webhook URL configured. Set the 'Webhook URL' field in plugin settings."}
-
-        if not webhook_url.startswith(('http://', 'https://')):
-            return {"status": "error", "message": "Webhook URL must start with http:// or https://"}
-
-        results = self._load_json_file(self.results_file)
-        if not results:
-            return {"status": "ok", "message": "No results available to send. Run a stream check first."}
-
-        alive = sum(1 for r in results if r.get('status') == 'Alive')
-        dead = sum(1 for r in results if r.get('status') == 'Dead')
-        skipped = sum(1 for r in results if r.get('status') == 'Skipped')
-
-        # Discord webhooks reject the plugin's custom JSON shape (they only render
-        # {"content": ...} / {"embeds": [...]}). Detect a Discord host and send a
-        # native readable summary instead. Everything else keeps the original
-        # machine-readable payload for backward compatibility with existing consumers.
-        host = (urllib.parse.urlparse(webhook_url).hostname or '').lower()
-        is_discord = host in ('discord.com', 'discordapp.com') or host.endswith('.discord.com')
-
-        if is_discord:
-            content = (
-                f"**IPTV Checker — check complete**\n"
-                f"Total: {len(results)}  •  ✅ Alive: {alive}  •  ❌ Dead: {dead}  •  ⏭️ Skipped: {skipped}"
-            )
-            # Discord: hide the line on 0/None (noise); generic JSON below keeps an
-            # explicit "restored": 0 key for stable machine consumers.
-            if restored:
-                content += f"  •  ♻️ Restored: {restored}"
-            payload = json.dumps({"content": content}).encode('utf-8')
-        else:
-            body = {
-                "plugin": self.key,
-                "event": "check_complete",
-                "total": len(results),
-                "alive": alive,
-                "dead": dead,
-                "skipped": skipped,
-                "timestamp": datetime.utcnow().isoformat() + "Z",
-            }
-            if restored is not None:
-                body["restored"] = restored
-            payload = json.dumps(body).encode('utf-8')
-
-        # Always set an explicit User-Agent. Discord's Cloudflare edge 403s the
-        # default "Python-urllib/3.x" UA, which silently dropped every webhook.
-        req = urllib.request.Request(
-            webhook_url,
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": f"Dispatcharr-IPTV-Checker/{self.version}",
-            },
-            method="POST",
-        )
-
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                status_code = resp.status
-                logger.info(f"Webhook fired successfully: {webhook_url} (HTTP {status_code})")
-                return {"status": "ok", "message": f"Webhook sent to {webhook_url} (HTTP {status_code}). Payload: {alive} alive, {dead} dead, {skipped} skipped out of {len(results)} streams."}
-        except urllib.error.HTTPError as e:
-            logger.error(f"Webhook HTTP error: {webhook_url} returned HTTP {e.code}")
-            return {"status": "error", "message": f"Webhook failed: HTTP {e.code} from {webhook_url}"}
-        except Exception as e:
-            logger.error(f"Webhook error: {e}")
-            return {"status": "error", "message": f"Webhook failed: {e}"}
 
     def _get_all_groups(self, logger):
         """Fetch all channel groups via Django ORM."""
