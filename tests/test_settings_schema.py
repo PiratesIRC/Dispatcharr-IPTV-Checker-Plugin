@@ -16,7 +16,7 @@ from pathlib import Path
 PLUGIN_JSON = Path(__file__).resolve().parents[1] / "iptv_checker" / "plugin.json"
 
 FIELD_IDS = {
-    '_section_scope', 'group_names', 'group_names_exclude', 'check_alternative_streams',
+    '_section_scope', 'channel_groups', 'channel_groups_mode', 'check_alternative_streams',
     'only_visible_channels', '_section_check_behavior', 'timeout', 'probe_timeout',
     'dead_connection_retries', 'enable_parallel_checking', 'parallel_workers', 'stream_check_delay',
     '_section_black_screen', 'black_screen_detection', 'black_screen_sample_seconds',

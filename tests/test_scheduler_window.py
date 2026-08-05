@@ -93,26 +93,48 @@ def test_past_window_end_true_after_window(plugin):
 
 def test_fingerprint_tracks_scope_settings(plugin):
     fp = plugin._settings_fingerprint({
-        "group_names": "STL", "check_alternative_streams": False, "only_visible_channels": True,
+        "channel_groups": "STL", "channel_groups_mode": "include",
+        "check_alternative_streams": False, "only_visible_channels": True,
     })
     assert fp == {
-        "group_names": "STL",
+        "channel_groups": "STL",
+        "channel_groups_mode": "include",
+        "channel_groups_legacy_exclude": "",
         "check_alternative_streams": False,
         "only_visible_channels": True,
-        "group_names_exclude": "",
     }
 
 
 def test_fingerprint_differs_on_group_change(plugin):
-    a = plugin._settings_fingerprint({"group_names": "STL"})
-    b = plugin._settings_fingerprint({"group_names": "KC"})
+    a = plugin._settings_fingerprint({"channel_groups": "STL"})
+    b = plugin._settings_fingerprint({"channel_groups": "KC"})
     assert a != b
 
 
-def test_fingerprint_differs_on_exclude_change(plugin):
+def test_fingerprint_differs_on_mode_change(plugin):
+    """Flipping the mode turns the scope into its exact complement while every
+    other value stays identical. A fingerprint that missed it would resume a
+    windowed run against the opposite set of groups."""
+    a = plugin._settings_fingerprint({"channel_groups": "STL", "channel_groups_mode": "include"})
+    b = plugin._settings_fingerprint({"channel_groups": "STL", "channel_groups_mode": "exclude"})
+    assert a != b
+
+
+def test_fingerprint_differs_on_legacy_exclude_change(plugin):
+    """The migration case: an install carrying both old settings. The old
+    exclude list is still applied, so it still changes the scope."""
     a = plugin._settings_fingerprint({"group_names": "STL"})
     b = plugin._settings_fingerprint({"group_names": "STL", "group_names_exclude": "US-PPV-*"})
     assert a != b
+
+
+def test_fingerprint_is_stable_across_the_migration(plugin):
+    """An install with only the old include list produces the same fingerprint
+    as the equivalent new configuration, so upgrading does NOT discard a pending
+    windowed resume that is still valid."""
+    legacy = plugin._settings_fingerprint({"group_names": "STL"})
+    modern = plugin._settings_fingerprint({"channel_groups": "STL", "channel_groups_mode": "include"})
+    assert legacy == modern
 
 
 # --- pending-resume scope guards -------------------------------------------------

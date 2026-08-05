@@ -1,6 +1,6 @@
 {
   "name": "IPTV Checker",
-  "version": "1.26.2171027",
+  "version": "1.26.2171124",
   "description": "A Dispatcharr Plugin that goes through a playlist to check IPTV channels",
   "author": "PiratesIRC",
   "logo": "logo.png",
@@ -17,18 +17,29 @@
       "description": "Which Dispatcharr groups to check and whether to include backup streams."
     },
     {
-      "id": "group_names",
-      "label": "\ud83d\udcc2 Group(s) to Check (comma-separated, wildcards supported)",
+      "id": "channel_groups",
+      "label": "\ud83d\udcc1 Channel Groups (comma-separated)",
       "type": "string",
       "default": "",
-      "help_text": "The name of the Dispatcharr Channel Group(s) to check. Supports wildcards: US-* matches US-Movies, US-Sports, etc. Leave blank to check all groups."
+      "placeholder": "Sports, News, US-*",
+      "help_text": "The channel groups this plugin should act on. Leave empty for all groups. Wildcards are supported: * matches any characters, ? matches one, and [abc] matches a character from the set. Matching is case-sensitive. How this list is read depends on the Channel Groups Mode setting directly below. A group name or pattern that matches nothing is reported as an error by Validate Settings in both modes, because a typo in exclude mode would check the group you meant to skip."
     },
     {
-      "id": "group_names_exclude",
-      "label": "\ud83d\udcc2 Group(s) to EXCLUDE (comma-separated, wildcards supported)",
-      "type": "string",
-      "default": "",
-      "help_text": "Groups to skip even if they match 'Group(s) to Check'. Supports wildcards (e.g. US-PPV-*). Applied AFTER the include filter; with a blank include this means 'all groups except these'. If a group matches both fields, exclude wins. Leave blank to exclude nothing."
+      "id": "channel_groups_mode",
+      "label": "\ud83d\udd00 Channel Groups Mode",
+      "type": "select",
+      "default": "include",
+      "options": [
+        {
+          "value": "include",
+          "label": "Check only the groups listed above"
+        },
+        {
+          "value": "exclude",
+          "label": "Check all groups except those listed above"
+        }
+      ],
+      "help_text": "Decides whether the Channel Groups list names the groups to check or the groups to skip. Use the second option when a group should be left alone, for example pay-per-view or event channels. The second option also means a group you create later is checked automatically, whereas listing groups to check means a new group is skipped until you add it. Leaving the Channel Groups box empty checks every group either way. This replaces the separate Group(s) to Check and Group(s) to EXCLUDE settings; if you had values in those, they are read automatically until you save this one."
     },
     {
       "id": "check_alternative_streams",

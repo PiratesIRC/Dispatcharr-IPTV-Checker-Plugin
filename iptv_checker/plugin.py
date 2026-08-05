@@ -127,6 +127,20 @@ class PluginConfig:
     # only genuinely choppy streams are. See _is_low_framerate.
     LOW_FRAMERATE_THRESHOLD = 24
 
+    # --- Channel group selection ---
+    # One list plus a mode, replacing the old separate include and exclude
+    # boxes. Include is the default because it is the pre-existing meaning of a
+    # group list: a stored mode this build does not understand must keep a list
+    # of WANTED groups meaning wanted, rather than inverting it into a list of
+    # skipped ones.
+    CHANNEL_GROUPS_MODES = ('include', 'exclude')
+    DEFAULT_CHANNEL_GROUPS_MODE = 'include'
+    # The setting ids the mode pair replaced. Dispatcharr never prunes a stored
+    # setting when its field is removed, so these survive in the database and
+    # are read as a migration fallback.
+    LEGACY_GROUP_INCLUDE_KEY = 'group_names'
+    LEGACY_GROUP_EXCLUDE_KEY = 'group_names_exclude'
+
     # --- Content-analysis defaults (one shared ffmpeg decode pass) ---
     # How many seconds of video to decode. Also bounds how long a freeze can
     # be observed, so the freeze threshold is clamped against it.
@@ -327,7 +341,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.2171027"
+    version = "1.26.2171124"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -777,11 +791,18 @@ class Plugin:
         self._active_window_tz = None
 
     def _settings_fingerprint(self, settings):
+        # Drives windowed-resume drift detection: a pending resume whose
+        # fingerprint no longer matches is DISCARDED rather than resumed against
+        # a scope it was not built for. The group list and its MODE must both be
+        # in here -- flipping include to exclude turns the scope into its exact
+        # complement while every other value stays identical.
+        patterns, mode, legacy_exclude = self._resolve_channel_groups(settings)
         return {
-            'group_names': settings.get('group_names', ''),
+            'channel_groups': patterns,
+            'channel_groups_mode': mode,
+            'channel_groups_legacy_exclude': legacy_exclude,
             'check_alternative_streams': bool(settings.get('check_alternative_streams', True)),
             'only_visible_channels': bool(settings.get('only_visible_channels', False)),
-            'group_names_exclude': settings.get('group_names_exclude', ''),
         }
 
     def _seed_pending_from_loaded_channels(self, settings):
@@ -1666,32 +1687,37 @@ class Plugin:
                 f"✅ DB OK ({channel_count} channels, {group_count} groups, {stream_count} streams)"
             )
 
-            # Validate groups if specified
-            group_names_str = settings.get("group_names", "").strip()
+            # Validate the channel-group list against its mode.
+            group_names_str, groups_mode, legacy_exclude = self._resolve_channel_groups(settings)
             if group_names_str:
                 try:
-                    all_groups = self._get_all_groups(logger)
-                    all_group_names = {g['name'] for g in all_groups}
-                    input_names = [name.strip() for name in group_names_str.split(',') if name.strip()]
-                    matched_names = set()
-                    unmatched = []
+                    all_group_names = {g['name'] for g in self._get_all_groups(logger)}
+                    unmatched = [
+                        p for p in (n.strip() for n in group_names_str.split(','))
+                        if p and not self._match_group_names(p, all_group_names)
+                    ]
+                    selected = self._select_groups(group_names_str, groups_mode, all_group_names)
 
-                    for pattern in input_names:
-                        if any(c in pattern for c in '*?['):
-                            matches = {g for g in all_group_names if fnmatch.fnmatchcase(g, pattern)}
-                            if matches:
-                                matched_names.update(matches)
-                            else:
-                                unmatched.append(pattern)
-                        elif pattern in all_group_names:
-                            matched_names.add(pattern)
-                        else:
-                            unmatched.append(pattern)
+                    if groups_mode == 'exclude':
+                        skipped = all_group_names - selected
+                        validation_results.append(
+                            f"✅ Mode EXCLUDE: skipping {len(skipped)} group(s), checking {len(selected)}"
+                        )
+                        if skipped:
+                            validation_results.append(f"   Skipping: {', '.join(sorted(skipped))}")
+                    else:
+                        validation_results.append(f"✅ Mode INCLUDE: checking {len(selected)} group(s)")
+                        if selected:
+                            validation_results.append(f"   Checking: {', '.join(sorted(selected))}")
 
-                    if matched_names:
-                        validation_results.append(f"✅ Groups ({len(matched_names)}): {', '.join(sorted(matched_names))}")
+                    # A pattern matching nothing is an error in BOTH modes. In
+                    # exclude mode a typo leaves the group being checked and
+                    # acted on, which is the outcome the operator was avoiding.
                     if unmatched:
                         validation_results.append(f"⚠️ No groups matched: {', '.join(unmatched)}")
+                        has_errors = True
+                    if not selected:
+                        validation_results.append("⚠️ Nothing left to check with this list and mode")
                         has_errors = True
                 except Exception as e:
                     validation_results.append(f"❌ Failed to validate groups: {str(e)}")
@@ -1699,19 +1725,12 @@ class Plugin:
             else:
                 validation_results.append("ℹ️ No groups specified (will check all)")
 
-            # Validate the exclude filter (applied after the include filter)
-            exclude_str = settings.get("group_names_exclude", "").strip()
-            if exclude_str:
-                try:
-                    all_group_names = {g['name'] for g in self._get_all_groups(logger)}
-                    ex_matched = self._match_group_names(exclude_str, all_group_names)
-                    if ex_matched:
-                        validation_results.append(f"✅ Exclude filter matches {len(ex_matched)} group(s): {', '.join(sorted(ex_matched))}")
-                    else:
-                        validation_results.append("ℹ️ Exclude filter matches no current groups")
-                except Exception as e:
-                    validation_results.append(f"❌ Failed to validate exclude filter: {str(e)}")
-                    has_errors = True
+            if legacy_exclude:
+                validation_results.append(
+                    f"⚠️ Old settings in use: also excluding '{legacy_exclude}'. This install had "
+                    "both a check list and an exclude list. Save the Channel Groups setting to "
+                    "complete the migration."
+                )
         except Exception as e:
             validation_results.append(f"❌ DB error: {str(e)[:100]}")
             has_errors = True
@@ -2070,64 +2089,147 @@ class Plugin:
                 matched.add(pattern)
         return matched
 
+    @staticmethod
+    def _resolve_channel_groups(settings):
+        """Resolve the group selection to (patterns, mode, legacy_exclude).
+
+        `patterns` is the comma-separated list the operator typed, `mode` is
+        'include' or 'exclude' and never anything else, and `legacy_exclude` is
+        normally empty.
+
+        Resolve from the LIVE settings dict passed to run(), never from
+        self.saved_settings and never from cached instance state: that is the
+        bug-139 shape, where a value primed on one entry path is read back on
+        another and silently defaults.
+
+        MIGRATION. This pair replaced two separate boxes, `group_names` (check
+        these) and `group_names_exclude` (skip these). Dispatcharr never prunes
+        a stored setting when its field is removed, so those values survive in
+        the database. They are used when the new box is EMPTY, so an upgrade
+        does not silently widen the scope of a destructive action.
+
+        The old pair could apply an include list AND an exclude list at once,
+        which one list plus a mode cannot express. Rather than pick one and
+        change behaviour, that case returns the include list as `patterns` and
+        the exclude list as `legacy_exclude`, and the caller applies both. A
+        NEW configuration can only be one or the other.
+
+        Anything typed into the new box stops the fallback, so `*` in include
+        mode is the escape hatch for an operator who wants every group while a
+        stale legacy value is still stored.
+        """
+        s = settings if isinstance(settings, dict) else {}
+
+        raw_mode = s.get('channel_groups_mode', PluginConfig.DEFAULT_CHANNEL_GROUPS_MODE)
+        if isinstance(raw_mode, str):
+            mode = raw_mode.strip().lower()
+            if mode not in PluginConfig.CHANNEL_GROUPS_MODES:
+                mode = PluginConfig.DEFAULT_CHANNEL_GROUPS_MODE
+        else:
+            mode = PluginConfig.DEFAULT_CHANNEL_GROUPS_MODE
+
+        patterns = s.get('channel_groups', '')
+        patterns = patterns.strip() if isinstance(patterns, str) else ''
+        if patterns:
+            return patterns, mode, ''
+
+        legacy_include = s.get(PluginConfig.LEGACY_GROUP_INCLUDE_KEY, '')
+        legacy_include = legacy_include.strip() if isinstance(legacy_include, str) else ''
+        legacy_exclude = s.get(PluginConfig.LEGACY_GROUP_EXCLUDE_KEY, '')
+        legacy_exclude = legacy_exclude.strip() if isinstance(legacy_exclude, str) else ''
+
+        if legacy_include and legacy_exclude:
+            return legacy_include, 'include', legacy_exclude
+        if legacy_include:
+            return legacy_include, 'include', ''
+        if legacy_exclude:
+            return legacy_exclude, 'exclude', ''
+        return '', mode, ''
+
+    @staticmethod
+    def _select_groups(patterns_str, mode, all_group_names):
+        """Apply a group list and its mode to every known group name.
+
+        An EMPTY list means every group, in both modes: there is nothing to
+        include down to and nothing to skip. That is distinct from a non-empty
+        list that matches nothing, which returns the empty set so the caller can
+        report a typo rather than silently checking everything.
+        """
+        names = set(all_group_names or ())
+        patterns_str = (patterns_str or '').strip()
+        if not patterns_str:
+            return names
+        matched = Plugin._match_group_names(patterns_str, names)
+        if mode == 'exclude':
+            return names - matched
+        return matched
+
     def load_groups_action(self, settings, logger):
         """Load channels and streams from specified Dispatcharr groups."""
         try:
-            group_names_str = settings.get("group_names", "").strip()
-
-            # Debug logging for group selection
-            logger.info(f"Group Names Setting: '{group_names_str}' (empty={not group_names_str})")
+            group_names_str, mode, legacy_exclude = self._resolve_channel_groups(settings)
 
             all_groups = self._get_all_groups(logger)
             group_name_to_id = {g['name']: g['id'] for g in all_groups}
+            all_group_names = set(group_name_to_id.keys())
+
+            logger.info(f"Channel Groups: '{group_names_str}' mode={mode} (empty={not group_names_str})")
+            if legacy_exclude:
+                logger.warning(
+                    "⚠️ Using the OLD group settings: this install had both a check list and an "
+                    f"exclude list, which one list plus a mode cannot express. Excluding "
+                    f"'{legacy_exclude}' on top of the list above. Save the Channel Groups setting "
+                    "to complete the migration."
+                )
 
             if not group_names_str:
-                # Log warning when loading all groups
                 logger.warning("⚠️ No channel groups specified - this will load ALL groups. To filter, specify group names in the 'Channel Groups' field.")
-                logger.warning(f"⚠️ Total groups found: {len(group_name_to_id)}")
-                logger.warning(f"⚠️ Groups: {', '.join(sorted(group_name_to_id.keys()))}")
+                logger.warning(f"⚠️ Total groups found: {len(all_group_names)}")
+                logger.warning(f"⚠️ Groups: {', '.join(sorted(all_group_names))}")
 
-                target_group_names = set(group_name_to_id.keys())
-                if not target_group_names: return {"status": "error", "message": "No groups found in Dispatcharr."}
+                target_group_names = set(all_group_names)
+                if not target_group_names:
+                    return {"status": "error", "message": "No groups found in Dispatcharr."}
             else:
-                input_names = [name.strip() for name in group_names_str.split(',') if name.strip()]
-                all_group_names = set(group_name_to_id.keys())
-                target_group_names = set()
-                unmatched_patterns = []
-
-                for pattern in input_names:
-                    if any(c in pattern for c in '*?['):
-                        # Wildcard pattern — match against all group names
-                        matched = {g for g in all_group_names if fnmatch.fnmatchcase(g, pattern)}
-                        if matched:
-                            logger.info(f"✓ Pattern '{pattern}' matched {len(matched)} group(s): {', '.join(sorted(matched))}")
-                            target_group_names.update(matched)
-                        else:
-                            unmatched_patterns.append(pattern)
-                    elif pattern in group_name_to_id:
-                        target_group_names.add(pattern)
-                    else:
-                        unmatched_patterns.append(pattern)
-
-                # Log which groups are being loaded
-                if target_group_names:
-                    logger.info(f"✓ Loading specified groups: {', '.join(sorted(target_group_names))}")
+                # Report per-pattern so a typo is visible, then apply the mode.
+                # A pattern matching nothing is an error in BOTH modes: in
+                # exclude mode a typo would leave the group being checked and
+                # acted on, which is the outcome the operator was avoiding.
+                unmatched_patterns = [
+                    p for p in (n.strip() for n in group_names_str.split(','))
+                    if p and not self._match_group_names(p, all_group_names)
+                ]
                 if unmatched_patterns:
                     logger.warning(f"⚠️ No groups matched: {', '.join(unmatched_patterns)}")
 
-                if not target_group_names:
-                    return {"status": "error", "message": f"No groups matched: {', '.join(unmatched_patterns)}"}
+                target_group_names = self._select_groups(group_names_str, mode, all_group_names)
 
-            # Exclude filter — remove any matching groups AFTER the include filter.
-            exclude_str = settings.get("group_names_exclude", "").strip()
-            if exclude_str:
-                excluded = self._match_group_names(exclude_str, set(group_name_to_id.keys()))
+                if mode == 'exclude':
+                    skipped = all_group_names - target_group_names
+                    if skipped:
+                        logger.info(f"🚫 Excluding {len(skipped)} group(s) from check: {', '.join(sorted(skipped))}")
+                    logger.info(f"✓ Loading {len(target_group_names)} remaining group(s)")
+                elif target_group_names:
+                    logger.info(f"✓ Loading specified groups: {', '.join(sorted(target_group_names))}")
+
+                if not target_group_names:
+                    if mode == 'exclude':
+                        return {"status": "error", "message":
+                                "Every group was excluded by the Channel Groups filter. Nothing to check."}
+                    return {"status": "error", "message":
+                            f"No groups matched: {', '.join(unmatched_patterns) or group_names_str}"}
+
+            # Migration only: an install that had BOTH old settings keeps its
+            # exclude list applied on top, so an upgrade cannot widen the scope.
+            if legacy_exclude:
+                excluded = self._match_group_names(legacy_exclude, all_group_names)
                 removed = target_group_names & excluded
                 if removed:
-                    logger.info(f"🚫 Excluding {len(removed)} group(s) from check: {', '.join(sorted(removed))}")
+                    logger.info(f"🚫 Excluding {len(removed)} group(s) via the old exclude setting: {', '.join(sorted(removed))}")
                     target_group_names = target_group_names - excluded
                 if not target_group_names:
-                    return {"status": "error", "message": "All target groups were excluded by the 'Group(s) to Exclude' filter. Nothing to check."}
+                    return {"status": "error", "message":
+                            "All target groups were removed by the old exclude setting. Nothing to check."}
 
             target_group_ids = {group_name_to_id[name] for name in target_group_names}
             channels_in_groups = self._get_all_channels(logger, group_ids=target_group_ids)
@@ -2192,10 +2294,15 @@ class Plugin:
     def _build_load_success_message(self, loaded_channels, settings, group_names_str, target_group_names):
         """Build success message for load groups action"""
         total_streams = sum(len(c.get('streams', [])) for c in loaded_channels)
-        group_msg = "all groups" if not group_names_str else f"group(s): {', '.join(target_group_names)}"
-        exclude_str = settings.get("group_names_exclude", "").strip()
-        if exclude_str:
-            group_msg += f" (excluding: {exclude_str})"
+        patterns, mode, legacy_exclude = self._resolve_channel_groups(settings)
+        if not group_names_str:
+            group_msg = "all groups"
+        elif mode == 'exclude':
+            group_msg = f"all groups except '{patterns}' ({len(target_group_names)} remaining)"
+        else:
+            group_msg = f"group(s): {', '.join(sorted(target_group_names))}"
+        if legacy_exclude:
+            group_msg += f" (also excluding '{legacy_exclude}' from the old setting)"
         if settings.get("only_visible_channels", False):
             group_msg += " (visible channels only)"
 
@@ -3186,8 +3293,14 @@ class Plugin:
 
         # Add plugin settings (excluding sensitive information)
         lines.append("# Plugin Settings:")
-        lines.append(f"#   Group(s) Checked: {settings.get('group_names', 'All groups')}")
-        lines.append(f"#   Group(s) Excluded: {settings.get('group_names_exclude', '') or '(none)'}")
+        # The CSV is the authoritative audit record when destructive actions
+        # follow, so it must record the MODE as well as the list: the same list
+        # means opposite things in the two modes.
+        csv_groups, csv_mode, csv_legacy_exclude = self._resolve_channel_groups(settings)
+        lines.append(f"#   Channel Groups: {csv_groups or '(all groups)'}")
+        lines.append(f"#   Channel Groups Mode: {csv_mode}")
+        if csv_legacy_exclude:
+            lines.append(f"#   Also excluded (old setting): {csv_legacy_exclude}")
         lines.append(f"#   Only Visible Channels: {settings.get('only_visible_channels', False)}")
         if settings.get('schedule_window_enabled', False):
             end_mode = settings.get('schedule_end_mode', 'duration')
