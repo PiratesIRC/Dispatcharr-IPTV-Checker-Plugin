@@ -257,3 +257,14 @@ def test_the_button_values_are_ones_the_frontend_understands():
             assert act["button_color"] in known_colors, (act["id"], act["button_color"])
         if act.get("button_variant"):
             assert act["button_variant"] in known_variants, (act["id"], act["button_variant"])
+
+
+def test_every_action_carries_a_label_colour_and_variant():
+    """All 23 already did except email_report, which was added without one and
+    so rendered as the default "Run". This keeps the set complete: a new action
+    added without these renders as Run and nothing else would say so."""
+    missing = [(a["id"], key)
+               for a in _DATA["actions"]
+               for key in ("button_label", "button_color", "button_variant")
+               if not a.get(key)]
+    assert missing == [], "actions missing button styling: %s" % missing
