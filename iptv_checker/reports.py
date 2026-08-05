@@ -285,3 +285,499 @@ def build_model(results, settings=None, now=None, version="", run_health=None):
         "sections": sections,
         "run_health": health,
     }
+
+
+# =========================================================================
+# Rendering
+# =========================================================================
+#
+# ONE self-contained file. Inline CSS, no <link>, no CDN, no webfont, no
+# remote image. It is opened off disk as a file:// URL, mailed as an
+# attachment, and read on a television browser with no route to the internet.
+#
+# render_html has NO safety net: write_report below catches OSError only, so a
+# TypeError or a division by zero in here escapes to the caller. Every helper
+# must therefore be TOTAL over its inputs.
+#
+# THE CSS AND SVG LIVE IN MODULE-LEVEL CONSTANTS, not inside an f-string. A
+# literal brace inside an f-string becomes a format field and raises at render
+# time, which is a runtime failure in the one function that has no net.
+
+import base64
+import csv
+import html
+import io
+import os
+import time
+
+REPORT_HTML = "report.html"
+ARCHIVE_LIMIT = 8
+
+# The logo is embedded as a data URI, never linked: a relative path resolves
+# against nothing in an emailed attachment, and a remote URL is blocked by
+# default in most mail clients. It is CAPPED because this plugin's logo.png is
+# 310 KB, which is 414 KB once base64 encoded, and that would ride on every
+# emailed copy of every report. Over the cap the header renders with NO image
+# at all, which is the same degradation as a missing file.
+LOGO_MAX_ENCODED_BYTES = 96 * 1024
+
+# Colour is never the only carrier of meaning. Each section gets a dot class, a
+# word, and a glyph, and the GLYPH IS KEYED ON THE CLASS rather than the title,
+# so a glyph can never disagree with the colour beside it. Every class here maps
+# to exactly one glyph.
+_SECTION_DOT = {
+    SECTION_CONFIRMED_DEAD: "dot-dead",
+    SECTION_PROVIDER_DEAD: "dot-provider",
+    SECTION_NOT_JUDGED: "dot-unproven",
+    SECTION_BACKUP_ONLY: "dot-backup",
+    SECTION_LOW_FRAMERATE: "dot-slow",
+    SECTION_AUDIO_ONLY: "dot-audio",
+}
+
+_DOT_GLYPH = {
+    "dot-dead": "\N{WASTEBASKET}",
+    "dot-provider": "\N{WARNING SIGN}",
+    "dot-unproven": "\N{HOURGLASS WITH FLOWING SAND}",
+    "dot-backup": "\N{WHITE HEAVY CHECK MARK}",
+    "dot-slow": "\N{TURTLE}",
+    "dot-audio": "\N{SPEAKER WITH THREE SOUND WAVES}",
+}
+
+# A spacing scale and a grey ramp, both as tokens. Every margin, padding and gap
+# picks a step. Text hierarchy uses the ramp and NEVER `opacity`: an opacity
+# value paints a different colour on every surface, so the contrast ratio moves
+# whenever a background changes, and the fade applies to everything nested
+# inside. Light and dark differ ONLY in token values, which is what makes
+# `!important` unnecessary anywhere in this sheet.
+#
+# Type is sized for reading a television across a room. Do not shrink it.
+_CSS = """
+:root {
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px;
+  --bg: #ffffff; --surface: #f6f7f9; --border: #d6dae0;
+  --ink: #14181d; --ink-muted: #4a5560; --ink-dim: #66727e;
+  --dead: #b3261e; --provider: #8a4c00; --unproven: #1a5fb4;
+  --backup: #1a7f37; --slow: #8a4c00; --audio: #1a5fb4;
+  --focus: #1a5fb4;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14181d; --surface: #1d232a; --border: #333c46;
+    --ink: #eef1f4; --ink-muted: #b6c0ca; --ink-dim: #99a5b1;
+    --dead: #ff8a80; --provider: #ffb86b; --unproven: #8ab4f8;
+    --backup: #7ee2a0; --slow: #ffb86b; --audio: #8ab4f8;
+    --focus: #8ab4f8;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #14181d; --surface: #1d232a; --border: #333c46;
+  --ink: #eef1f4; --ink-muted: #b6c0ca; --ink-dim: #99a5b1;
+  --dead: #ff8a80; --provider: #ffb86b; --unproven: #8ab4f8;
+  --backup: #7ee2a0; --slow: #ffb86b; --audio: #8ab4f8;
+  --focus: #8ab4f8;
+}
+:root[data-theme="light"] {
+  --bg: #ffffff; --surface: #f6f7f9; --border: #d6dae0;
+  --ink: #14181d; --ink-muted: #4a5560; --ink-dim: #66727e;
+  --dead: #b3261e; --provider: #8a4c00; --unproven: #1a5fb4;
+  --backup: #1a7f37; --slow: #8a4c00; --audio: #1a5fb4;
+  --focus: #1a5fb4;
+}
+body {
+  margin: 0; padding: var(--s5);
+  background: var(--bg); color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 20px; line-height: 1.55;
+}
+header { display: flex; align-items: center; gap: var(--s4); margin-bottom: var(--s5); }
+header img { width: 64px; height: 64px; }
+h1 { font-size: 30px; margin: 0 0 var(--s1) 0; }
+.meta { color: var(--ink-muted); font-size: 17px; }
+.totals { display: flex; flex-wrap: wrap; gap: var(--s3); margin-bottom: var(--s5); }
+.tile {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: var(--s3) var(--s4); min-width: 128px;
+}
+.tile .n { font-size: 28px; font-weight: 600; }
+.tile .k { color: var(--ink-muted); font-size: 16px; }
+.chart { margin-bottom: var(--s5); }
+details {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; margin-bottom: var(--s3); padding: var(--s3) var(--s4);
+}
+summary { cursor: pointer; font-size: 22px; font-weight: 600; }
+summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: var(--s2); }
+.dot-dead { background: var(--dead); }
+.dot-provider { background: var(--provider); }
+.dot-unproven { background: var(--unproven); }
+.dot-backup { background: var(--backup); }
+.dot-slow { background: var(--slow); }
+.dot-audio { background: var(--audio); }
+.glyph { margin-right: var(--s2); }
+.count {
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 999px; padding: 0 var(--s2); margin-left: var(--s2);
+  font-size: 17px; color: var(--ink-muted);
+}
+.sub { color: var(--ink-muted); font-size: 17px; margin: var(--s2) 0 var(--s1) 0; }
+.act { color: var(--ink); font-size: 17px; margin: 0 0 var(--s2) 0; font-weight: 600; }
+.hint { color: var(--ink-dim); font-size: 15px; margin: 0 0 var(--s3) 0; }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 17px; }
+th, td { text-align: left; padding: var(--s2) var(--s3); border-bottom: 1px solid var(--border); }
+th { color: var(--ink-muted); font-weight: 600; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.empty { color: var(--ink-dim); font-size: 17px; margin: var(--s2) 0; }
+.bar-label { fill: var(--ink-muted); font-size: 13px; }
+.bar-dead { fill: var(--dead); }
+.bar-provider { fill: var(--provider); }
+.bar-unproven { fill: var(--unproven); }
+.bar-backup { fill: var(--backup); }
+.bar-slow { fill: var(--slow); }
+.bar-audio { fill: var(--audio); }
+footer {
+  margin-top: var(--s5); padding-top: var(--s4);
+  border-top: 1px solid var(--border);
+  color: var(--ink-muted); font-size: 16px;
+}
+footer a { color: var(--focus); }
+"""
+
+_FIND_HINT = ("Expand this section before using your browser find on this page. "
+              "Text inside a collapsed section is not searchable in some browsers.")
+
+REPO_URL = "https://github.com/PiratesIRC/Dispatcharr-IPTV-Checker-Plugin"
+ISSUES_URL = REPO_URL + "/issues"
+
+
+def _esc(value):
+    """HTML-escape any value. Total: None and non-strings become text first."""
+    if value is None:
+        return ""
+    return html.escape(str(value), quote=True)
+
+
+def _logo_data_uri(plugin_dir, max_encoded=LOGO_MAX_ENCODED_BYTES):
+    """Base64 data URI for the plugin logo, or None.
+
+    None means the header renders with NO image element at all. A logo that
+    cannot be read, or that is too large to ride on every emailed copy, must
+    never fail a build.
+    """
+    try:
+        path = os.path.join(plugin_dir or "", "logo.png")
+        with open(path, "rb") as fh:
+            raw = fh.read()
+    except (OSError, TypeError, ValueError):
+        return None
+    try:
+        encoded = base64.b64encode(raw).decode("ascii")
+    except Exception:
+        return None
+    if len(encoded) > max_encoded:
+        return None
+    return "data:image/png;base64," + encoded
+
+
+def _fmt_fps(value):
+    """Framerate for display. Total: anything unusable renders as empty."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if number != number or number in (float("inf"), float("-inf")) or number <= 0:
+        return ""
+    return "%.1f" % number
+
+
+def _section_html(section):
+    """One report section as a collapsible details element.
+
+    The details element needs no JavaScript, and a client that does not
+    implement it renders the content EXPANDED, so the failure mode is
+    everything visible rather than content lost. Every section starts
+    COLLAPSED, and the count in the heading is the number of rows in the table
+    beneath it, never the size of any wider population.
+    """
+    section = section if isinstance(section, dict) else {}
+    dot = _SECTION_DOT.get(section.get("key"), "dot-unproven")
+    glyph = _DOT_GLYPH.get(dot, "")
+    rows = section.get("rows") or []
+    out = [
+        "<details><summary>",
+        '<span class="dot ', dot, '" aria-hidden="true"></span>',
+    ]
+    if glyph:
+        out.extend(['<span class="glyph" aria-hidden="true">', glyph, "</span>"])
+    out.extend([
+        _esc(section.get("title")),
+        '<span class="count">', str(len(rows)), "</span>",
+        "</summary>",
+        '<p class="sub">', _esc(section.get("description")), "</p>",
+        '<p class="act">What to do: ', _esc(section.get("action")), "</p>",
+        '<p class="hint">', _esc(_FIND_HINT), "</p>",
+    ])
+    if not rows:
+        out.append('<p class="empty">Nothing in this group.</p>')
+    else:
+        out.append('<div class="scroll"><table><thead><tr>'
+                   "<th>Channel</th><th>Streams</th><th>Playing</th>"
+                   "<th>Resolution</th><th>Framerate</th><th>Reasons</th>"
+                   "</tr></thead><tbody>")
+        for row in rows:
+            row = row if isinstance(row, dict) else {}
+            out.extend([
+                "<tr><td>", _esc(row.get("channel_name")), "</td>",
+                '<td class="num">', _esc(row.get("streams_total", 0)), "</td>",
+                '<td class="num">', _esc(row.get("streams_alive", 0)), "</td>",
+                "<td>", _esc(row.get("resolution") or ""), "</td>",
+                '<td class="num">', _fmt_fps(row.get("framerate")), "</td>",
+                "<td>", _esc(", ".join(str(x) for x in (row.get("reasons") or []))), "</td></tr>",
+            ])
+        out.append("</tbody></table></div>")
+    out.append("</details>")
+    return "".join(out)
+
+
+def _bar_chart(sections):
+    """Inline SVG bar chart of the section counts.
+
+    Colour is applied by a CSS CLASS, never by a fill attribute holding a
+    custom property: support for that is patchy and it fails silently to BLACK,
+    which is an invisible chart on the dark surface.
+
+    Total over its input: an all-zero set of counts must not divide by zero.
+    """
+    items = []
+    for section in sections or []:
+        if not isinstance(section, dict):
+            continue
+        count = len(section.get("rows") or [])
+        cls = _SECTION_DOT.get(section.get("key"), "dot-unproven").replace("dot-", "bar-")
+        items.append((section.get("title") or "", count, cls))
+    if not items:
+        return ""
+    widest = max(n for _, n, _ in items)
+    if widest <= 0:
+        return ""
+    row_h, gap, label_w, bar_max = 26, 6, 250, 380
+    height = len(items) * (row_h + gap)
+    width = label_w + bar_max + 70
+    out = ['<svg class="chart" role="img" aria-label="Channel counts by group" ',
+           'viewBox="0 0 %d %d" width="100%%" height="%d">' % (width, height, height)]
+    for index, (title, count, cls) in enumerate(items):
+        y = index * (row_h + gap)
+        bar_w = int(bar_max * count / widest)
+        out.append('<text class="bar-label" x="0" y="%d">%s</text>' % (y + 18, _esc(title)))
+        out.append('<rect class="%s" x="%d" y="%d" width="%d" height="%d" rx="3"></rect>'
+                   % (cls, label_w, y, bar_w, row_h))
+        out.append('<text class="bar-label" x="%d" y="%d">%d</text>'
+                   % (label_w + bar_w + 8, y + 18, count))
+    out.append("</svg>")
+    return "".join(out)
+
+
+def _tile(number, label):
+    return ('<div class="tile"><div class="n">%s</div><div class="k">%s</div></div>'
+            % (_esc(number), _esc(label)))
+
+
+def _detector_sentence(detectors):
+    """State which optional detectors ran, so a zero can be read correctly.
+
+    A zero from a detector that was OFF means nobody looked. That is not the
+    same as measured and found none, and the reader must be able to tell.
+    """
+    detectors = detectors if isinstance(detectors, dict) else {}
+    names = {
+        "black_screen": "blank screen",
+        "frozen_video": "frozen video",
+        "silent_audio": "silent audio",
+        "placeholder_file": "placeholder file",
+    }
+    ran = sorted(names[k] for k, v in detectors.items() if v and k in names)
+    off = sorted(names[k] for k, v in detectors.items() if not v and k in names)
+    parts = []
+    if ran:
+        parts.append("Detectors that ran: " + ", ".join(ran) + ".")
+    if off:
+        parts.append("Not measured, so a zero here means nobody looked: "
+                     + ", ".join(off) + ".")
+    return " ".join(parts)
+
+
+def render_html(model):
+    """A complete, self-contained HTML page.
+
+    No safety net above this: write_report catches OSError only. Every helper
+    called here is total over its inputs, and the page is assembled by joining
+    a list rather than by one large formatted string, so a literal brace in the
+    CSS cannot become a format field.
+    """
+    model = model if isinstance(model, dict) else {}
+    totals = model.get("totals") if isinstance(model.get("totals"), dict) else {}
+    health = model.get("run_health") if isinstance(model.get("run_health"), dict) else {}
+    sections = model.get("sections") or []
+
+    generated = model.get("generated_at")
+    try:
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(generated)))
+    except (TypeError, ValueError):
+        stamp = "unknown time"
+
+    logo = _logo_data_uri(model.get("plugin_dir"))
+
+    out = ["<title>IPTV Checker report</title>", "<style>", _CSS, "</style>", "<header>"]
+    if logo:
+        out.append('<img src="%s" alt="">' % logo)
+    out.extend([
+        "<div><h1>IPTV Checker report</h1>",
+        '<div class="meta">Generated ', _esc(stamp),
+        " . Plugin version ", _esc(model.get("version") or "unknown"),
+        "</div></div></header>",
+        '<div class="totals">',
+        _tile(totals.get("channels", 0), "channels checked"),
+        _tile(totals.get("channels_working", 0), "channels playing"),
+        _tile(totals.get("channels_listed", 0), "listed below"),
+        _tile(totals.get("channels_no_issues", 0), "no issues found"),
+        _tile(totals.get("streams", 0), "streams tested"),
+        "</div>",
+    ])
+
+    reconciles = (totals.get("channels_listed", 0) + totals.get("channels_no_issues", 0)
+                  == totals.get("channels", 0))
+    out.append('<p class="sub">')
+    out.append(_esc(
+        "Channels with nothing wrong are counted but not listed, so the groups below hold "
+        "%s of %s channels." % (totals.get("channels_listed", 0), totals.get("channels", 0))
+        if reconciles else
+        "The group counts below do not reconcile against the channel total, which is a bug."))
+    out.append("</p>")
+
+    if not health.get("trustworthy", True):
+        out.append('<p class="act">')
+        out.append(_esc(
+            "The provider rate limited %s stream request(s) during this run, so some results "
+            "may be wrong. Re-run before acting on anything below."
+            % health.get("rate_limited_streams", 0)))
+        out.append("</p>")
+
+    detector_text = _detector_sentence(health.get("detectors"))
+    if detector_text:
+        out.extend(['<p class="hint">', _esc(detector_text), "</p>"])
+
+    out.append(_bar_chart(sections))
+    for section in sections:
+        out.append(_section_html(section))
+
+    out.extend([
+        "<footer>",
+        'Built by the IPTV Checker plugin. ',
+        '<a href="', REPO_URL, '">Source</a> . ',
+        '<a href="', ISSUES_URL, '">Report a problem</a>.',
+        "</footer>",
+    ])
+    return "".join(out)
+
+
+CSV_COLUMNS = ["group", "channel_id", "channel_name", "streams_total",
+               "streams_playing", "resolution", "framerate", "reasons"]
+
+
+def render_csv(model):
+    """The same rows as the HTML, as CSV. Convenience export, not the product."""
+    model = model if isinstance(model, dict) else {}
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(CSV_COLUMNS)
+    for section in model.get("sections") or []:
+        if not isinstance(section, dict):
+            continue
+        title = section.get("title") or ""
+        for row in section.get("rows") or []:
+            if not isinstance(row, dict):
+                continue
+            writer.writerow([
+                title,
+                row.get("channel_id", ""),
+                row.get("channel_name", ""),
+                row.get("streams_total", 0),
+                row.get("streams_alive", 0),
+                row.get("resolution") or "",
+                _fmt_fps(row.get("framerate")),
+                ", ".join(str(x) for x in (row.get("reasons") or [])),
+            ])
+    return buf.getvalue()
+
+
+def _atomic_write(path, text):
+    """Write via a temporary file in the SAME directory, then replace.
+
+    Same directory because os.replace is only atomic within one filesystem. A
+    partially written report must never be readable at the live path.
+    """
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+    os.replace(tmp, path)
+
+
+def _prune_archives(directory, prefix, suffix, keep=ARCHIVE_LIMIT):
+    """Keep the newest `keep` archives by name. Never raises."""
+    try:
+        names = sorted(n for n in os.listdir(directory)
+                       if n.startswith(prefix) and n.endswith(suffix))
+    except OSError:
+        return
+    for name in names[:-keep] if keep > 0 else names:
+        try:
+            os.remove(os.path.join(directory, name))
+        except OSError:
+            pass
+
+
+def write_report(model, report_dir, csv_dir, now):
+    """Write the HTML report and the CSV. NEVER RAISES.
+
+    The HTML report is the product; the CSV is a convenience export. If the CSV
+    directory is unwritable, the HTML write must still succeed and be returned,
+    and only csv_path degrades to None.
+
+    Returns {"html_path", "csv_path", "archive_path", "error"}. A falsy
+    html_path is the ONLY honest signal that nothing was published: counts are
+    computed before the write, so a caller that reports success on the counts
+    alone will report a healthy summary for a run that wrote nothing. Gate on
+    html_path, and verify by the artifact's mtime rather than by this return
+    value.
+    """
+    try:
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
+    except (TypeError, ValueError):
+        stamp = "unknown"
+    out = {"html_path": None, "csv_path": None, "archive_path": None, "error": None}
+
+    try:
+        os.makedirs(report_dir, exist_ok=True)
+        html_text = render_html(model)
+        live = os.path.join(report_dir, REPORT_HTML)
+        _atomic_write(live, html_text)
+        archive = os.path.join(report_dir, "report-%s.html" % stamp)
+        _atomic_write(archive, html_text)
+        out["html_path"] = live
+        out["archive_path"] = archive
+        _prune_archives(report_dir, "report-", ".html")
+    except OSError as exc:
+        out["error"] = "could not write the report: %s" % exc
+        return out
+
+    try:
+        os.makedirs(csv_dir, exist_ok=True)
+        csv_path = os.path.join(csv_dir, "report-%s.csv" % stamp)
+        _atomic_write(csv_path, render_csv(model))
+        out["csv_path"] = csv_path
+        _prune_archives(csv_dir, "report-", ".csv")
+    except OSError as exc:
+        out["error"] = "the report was written but the CSV was not: %s" % exc
+
+    return out
