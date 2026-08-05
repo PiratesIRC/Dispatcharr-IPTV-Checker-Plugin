@@ -74,6 +74,10 @@
   ],
   "allow": [
     {
+      "pattern": "^docs/(CLAUDE-HISTOR[Y]|TOD[O])\\.md\\s*$",
+      "reason": "The .gitignore lines that KEEP the internal notes out of this public repository. An ignore rule has to name the file it excludes, so the built-in internal-notes rule matches the very mechanism preventing the leak. Anchored to a whole line that is exactly that path, so the same string is still reported anywhere else, including in a tracked file or in prose. The trailing \\s* is load-bearing: this worktree stores .gitignore with CRLF line endings, so the line ends in a carriage return and a bare $ anchor never matched. Written with character classes because the rules file is the ONE file guaranteed to contain every string it looks for, and a literal spelling made this entry trip the very rule it exempts"
+    },
+    {
       "pattern": "names = \\{n\\.lower\\(\\) for n in",
       "reason": "The line in tests/test_publish_hygiene.py that lists the notes filenames the test refuses to let become tracked. A guard has to name what it guards against, and the built-in notes-reference rule is case-insensitive so it matches those names. Anchored to this one line so the same strings are still reported everywhere else in the repository"
     },

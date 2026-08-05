@@ -1,6 +1,6 @@
 {
   "name": "IPTV Checker",
-  "version": "1.26.2171432",
+  "version": "1.26.2171636",
   "description": "A Dispatcharr Plugin that goes through a playlist to check IPTV channels",
   "author": "PiratesIRC",
   "logo": "logo.png",
@@ -242,11 +242,11 @@
       "id": "_section_low_fps",
       "label": "\ud83d\udc0c Low Framerate Handling",
       "type": "info",
-      "description": "How to rename and relocate channels whose streams deliver under 30 fps."
+      "description": "How to rename and relocate channels whose streams deliver below 24 fps."
     },
     {
       "id": "low_framerate_rename_format",
-      "label": "\ud83d\udc0c Low Framerate Rename Format - Less than 30fps",
+      "label": "\ud83d\udc0c Low Framerate Rename Format - Below 24fps",
       "type": "string",
       "default": "{name} [Slow]",
       "placeholder": "[SLOW] {name}",

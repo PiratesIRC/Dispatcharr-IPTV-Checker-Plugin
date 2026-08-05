@@ -52,3 +52,10 @@ C--Users-*
 
 # Stray CSV exports produced by the plugin
 iptv_checker_results_*.csv
+
+# Internal notes that must never reach this PUBLIC repository. CLAUDE.md is
+# already ignored above; its history file and the local TODO are the same
+# category. They sat untracked and unignored, so a `git add -A` during a
+# release would have swept them in.
+docs/CLAUDE-HISTORY.md
+docs/TODO.md

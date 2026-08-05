@@ -101,3 +101,23 @@ def test_every_settable_field_has_label_and_type():
     for f in _DATA["fields"]:
         assert f.get("label"), f["id"]
         assert f.get("type"), f["id"]
+
+
+def test_low_framerate_label_matches_the_actual_threshold():
+    """The label said "Less than 30fps" long after the threshold moved to 24,
+    so the plugin's own UI told users the wrong number. Bind the text to the
+    constant that decides it."""
+    import importlib.util
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location("ic_cfg_probe", root / "iptv_checker" / "reports.py")
+    reports = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(reports)
+    threshold = reports.LOW_FRAMERATE_THRESHOLD
+
+    field = next(f for f in _DATA["fields"] if f["id"] == "low_framerate_rename_format")
+    text = (field.get("label", "") + " " + field.get("help_text", ""))
+    assert "30fps" not in text and "30 fps" not in text, \
+        "the low-framerate label still names 30fps"
+    assert str(threshold) in text, \
+        "the label should name the real threshold, %s" % threshold
