@@ -1,0 +1,6 @@
+# The vendored notification client is hash-pinned by
+# scripts/client_manifest.json and must stay byte-identical to the canonical
+# copy at ../_shared/notify_client.py. Pin it to LF: a CRLF copy normalises
+# back on a Linux checkout, stops matching its pin, and fails CI for a reason
+# that has nothing to do with the code.
+iptv_checker/notify_client.py text eol=lf
