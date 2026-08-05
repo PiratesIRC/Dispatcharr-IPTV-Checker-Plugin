@@ -64,7 +64,12 @@ def test_bump_version_can_actually_rewrite_claude_md():
     bump = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(bump)
 
-    original = CLAUDE_MD.read_text(encoding="utf-8")
+    # Back up and restore in BINARY. A text-mode round trip reads with
+    # universal newlines and would silently rewrite a CRLF file as LF, so a
+    # test that only checks a version string would quietly reformat a file the
+    # operator keeps by hand. CLAUDE.md is gitignored here, so such a change
+    # would not even show up in a diff.
+    original = CLAUDE_MD.read_bytes()
     try:
         bump.write_claude_md_version("9.99.9999999")
         rewritten = CLAUDE_MD.read_text(encoding="utf-8")
@@ -72,7 +77,8 @@ def test_bump_version_can_actually_rewrite_claude_md():
         assert m, "Current Version line vanished after a bump"
         assert m.group(1) == "9.99.9999999", "bump_version did not rewrite the version line"
     finally:
-        CLAUDE_MD.write_text(original, encoding="utf-8", newline="")
+        CLAUDE_MD.write_bytes(original)
+    assert CLAUDE_MD.read_bytes() == original, "CLAUDE.md was not restored byte-for-byte"
 
 
 def test_version_has_no_v_prefix():

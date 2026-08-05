@@ -47,7 +47,12 @@ def test_parse_empty_or_garbage(pmod):
     assert pmod.Plugin._parse_blackdetect_output(None) == []
 
 
-# ---- Task 2: _check_black_screen ----------------------------------------
+# ---- Task 2: _analyze_stream_content, black verdict ---------------------
+#
+# _check_black_screen was replaced by _analyze_stream_content, which answers
+# black / frozen / audio-level from ONE ffmpeg pass. These tests keep their
+# original assertions and read the 'black' verdict out of the returned dict,
+# so black-screen behaviour stays locked across that restructure.
 
 import subprocess  # noqa: E402
 
@@ -78,43 +83,43 @@ _BS_SETTINGS = {
 
 def test_check_black_true_on_segment(plugin, pmod, monkeypatch, quiet_logger):
     monkeypatch.setattr(pmod.subprocess, "run", _ffmpeg_run(stderr=_ONE_SEGMENT, returncode=0))
-    assert plugin._check_black_screen("http://x/1.ts", 10, _BS_SETTINGS, quiet_logger) is True
+    assert plugin._analyze_stream_content("http://x/1.ts", 10, _BS_SETTINGS, quiet_logger)["black"] is True
 
 
 def test_check_black_true_even_on_nonzero_exit(plugin, pmod, monkeypatch, quiet_logger):
     # blackdetect often prints a segment then ffmpeg exits non-zero (stream ends).
     monkeypatch.setattr(pmod.subprocess, "run", _ffmpeg_run(stderr=_ONE_SEGMENT, returncode=1))
-    assert plugin._check_black_screen("http://x/1.ts", 10, _BS_SETTINGS, quiet_logger) is True
+    assert plugin._analyze_stream_content("http://x/1.ts", 10, _BS_SETTINGS, quiet_logger)["black"] is True
 
 
 def test_check_black_false_no_segment_clean_exit(plugin, pmod, monkeypatch, quiet_logger):
     monkeypatch.setattr(pmod.subprocess, "run", _ffmpeg_run(stderr=_NO_SEGMENT, returncode=0))
-    assert plugin._check_black_screen("http://x/1.ts", 10, _BS_SETTINGS, quiet_logger) is False
+    assert plugin._analyze_stream_content("http://x/1.ts", 10, _BS_SETTINGS, quiet_logger)["black"] is False
 
 
 def test_check_black_none_on_nonzero_without_segment(plugin, pmod, monkeypatch, quiet_logger):
     monkeypatch.setattr(pmod.subprocess, "run", _ffmpeg_run(stderr="Server returned 500", returncode=1))
-    assert plugin._check_black_screen("http://x/1.ts", 10, _BS_SETTINGS, quiet_logger) is None
+    assert plugin._analyze_stream_content("http://x/1.ts", 10, _BS_SETTINGS, quiet_logger)["black"] is None
 
 
 def test_check_black_none_when_ffmpeg_missing(plugin, pmod, monkeypatch, quiet_logger):
     def _boom(*a, **k):
         raise FileNotFoundError("ffmpeg")
     monkeypatch.setattr(pmod.subprocess, "run", _boom)
-    assert plugin._check_black_screen("http://x/1.ts", 10, _BS_SETTINGS, quiet_logger) is None
+    assert plugin._analyze_stream_content("http://x/1.ts", 10, _BS_SETTINGS, quiet_logger)["black"] is None
 
 
 def test_check_black_none_on_timeout(plugin, pmod, monkeypatch, quiet_logger):
     def _boom(*a, **k):
         raise subprocess.TimeoutExpired(cmd="ffmpeg", timeout=20)
     monkeypatch.setattr(pmod.subprocess, "run", _boom)
-    assert plugin._check_black_screen("http://x/1.ts", 10, _BS_SETTINGS, quiet_logger) is None
+    assert plugin._analyze_stream_content("http://x/1.ts", 10, _BS_SETTINGS, quiet_logger)["black"] is None
 
 
 def test_check_black_command_shape(plugin, pmod, monkeypatch, quiet_logger):
     capture = []
     monkeypatch.setattr(pmod.subprocess, "run", _ffmpeg_run(stderr=_NO_SEGMENT, capture=capture))
-    plugin._check_black_screen("http://x/1.ts", 10, _BS_SETTINGS, quiet_logger)
+    plugin._analyze_stream_content("http://x/1.ts", 10, _BS_SETTINGS, quiet_logger)
     cmd = capture[0]
     # input options precede -i; uses -rw_timeout (not -timeout); info loglevel.
     assert cmd[0] == "/usr/local/bin/ffmpeg"

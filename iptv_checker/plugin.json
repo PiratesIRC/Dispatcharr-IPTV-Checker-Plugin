@@ -1,6 +1,6 @@
 {
   "name": "IPTV Checker",
-  "version": "1.26.2171014",
+  "version": "1.26.2171027",
   "description": "A Dispatcharr Plugin that goes through a playlist to check IPTV channels",
   "author": "PiratesIRC",
   "logo": "logo.png",
@@ -138,6 +138,46 @@
       "type": "boolean",
       "default": false,
       "help_text": "When ON, any stream reporting a fixed container duration is marked Dead under the `Placeholder File` error type, so the dead-channel rename/move/delete actions handle it. Adds no probe time. Measured against a full sweep of 156 provider channels: all 138 healthy channels reported no duration, while all 19 that did were serving a placeholder file. The duration and container bitrate are recorded in the CSV for every stream even when this is OFF, so you can check the evidence before turning it on. Leave OFF if any channel here is fed by a genuinely finite file you want to keep."
+    },
+    {
+      "id": "_section_frozen_video",
+      "label": "\ud83e\uddca Frozen-Video Detection",
+      "type": "info",
+      "description": "Detects a stream whose picture has stopped moving but is not blank. A still frame passes ffprobe and is not black, so blank-screen detection cannot see it. Shares the same single ffmpeg decode pass as blank-screen and silent-audio detection, so enabling several of them costs one provider connection, not one each."
+    },
+    {
+      "id": "frozen_video_detection",
+      "label": "\ud83e\uddca Detect Frozen-Video Streams",
+      "type": "boolean",
+      "default": false,
+      "help_text": "When ON, the decoded sample is checked for a continuous run of identical frames and matching streams are marked Dead under the `Frozen Video` error type, so the dead-channel rename/move/delete actions handle them. A blank screen is also a still picture, so blank-screen detection takes precedence when both are ON and both fire. Uses the Blank-Screen Sample length below for how much video to decode. Fail-open: if ffmpeg is missing or errors, the stream stays Alive."
+    },
+    {
+      "id": "frozen_video_min_seconds",
+      "label": "\ud83e\uddca Frozen-Video Minimum (seconds)",
+      "type": "number",
+      "default": 4,
+      "help_text": "How many continuous seconds the picture must stay identical before the stream counts as frozen. Automatically reduced to fit inside the sample length, because a value at or above the sample can never be reached and would leave the setting looking active while never firing. Default: 4"
+    },
+    {
+      "id": "_section_silent_audio",
+      "label": "\ud83d\udd07 Silent-Audio Detection",
+      "type": "info",
+      "description": "Detects a stream carrying a healthy audio track that is completely silent. This is different from a stream with no audio track at all, which is not flagged. Shares the same ffmpeg decode pass as the two detectors above."
+    },
+    {
+      "id": "silent_audio_detection",
+      "label": "\ud83d\udd07 Detect Silent-Audio Streams",
+      "type": "boolean",
+      "default": false,
+      "help_text": "When ON, the mean volume of the decoded sample is measured and streams at or below the threshold are marked Dead under the `Silent Audio` error type. Skipped entirely for streams with no audio track, which cannot be silent. Fail-open: if the volume cannot be measured the stream stays Alive, because no measurement is not evidence of silence. Note this marks a stream Dead even though its video is fine, so the dead-channel delete action would remove a channel that still has a picture."
+    },
+    {
+      "id": "silent_audio_max_db",
+      "label": "\ud83d\udd07 Silence Threshold (dBFS)",
+      "type": "number",
+      "default": -70,
+      "help_text": "Mean volume at or below this level counts as silence. Must be negative. Measured basis: digitally silent audio reports -91.0 dB, while the quietest real channel measured reported -44.4 dB, so the default of -70 sits roughly midway with about 25 dB of margin on each side. Raise it toward -50 to catch very quiet channels, at the risk of flagging quiet film soundtracks. Default: -70"
     },
     {
       "id": "_section_post_check",

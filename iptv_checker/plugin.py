@@ -127,6 +127,20 @@ class PluginConfig:
     # only genuinely choppy streams are. See _is_low_framerate.
     LOW_FRAMERATE_THRESHOLD = 24
 
+    # --- Content-analysis defaults (one shared ffmpeg decode pass) ---
+    # How many seconds of video to decode. Also bounds how long a freeze can
+    # be observed, so the freeze threshold is clamped against it.
+    DEFAULT_BLACK_SAMPLE_SECONDS = 6
+    # Minimum continuous still-picture run, in seconds, before a stream counts
+    # as frozen. freezedetect only reports once this has elapsed.
+    DEFAULT_FREEZE_MIN_SECONDS = 4
+    # Mean volume at or below this (dBFS) counts as silence. Measured basis:
+    # digital silence encodes as -91.0 dB (confirmed here on ffmpeg 8.1.2 with
+    # anullsrc, and in the field by Sentinelarr), while the quietest real
+    # channel measured was -44.4 dB (a film). -70 sits between the two with
+    # about 25 dB of margin on each side.
+    DEFAULT_SILENT_AUDIO_MAX_DB = -70.0
+
     # --- FFprobe defaults ---
     # Single source of truth for the default ffprobe flags. -show_packets is
     # required for the packet-based video_bitrate fallback; -loglevel error keeps
@@ -313,7 +327,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.2171014"
+    version = "1.26.2171027"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -3752,19 +3766,107 @@ class Plugin:
         # miss the short file, which reported no bitrate at all.
         return Plugin._parse_container_duration(probe_data) is not None
 
-    def _check_black_screen(self, url, timeout, settings, logger):
-        # Decode a few seconds of an Alive stream and detect a pure black
-        # picture. Returns True (black), False (has video), or None
-        # (undecidable -> caller leaves the stream Alive). Never raises.
+    @staticmethod
+    def _parse_freezedetect_output(stderr):
+        # Parse ffmpeg freezedetect stderr into a list of freeze start times.
+        # Returns [] when the picture was moving.
+        #
+        # Real captured output (ffmpeg 8.1.2, lavfi color=red still source):
+        #   [Parsed_freezedetect_1 @ 0x70f0a8003240] lavfi.freezedetect.freeze_start: 0
+        # A freeze running to end-of-capture prints freeze_start with NO
+        # freeze_end, so keying on freeze_end would miss the common case.
+        starts = []
+        if not stderr:
+            return starts
+        pattern = re.compile(r'lavfi\.freezedetect\.freeze_start:\s*(?P<start>[\d.]+)')
+        for m in pattern.finditer(stderr):
+            try:
+                starts.append(float(m.group('start')))
+            except (ValueError, TypeError):
+                continue
+        return starts
+
+    @staticmethod
+    def _parse_mean_volume_db(stderr):
+        # Parse volumedetect's mean_volume in dBFS, or None when absent.
+        #
+        # `-?(?:inf|[\d.]+)` is deliberate: ffmpeg documents `mean_volume:
+        # -inf dB` for digital silence, and a regex that cannot read it
+        # returns None, which is byte-identical to "no audio measured at all"
+        # and would fail OPEN on the strongest possible evidence of silence.
+        # Measured on ffmpeg 8.1.2, both anullsrc and aevalsrc=0 printed
+        # -91.0 rather than -inf, matching Sentinelarr's field measurement.
+        if not stderr:
+            return None
+        m = re.search(r'mean_volume:\s*(-?(?:inf|[\d.]+))\s*dB', stderr)
+        if not m:
+            return None
+        try:
+            return float(m.group(1))
+        except (ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _is_silent_audio(mean_db, threshold_db):
+        # True only on POSITIVE evidence of silence. An unmeasured level
+        # (None) is NOT silence: no measurement never authorizes an action.
+        if mean_db is None:
+            return False
+        try:
+            return float(mean_db) <= float(threshold_db)
+        except (ValueError, TypeError):
+            return False
+
+    @staticmethod
+    def _effective_freeze_seconds(min_seconds, sample_seconds):
+        # freezedetect only reports once a freeze has lasted d seconds, so a
+        # d greater than or equal to the sample length can NEVER mature: the
+        # setting would look active while being structurally unable to fire.
+        # Clamp it to fit inside the sample instead of obeying it literally.
+        try:
+            wanted = int(float(min_seconds))
+        except (TypeError, ValueError):
+            wanted = PluginConfig.DEFAULT_FREEZE_MIN_SECONDS
+        try:
+            sample = int(float(sample_seconds))
+        except (TypeError, ValueError):
+            sample = PluginConfig.DEFAULT_BLACK_SAMPLE_SECONDS
+        return max(1, min(wanted, sample - 1))
+
+    def _analyze_stream_content(self, url, timeout, settings, logger,
+                                want_freeze=False, want_audio=False):
+        # ONE ffmpeg decode pass answering up to three questions: is the
+        # picture black, is it frozen, and how loud is the audio. Running them
+        # together is what keeps the cost at a single provider connection when
+        # several detectors are enabled; verified against ffmpeg 8.1.2 that
+        # blackdetect, freezedetect and volumedetect all report from one pass.
+        #
+        # Returns {'black': ..., 'frozen': ..., 'audio_db': ...}. Each verdict
+        # is True/False, or None meaning NOT MEASURED or NOT DECIDABLE -- and
+        # None never authorizes an action, so the caller leaves the stream
+        # Alive. Never raises.
+        unknown = {'black': None, 'frozen': None, 'audio_db': None}
         s = settings or {}
         ffmpeg_path = s.get('ffmpeg_path', '/usr/local/bin/ffmpeg')
-        sample_seconds = s.get('black_screen_sample_seconds', 6)
+        sample_seconds = s.get('black_screen_sample_seconds', PluginConfig.DEFAULT_BLACK_SAMPLE_SECONDS)
         min_black = s.get('black_screen_min_black_seconds', 3)
         ffmpeg_timeout = s.get('black_screen_ffmpeg_timeout', 20)
 
+        # blackdetect stays FIRST in the chain so its verdict is always
+        # available for precedence: a black screen is also a still picture, so
+        # freezedetect fires on it too and the two must not be confused.
+        video_filters = [f'blackdetect=d={min_black}:pic_th=0.98']
+        if want_freeze:
+            freeze_seconds = self._effective_freeze_seconds(
+                s.get('frozen_video_min_seconds', PluginConfig.DEFAULT_FREEZE_MIN_SECONDS),
+                sample_seconds,
+            )
+            video_filters.append(f'freezedetect=n=-60dB:d={freeze_seconds}')
+
         # Input options (-user_agent, -rw_timeout) MUST precede -i or ffmpeg
-        # silently ignores them. -loglevel info is required: blackdetect logs
-        # its results at info level, so -loglevel error would suppress them.
+        # silently ignores them. -loglevel info is required: blackdetect,
+        # freezedetect and volumedetect ALL log at info level, so
+        # -loglevel error would suppress every one of them.
         cmd = [
             ffmpeg_path,
             '-hide_banner', '-nostats', '-loglevel', 'info',
@@ -3772,31 +3874,48 @@ class Plugin:
             '-rw_timeout', str(int(timeout) * 1000000),
             '-i', url,
             '-t', str(sample_seconds),
-            '-an',
-            '-vf', f'blackdetect=d={min_black}:pic_th=0.98',
-            '-f', 'null', '-',
         ]
+        if want_audio:
+            cmd.extend(['-af', 'volumedetect'])
+        else:
+            cmd.append('-an')
+        cmd.extend(['-vf', ','.join(video_filters)])
+        cmd.extend(['-f', 'null', '-'])
 
         try:
             result = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=ffmpeg_timeout
             )
         except FileNotFoundError:
-            logger.warning(f"[Black Screen] ffmpeg not found at {ffmpeg_path}; leaving stream Alive")
-            return None
+            logger.warning(f"[Content Check] ffmpeg not found at {ffmpeg_path}; leaving stream Alive")
+            return dict(unknown)
         except subprocess.TimeoutExpired:
-            logger.warning(f"[Black Screen] ffmpeg timed out after {ffmpeg_timeout}s; leaving stream Alive")
-            return None
+            logger.warning(f"[Content Check] ffmpeg timed out after {ffmpeg_timeout}s; leaving stream Alive")
+            return dict(unknown)
         except Exception as e:
-            logger.warning(f"[Black Screen] ffmpeg error ({e}); leaving stream Alive")
-            return None
+            logger.warning(f"[Content Check] ffmpeg error ({e}); leaving stream Alive")
+            return dict(unknown)
 
-        segments = self._parse_blackdetect_output(result.stderr or '')
-        if segments:
-            return True
-        if result.returncode == 0:
-            return False
-        return None
+        stderr = result.stderr or ''
+        clean_exit = result.returncode == 0
+
+        verdicts = dict(unknown)
+
+        if self._parse_blackdetect_output(stderr):
+            verdicts['black'] = True
+        elif clean_exit:
+            verdicts['black'] = False
+
+        if want_freeze:
+            if self._parse_freezedetect_output(stderr):
+                verdicts['frozen'] = True
+            elif clean_exit:
+                verdicts['frozen'] = False
+
+        if want_audio:
+            verdicts['audio_db'] = self._parse_mean_volume_db(stderr)
+
+        return verdicts
 
     def check_stream(self, stream_data, timeout, retries, logger, skip_retries=False, settings=None, retry_attempt=0):
         """Check individual stream status with optional retries."""
@@ -4089,21 +4208,66 @@ class Plugin:
                             placeholder_return['ffprobe_data'] = ffprobe_extra_data
                             return placeholder_return
 
-                        # Optional black-screen verification. An Alive-by-ffprobe
-                        # stream can still decode to a pure black picture; mark it
-                        # Dead so destructive actions clean it up. Fail-open: any
-                        # ffmpeg problem (None) leaves the stream Alive. Null
-                        # metadata mirrors every other Dead stream so the DB stats
-                        # get cleared (see _update_dispatcharr_metadata all_none).
-                        if (settings and settings.get('black_screen_detection')
-                                and not self._stop_event.is_set()):
-                            if self._check_black_screen(url, timeout, settings, logger) is True:
+                        # Optional content verification. An Alive-by-ffprobe
+                        # stream can still decode to a black picture, a frozen
+                        # picture, or silence. All three verdicts come from ONE
+                        # ffmpeg decode pass, so enabling several costs a single
+                        # provider connection rather than one each.
+                        #
+                        # Fail-open throughout: any ffmpeg problem yields None,
+                        # and None never marks a stream Dead. Every Dead return
+                        # nulls its metadata so the DB stats get cleared (see
+                        # _update_dispatcharr_metadata all_none).
+                        s = settings or {}
+                        want_black = bool(s.get('black_screen_detection'))
+                        want_freeze = bool(s.get('frozen_video_detection'))
+                        # A stream with no audio track cannot be silent; that is
+                        # a different fault and this detector must not claim it.
+                        want_audio = bool(s.get('silent_audio_detection')) and audio_stream is not None
+
+                        if (want_black or want_freeze or want_audio) and not self._stop_event.is_set():
+                            verdicts = self._analyze_stream_content(
+                                url, timeout, settings, logger,
+                                want_freeze=want_freeze, want_audio=want_audio,
+                            )
+
+                            def _dead(error_type, message):
+                                dead_return = dict(default_return)
+                                dead_return['dispatcharr_metadata'] = {k: None for k in default_return['dispatcharr_metadata']}
+                                dead_return['error'] = message
+                                dead_return['error_type'] = error_type
+                                dead_return['ffprobe_data'] = ffprobe_extra_data
+                                return dead_return
+
+                            # Precedence matters. A black screen is ALSO a still
+                            # picture, so freezedetect fires on it too; blank
+                            # screen must win or enabling freeze detection would
+                            # silently relabel every blank screen and break the
+                            # blank-screen rename/move actions, which match on
+                            # error_type 'Black Screen'.
+                            if want_black and verdicts['black'] is True:
                                 logger.info(f"✗ '{channel_name}' DEAD - Black Screen ({resolution})")
-                                black_return = dict(default_return)
-                                black_return['dispatcharr_metadata'] = {k: None for k in default_return['dispatcharr_metadata']}
-                                black_return['error'] = 'Stream decodes to a black screen'
-                                black_return['error_type'] = 'Black Screen'
-                                return black_return
+                                return _dead('Black Screen', 'Stream decodes to a black screen')
+
+                            if want_freeze and verdicts['frozen'] is True:
+                                logger.info(f"✗ '{channel_name}' DEAD - Frozen Video ({resolution})")
+                                return _dead(
+                                    'Frozen Video',
+                                    'Stream decodes to a frozen (unchanging) picture',
+                                )
+
+                            if want_audio:
+                                threshold_db = s.get('silent_audio_max_db', PluginConfig.DEFAULT_SILENT_AUDIO_MAX_DB)
+                                mean_db = verdicts['audio_db']
+                                if mean_db is not None:
+                                    ffprobe_extra_data['mean_volume_db'] = mean_db
+                                if self._is_silent_audio(mean_db, threshold_db):
+                                    logger.info(f"✗ '{channel_name}' DEAD - Silent Audio ({mean_db} dB)")
+                                    return _dead(
+                                        'Silent Audio',
+                                        f'Audio track is silent (mean volume {mean_db} dB, '
+                                        f'threshold {threshold_db} dB)',
+                                    )
 
                         logger.info(f"✓ '{channel_name}' ALIVE - {stream_format} {resolution} {framerate_num:.1f}fps")
 
