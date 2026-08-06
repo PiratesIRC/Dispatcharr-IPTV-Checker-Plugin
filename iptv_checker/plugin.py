@@ -362,7 +362,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.2181059"
+    version = "1.26.2181110"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -859,11 +859,17 @@ class Plugin:
             self._clear_pending_resume()
             return False
 
-        # A pending file whose window has already elapsed is dead state (e.g.
-        # left behind by a closed window — see _maybe_resume_after_restart).
-        # Resuming it would scan a stale list against the wrong window; discard.
+        # A saved window end in the PAST is the normal cross-window case, not
+        # dead state: last night's window closed at 04:00 and tonight's opens at
+        # 23:00, so the saved end is always behind. Discarding it here is what
+        # stopped multi-window resume ever working, and a full pass on a large
+        # lineup needs more than one night.
+        #
+        # It is only dead when there is no ACTIVE window to resume into. When
+        # one is open, fall through: the re-anchor below moves the pending file
+        # onto the active window.
         saved_end_iso = pending.get('window_end_iso')
-        if saved_end_iso:
+        if saved_end_iso and self._active_window_end is None:
             try:
                 saved_end = datetime.fromisoformat(saved_end_iso)
                 saved_tz = pytz.timezone(pending.get('tz') or self._dispatcharr_timezone())
@@ -972,7 +978,15 @@ class Plugin:
             return
         now = datetime.now(tz)
         if now >= end:
-            self._clear_pending_resume()
+            # The window this state belongs to has closed, so do NOT resume
+            # right now. But KEEP the file: the next window needs it to
+            # continue mid-list. Deleting it here meant any reload or restart
+            # between windows silently threw the progress away, and opening the
+            # Dispatcharr plugins page is enough to trigger it.
+            LOGGER.info(
+                "⏰ WINDOW: pending state is from a closed window; keeping it "
+                "for the next window rather than resuming now"
+            )
             return
         LOGGER.info(f"⏰ WINDOW: pending state detected (ends {end.isoformat()}); resuming check after restart")
         # Set the guard BEFORE spawning so the scheduler_loop's first tick

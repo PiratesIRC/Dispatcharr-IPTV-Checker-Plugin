@@ -208,3 +208,130 @@ def test_resume_applies_and_reanchors_window(plugin, pmod, quiet_logger):
 def test_resume_falls_back_when_no_pending_file(plugin, quiet_logger):
     settings = {"group_names": "STL"}
     assert plugin._apply_pending_resume_to_loaded_channels(settings, quiet_logger) is False
+
+
+# ---- multi-window resume across nights ----------------------------------
+#
+# THE FEATURE THIS PROTECTS: a windowed run that does not finish the channel
+# list in one night must continue from the same place when the window next
+# opens. Measured 2026-08-06 on a real install: a 5-hour window covered 4,889
+# of 7,637 streams, so a full pass needs roughly two nights.
+#
+# It never worked. Two separate places discarded the pending state whenever the
+# SAVED window end was in the past, which is true by definition once that
+# window has closed:
+#
+#   _apply_pending_resume_to_loaded_channels  discarded on the next cron fire
+#   _maybe_resume_after_restart               discarded on any reload or restart
+#
+# The saved end being in the past is the NORMAL cross-window case, not evidence
+# of dead state. It is only dead when there is no active window to resume into.
+
+def test_resume_across_nights_when_a_new_window_is_active(plugin, pmod, quiet_logger):
+    """The case that never worked: last night's window closed at 04:00, tonight's
+    opens at 23:00. The saved end is in the past, and that is expected."""
+    settings = {"channel_groups": "STL", "check_alternative_streams": True,
+                "only_visible_channels": False}
+    last_night_end = (_now() - timedelta(hours=19)).isoformat()
+    _write_pending(plugin, plugin._settings_fingerprint(settings),
+                   window_end=last_night_end, stream_ids=(11, 22))
+
+    with open(plugin.loaded_channels_file, "w") as f:
+        json.dump([{"id": 1, "name": "Ch1", "streams": [{"id": 11}, {"id": 99}]},
+                   {"id": 2, "name": "Ch2", "streams": [{"id": 22}]}], f)
+    pmod.Channel.objects.live_ids = [1, 2]
+
+    tonight_end = _now() + timedelta(hours=5)
+    plugin._active_window_end = tonight_end
+    plugin._active_window_tz = TZ
+
+    assert plugin._apply_pending_resume_to_loaded_channels(settings, quiet_logger) is True, \
+        "a closed prior window must resume into tonight's window, not be discarded"
+
+    with open(plugin.pending_resume_file) as f:
+        pending = json.load(f)
+    assert pending["window_end_iso"] == tonight_end.isoformat(), \
+        "the pending state must re-anchor to the ACTIVE window"
+
+    with open(plugin.loaded_channels_file) as f:
+        kept = {s["id"] for ch in json.load(f) for s in ch["streams"]}
+    assert kept == {11, 22}, "only the unchecked streams should remain"
+
+
+def test_elapsed_pending_is_still_discarded_with_no_active_window(plugin, pmod, quiet_logger):
+    """The original intent, preserved: with nothing to resume INTO, an elapsed
+    pending file is dead state.
+
+    A VALID loaded_channels.json is written on purpose. Without one, the
+    function discards via the missing-file branch instead, and this test passed
+    even with the elapsed check deleted entirely. Caught by mutation.
+    """
+    import os
+    settings = {"channel_groups": "STL", "check_alternative_streams": True,
+                "only_visible_channels": False}
+    _write_pending(plugin, plugin._settings_fingerprint(settings),
+                   window_end=(_now() - timedelta(hours=2)).isoformat(),
+                   stream_ids=(11,))
+    with open(plugin.loaded_channels_file, "w") as f:
+        json.dump([{"id": 1, "name": "Ch1", "streams": [{"id": 11}]}], f)
+    pmod.Channel.objects.live_ids = [1]
+    plugin._active_window_end = None
+    plugin._active_window_tz = None
+    assert plugin._apply_pending_resume_to_loaded_channels(settings, quiet_logger) is False,         "with no active window, an elapsed pending file is dead state"
+    assert not os.path.exists(plugin.pending_resume_file)
+
+
+def test_restart_after_the_window_closed_keeps_the_pending_state(plugin, quiet_logger):
+    """A reload or restart between windows must NOT destroy the progress.
+
+    Measured 2026-08-06: opening the Dispatcharr plugins page mid-morning
+    deleted a pending file holding 2,748 unchecked streams, so that night's
+    window restarted the whole list.
+    """
+    import os
+    settings = {"schedule_window_enabled": True, "channel_groups": "STL"}
+    _write_pending(plugin, plugin._settings_fingerprint(settings),
+                   window_end=(_now() - timedelta(hours=7)).isoformat())
+    plugin._maybe_resume_after_restart(settings)
+    assert os.path.exists(plugin.pending_resume_file), \
+        "a closed window is not a reason to delete progress the next window needs"
+    assert getattr(plugin, "_restart_resume_active", False) is not True, \
+        "it must still decline to resume immediately outside a window"
+
+
+def test_restart_inside_an_open_window_still_resumes(plugin, pmod, quiet_logger, monkeypatch):
+    """Unchanged behaviour: a container that died mid-window picks straight up.
+
+    The resume runs on a REAL thread whose finally clause resets
+    _restart_resume_active, so asserting that flag after letting the thread run
+    is a race. A first version of this test did exactly that and passed or
+    failed depending on timing. Capture the thread instead of starting it,
+    which makes the assertion deterministic.
+    """
+    settings = {"schedule_window_enabled": True, "channel_groups": "STL"}
+    _write_pending(plugin, plugin._settings_fingerprint(settings),
+                   window_end=(_now() + timedelta(hours=2)).isoformat())
+
+    captured = {}
+
+    class _CapturedThread:
+        def __init__(self, target=None, daemon=None, name=None, **kw):
+            captured["target"] = target
+            captured["name"] = name
+
+        def start(self):
+            captured["started"] = True
+
+    monkeypatch.setattr(pmod.threading, "Thread", _CapturedThread)
+    plugin._maybe_resume_after_restart(settings)
+
+    assert captured.get("started") is True, \
+        "a window that is still open must resume immediately after a restart"
+    assert plugin._restart_resume_active is True, \
+        "the guard must be set BEFORE spawning, so the scheduler loop cannot double-fire"
+
+
+def test_restart_with_no_pending_file_is_a_noop(plugin):
+    settings = {"schedule_window_enabled": True}
+    plugin._maybe_resume_after_restart(settings)
+    assert getattr(plugin, "_restart_resume_active", False) is not True
