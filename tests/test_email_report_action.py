@@ -87,14 +87,17 @@ _RESULTS = [
      "status": "Alive", "error_type": "N/A", "framerate_num": 50},
 ]
 
+# Newsflasharr's REAL setting ids, taken from its channels.py. An earlier
+# version of this fixture invented smtp_host and smtp_port, matching an
+# invention in the code under test, so both agreed and both were wrong.
 _GOOD_NF = {
     "routing_rules": json.dumps([{"match": {"source": "iptv_checker",
                                             "event": "usage_report"},
                                   "channels": ["smtp"], "exclusive": True}]),
     "default_channels": "ticker",
-    "smtp_host": "mail.example", "smtp_port": "587",
-    "smtp_from": "a@example.com", "smtp_to": "b@example.com",
-    "smtp_password": "set",
+    "smtp_server": "mail.example:587",
+    "smtp_from": "a@example.com", "smtp_username": "a@example.com",
+    "smtp_to": "b@example.com", "smtp_password": "set",
 }
 
 _NO_RULE_NF = dict(_GOOD_NF, routing_rules="[]")

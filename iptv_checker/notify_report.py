@@ -32,8 +32,21 @@ EVENT_REPORT = "usage_report"
 # Setting ids read from Newsflasharr's own configuration. Only the NAMES of
 # missing keys are ever reported, never their values: one of these is a
 # password.
-SMTP_REQUIRED_KEYS = ("smtp_host", "smtp_port", "smtp_from", "smtp_to")
-SMTP_SECRET_KEYS = ("smtp_password",)
+#
+# THESE NAMES ARE TAKEN FROM newsflasharr/channels.py, NOT GUESSED. An earlier
+# version checked `smtp_host` and `smtp_port`, neither of which exists there,
+# so the preflight could never pass no matter how the operator configured
+# SMTP. A gate that cannot succeed is worse than no gate: it refuses a working
+# setup and gives a reason that cannot be acted on.
+#
+# Newsflasharr treats SMTP as configured when smtp_server parses to a host, the
+# recipient list is non-empty, and a From address is available. The port is part
+# of smtp_server rather than a separate field.
+SMTP_REQUIRED_KEYS = ("smtp_server", "smtp_to")
+# The From address comes from smtp_from, falling back to smtp_username, so
+# EITHER satisfies it. A password is NOT required: an unauthenticated relay is
+# supported.
+SMTP_FROM_KEYS = ("smtp_from", "smtp_username")
 
 
 def parse_routing_rules(raw):
@@ -125,9 +138,10 @@ def preflight(newsflasharr_settings, event=EVENT_REPORT, source=SOURCE, want="sm
 
     if want == "smtp":
         missing = [k for k in SMTP_REQUIRED_KEYS if not settings.get(k)]
-        missing += [k for k in SMTP_SECRET_KEYS if not settings.get(k)]
+        if not any(settings.get(k) for k in SMTP_FROM_KEYS):
+            missing.append(" or ".join(SMTP_FROM_KEYS))
         if missing:
-            # Names only. One of these is a password.
+            # Names only. Never a value: one of these settings is a password.
             problems.append("Newsflasharr SMTP settings are incomplete. Missing: "
                             + ", ".join(missing) + ".")
 

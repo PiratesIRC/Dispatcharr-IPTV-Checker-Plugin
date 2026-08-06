@@ -10,6 +10,8 @@ import importlib.util
 import json
 import pathlib
 
+import pytest
+
 _PATH = pathlib.Path(__file__).resolve().parents[1] / "iptv_checker" / "notify_report.py"
 _spec = importlib.util.spec_from_file_location("ic_notify_report", _PATH)
 nr = importlib.util.module_from_spec(_spec)
@@ -17,12 +19,21 @@ _spec.loader.exec_module(nr)
 
 
 def _settings(rules, defaults="ticker", **extra):
+    """A COMPLETE Newsflasharr settings dict, using its REAL setting ids.
+
+    These names come from newsflasharr/channels.py. An earlier version of this
+    fixture invented smtp_host and smtp_port, which do not exist there, and the
+    code under test invented the same two, so the tests and the implementation
+    agreed with each other and were wrong together. The preflight could never
+    pass against a real install. A test that mirrors the implementation's
+    assumption cannot detect that the assumption is false.
+    """
     base = {
         "routing_rules": json.dumps(rules) if not isinstance(rules, str) else rules,
         "default_channels": defaults,
-        "smtp_host": "mail.example",
-        "smtp_port": "587",
+        "smtp_server": "mail.example:587",
         "smtp_from": "a@example.com",
+        "smtp_username": "a@example.com",
         "smtp_to": "b@example.com",
         "smtp_password": "set",
     }
@@ -133,13 +144,49 @@ def test_preflight_refuses_when_a_rule_matches_a_different_event():
 
 def test_preflight_reports_missing_smtp_keys_by_NAME_never_by_value():
     settings = _settings([_SMTP_RULE])
-    settings["smtp_host"] = ""
-    settings["smtp_password"] = ""
+    settings["smtp_server"] = ""
     ok, problems = nr.preflight(settings)
     assert ok is False
-    joined = " ".join(problems)
-    assert "smtp_host" in joined
-    assert "smtp_password" in joined
+    assert "smtp_server" in " ".join(problems)
+
+
+def test_a_password_is_not_required():
+    """Newsflasharr supports an unauthenticated relay, so demanding a password
+    would refuse a working setup."""
+    settings = _settings([_SMTP_RULE])
+    settings["smtp_password"] = ""
+    ok, problems = nr.preflight(settings)
+    assert ok is True, problems
+
+
+def test_smtp_username_alone_satisfies_the_from_address():
+    """channels.py falls back to smtp_username when smtp_from is unset."""
+    settings = _settings([_SMTP_RULE])
+    settings["smtp_from"] = ""
+    ok, problems = nr.preflight(settings)
+    assert ok is True, problems
+
+
+def test_no_from_address_at_all_is_reported():
+    settings = _settings([_SMTP_RULE])
+    settings["smtp_from"] = ""
+    settings["smtp_username"] = ""
+    ok, problems = nr.preflight(settings)
+    assert ok is False
+    assert "smtp_from" in " ".join(problems)
+
+
+def test_the_checked_key_names_exist_in_newsflasharr():
+    """The bug this file failed to catch: names invented in both the code and
+    the fixture. Read the real ids from the sibling plugin where present."""
+    import pathlib
+    src = pathlib.Path(__file__).resolve().parents[2] / "notifier" / "newsflasharr" / "plugin.py"
+    if not src.exists():
+        pytest.skip("Newsflasharr is not present in this checkout")
+    text = src.read_text(encoding="utf-8", errors="replace")
+    for key in nr.SMTP_REQUIRED_KEYS + nr.SMTP_FROM_KEYS:
+        assert ('"id": "%s"' % key) in text, (
+            "%s is not a Newsflasharr setting id, so the preflight can never pass" % key)
 
 
 def test_preflight_never_leaks_a_setting_value():
@@ -167,11 +214,10 @@ def test_no_smtp_setting_VALUE_ever_appears_in_the_readout():
     `default_channels` appearing is the message working rather than a leak: a
     channel name is not a secret and the operator needs it to fix the routing."""
     settings = _settings([])
-    settings["smtp_host"] = ""
-    settings["smtp_password"] = ""
+    settings["smtp_server"] = ""
     ok, problems = nr.preflight(settings)
     joined = " ".join(problems)
-    for key in nr.SMTP_REQUIRED_KEYS + nr.SMTP_SECRET_KEYS:
+    for key in nr.SMTP_REQUIRED_KEYS + nr.SMTP_FROM_KEYS:
         value = settings.get(key)
         if isinstance(value, str) and value:
             assert value not in joined, "value of %s leaked into the readout" % key
