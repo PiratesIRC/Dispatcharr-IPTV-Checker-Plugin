@@ -362,7 +362,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.2181110"
+    version = "1.26.2181303"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -488,7 +488,7 @@ class Plugin:
         """
         guard = f"{lock_path}.reclaim"
         try:
-            gfd = os.open(guard, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            gfd = os.open(guard, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
             # Another reclaimer holds the guard. If it was left by a previous
             # container, clear it; otherwise back off and let it finish.
@@ -514,7 +514,11 @@ class Plugin:
             # empty-slot gap a top-level creator could win, on POSIX or Windows).
             new_path = f"{lock_path}.new.{my_pid}"
             try:
-                with open(new_path, 'w') as f:
+                # Same 0o600 as the two os.open sites above: the builtin open()
+                # would take the process umask instead, so the reclaim path would
+                # install a world-readable lock over the restricted one it replaced.
+                nfd = os.open(new_path, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+                with os.fdopen(nfd, 'w') as f:
                     f.write(f"{my_pid}\n{my_token}")
                     f.flush()
                     os.fsync(f.fileno())
@@ -608,7 +612,7 @@ class Plugin:
         # Bounded: each iteration either returns or clears one stale obstacle.
         for _attempt in range(8):
             try:
-                fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+                fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
             except FileExistsError:
                 holder_pid, holder_token, readable = self._read_scheduler_lock(lock_path)
                 if holder_pid == my_pid and not (my_token and holder_token and holder_token != my_token):

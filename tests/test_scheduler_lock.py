@@ -136,3 +136,59 @@ def test_concurrent_reclaim_of_dead_pid_same_token(plugin, pmod, monkeypatch, tm
             f.write(f"{dead_pid}\nnewboot:200")  # current token, dead PID
         winners = _elect(plugin, n=8)
         assert len(winners) == 1, f"round {round_no}: expected one owner, got {winners}"
+
+
+def _record_open_modes(pmod, monkeypatch):
+    """Record (path, mode) for every os.open the election performs.
+
+    Asserting on the MODE ARGUMENT rather than on stat() output keeps this test
+    meaningful on Windows, where the filesystem does not carry POSIX permission
+    bits and st_mode always reads 0o666 or 0o444.
+    """
+    calls = []
+    real_open = pmod.os.open
+
+    def spy(path, flags, mode=0o777, *args, **kwargs):
+        calls.append((str(path), mode))
+        return real_open(path, flags, mode, *args, **kwargs)
+
+    monkeypatch.setattr(pmod.os, "open", spy)
+    return calls
+
+
+def test_fresh_lock_is_not_world_readable(plugin, pmod, monkeypatch, tmp_path):
+    """CodeQL py/overly-permissive-file, reported on Dispatcharr/Plugins PR #216.
+
+    The election lock holds a PID and a container boot token and is read only by
+    Dispatcharr's own processes, so nothing outside the owning user needs access.
+    """
+    lock_file = _install_patches(plugin, pmod, monkeypatch, tmp_path)
+    _install_patches.tl.pid = 4242
+    calls = _record_open_modes(pmod, monkeypatch)
+
+    assert plugin._acquire_scheduler_lock() is True
+
+    created = [(p, m) for p, m in calls if p.startswith(lock_file)]
+    assert created, "the election created no file, so this test proves nothing"
+    for path, mode in created:
+        assert mode & 0o077 == 0, f"{path} created with group/other access: {oct(mode)}"
+
+
+def test_reclaim_guard_and_replacement_lock_are_not_world_readable(plugin, pmod, monkeypatch, tmp_path):
+    """The reclaim path creates two more files: the exclusive guard and the
+    replacement lock that is renamed over the stale one. Both carry the same PID
+    and token, so both need the same restriction."""
+    lock_file = _install_patches(plugin, pmod, monkeypatch, tmp_path)
+    _install_patches.tl.pid = 4242
+    with open(lock_file, "w") as f:
+        f.write("123\noldboot:100")  # previous-container lock forces a reclaim
+    calls = _record_open_modes(pmod, monkeypatch)
+
+    assert plugin._acquire_scheduler_lock() is True
+
+    paths = [p for p, _m in calls]
+    assert any(p.endswith(".reclaim") for p in paths), "the reclaim guard was never created"
+    assert any(".new." in p for p in paths), "the replacement lock was not created through os.open"
+    for path, mode in calls:
+        if path.startswith(lock_file):
+            assert mode & 0o077 == 0, f"{path} created with group/other access: {oct(mode)}"
