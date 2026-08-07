@@ -1,60 +1,82 @@
 <title>IPTV Checker report</title><style>
 :root {
+  color-scheme: light dark;
   --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px;
-  --bg: #ffffff; --surface: #f6f7f9; --border: #d6dae0;
-  --ink: #14181d; --ink-muted: #4a5560; --ink-dim: #66727e;
-  --dead: #b3261e; --provider: #8a4c00; --unproven: #1a5fb4;
-  --backup: #1a7f37; --slow: #8a4c00; --audio: #1a5fb4;
-  --focus: #1a5fb4;
+  --bg: #fbfbfd; --surface: #ffffff; --border: #e3e5ea;
+  --zebra: #f7f8fa; --head: #f2f3f6; --line-soft: #e6e8ec; --track: #e1e0d9;
+  --ink: #16181d; --ink-muted: #5c616b; --ink-dim: #656a76;
+  --lift: 0 1px 2px rgba(16, 18, 29, .05), 0 4px 12px rgba(16, 18, 29, .04);
+  --dead: #d03b3b; --provider: #b06f00; --unproven: #2a78d6;
+  --backup: #1baf7a; --slow: #898781; --audio: #7a5cd6;
+  --focus: #2a78d6;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #14181d; --surface: #1d232a; --border: #333c46;
-    --ink: #eef1f4; --ink-muted: #b6c0ca; --ink-dim: #99a5b1;
-    --dead: #ff8a80; --provider: #ffb86b; --unproven: #8ab4f8;
-    --backup: #7ee2a0; --slow: #ffb86b; --audio: #8ab4f8;
-    --focus: #8ab4f8;
+    --bg: #14161a; --surface: #1a1d22; --border: #2a2e35;
+    --zebra: #191c21; --head: #1e2127; --line-soft: #262a31; --track: #2c2c2a;
+    --ink: #e8eaed; --ink-muted: #a7adb8; --ink-dim: #9aa0ab;
+    --lift: 0 1px 2px rgba(0, 0, 0, .35), 0 4px 12px rgba(0, 0, 0, .25);
+    --dead: #e66767; --provider: #f2c98a; --unproven: #3987e5;
+    --backup: #199e70; --slow: #898781; --audio: #a68bf0;
+    --focus: #3987e5;
   }
 }
 :root[data-theme="dark"] {
-  --bg: #14181d; --surface: #1d232a; --border: #333c46;
-  --ink: #eef1f4; --ink-muted: #b6c0ca; --ink-dim: #99a5b1;
-  --dead: #ff8a80; --provider: #ffb86b; --unproven: #8ab4f8;
-  --backup: #7ee2a0; --slow: #ffb86b; --audio: #8ab4f8;
-  --focus: #8ab4f8;
+  --bg: #14161a; --surface: #1a1d22; --border: #2a2e35;
+  --zebra: #191c21; --head: #1e2127; --line-soft: #262a31; --track: #2c2c2a;
+  --ink: #e8eaed; --ink-muted: #a7adb8; --ink-dim: #9aa0ab;
+  --lift: 0 1px 2px rgba(0, 0, 0, .35), 0 4px 12px rgba(0, 0, 0, .25);
+  --dead: #e66767; --provider: #f2c98a; --unproven: #3987e5;
+  --backup: #199e70; --slow: #898781; --audio: #a68bf0;
+  --focus: #3987e5;
 }
 :root[data-theme="light"] {
-  --bg: #ffffff; --surface: #f6f7f9; --border: #d6dae0;
-  --ink: #14181d; --ink-muted: #4a5560; --ink-dim: #66727e;
-  --dead: #b3261e; --provider: #8a4c00; --unproven: #1a5fb4;
-  --backup: #1a7f37; --slow: #8a4c00; --audio: #1a5fb4;
-  --focus: #1a5fb4;
+  --bg: #fbfbfd; --surface: #ffffff; --border: #e3e5ea;
+  --zebra: #f7f8fa; --head: #f2f3f6; --line-soft: #e6e8ec; --track: #e1e0d9;
+  --ink: #16181d; --ink-muted: #5c616b; --ink-dim: #656a76;
+  --lift: 0 1px 2px rgba(16, 18, 29, .05), 0 4px 12px rgba(16, 18, 29, .04);
+  --dead: #d03b3b; --provider: #b06f00; --unproven: #2a78d6;
+  --backup: #1baf7a; --slow: #898781; --audio: #7a5cd6;
+  --focus: #2a78d6;
 }
 body {
   margin: 0; padding: var(--s5);
   background: var(--bg); color: var(--ink);
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  font-size: 20px; line-height: 1.55;
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
-header { display: flex; align-items: center; gap: var(--s4); margin-bottom: var(--s5); }
-header img { width: 64px; height: 64px; }
-h1 { font-size: 30px; margin: 0 0 var(--s1) 0; }
-.meta { color: var(--ink-muted); font-size: 17px; }
+/* The logo sits beside the title rather than above it, so the masthead costs
+   one line of vertical space instead of three. */
+.masthead { display: flex; align-items: center; gap: var(--s3); margin-bottom: var(--s5); }
+.mark { flex: none; width: 48px; height: 48px; display: block; }
+h1 { font-size: 22px; line-height: 1.2; letter-spacing: -.01em; margin: 0 0 var(--s1) 0; }
+.meta { color: var(--ink-muted); font-size: 15px; }
 .totals { display: flex; flex-wrap: wrap; gap: var(--s3); margin-bottom: var(--s5); }
 .tile {
   background: var(--surface); border: 1px solid var(--border);
-  border-radius: 8px; padding: var(--s3) var(--s4); min-width: 128px;
+  border-radius: 10px; box-shadow: var(--lift);
+  padding: var(--s3) var(--s4); min-width: 128px;
 }
-.tile .n { font-size: 28px; font-weight: 600; }
-.tile .k { color: var(--ink-muted); font-size: 16px; }
+.tile .n { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tile .k { color: var(--ink-muted); font-size: 15px; }
 .chart { margin-bottom: var(--s5); }
-details {
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: 8px; margin-bottom: var(--s3); padding: var(--s3) var(--s4);
+/* Flat disclosure rows separated by a rule, not stacked cards: at this row
+   count a card per section reads as a wall of boxes. */
+details { border-top: 1px solid var(--track); padding: var(--s1) 0 var(--s2); }
+summary {
+  cursor: pointer; font-size: 17px; font-weight: 600;
+  padding: var(--s2) var(--s1); list-style: none;
 }
-summary { cursor: pointer; font-size: 22px; font-weight: 600; }
+summary::-webkit-details-marker { display: none; }
+summary::before {
+  content: '\25B8'; display: inline-block; width: 1em;
+  color: var(--ink-dim); transition: transform .12s;
+}
+details[open] > summary::before { transform: rotate(90deg); }
 summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
-.dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: var(--s2); }
+.dot {
+  display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+  margin-right: var(--s2); vertical-align: baseline;
+}
 .dot-dead { background: var(--dead); }
 .dot-provider { background: var(--provider); }
 .dot-unproven { background: var(--unproven); }
@@ -62,20 +84,21 @@ summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 .dot-slow { background: var(--slow); }
 .dot-audio { background: var(--audio); }
 .glyph { margin-right: var(--s2); }
-.count {
-  background: var(--bg); border: 1px solid var(--border);
-  border-radius: 999px; padding: 0 var(--s2); margin-left: var(--s2);
-  font-size: 17px; color: var(--ink-muted);
-}
-.sub { color: var(--ink-muted); font-size: 17px; margin: var(--s2) 0 var(--s1) 0; }
-.act { color: var(--ink); font-size: 17px; margin: 0 0 var(--s2) 0; font-weight: 600; }
+/* The heading is 600; the count staying at 400 is what separates the two, so
+   the number reads as data rather than as part of the label. */
+.count { font-weight: 400; color: var(--ink-dim); margin-left: var(--s2);
+         font-variant-numeric: tabular-nums; }
+.sub { color: var(--ink-muted); font-size: 15px; margin: var(--s2) 0 var(--s1) 0; }
+.act { color: var(--ink); font-size: 15px; margin: 0 0 var(--s2) 0; font-weight: 600; }
 .hint { color: var(--ink-dim); font-size: 15px; margin: 0 0 var(--s3) 0; }
 .scroll { overflow-x: auto; }
-table { border-collapse: collapse; width: 100%; font-size: 17px; }
-th, td { text-align: left; padding: var(--s2) var(--s3); border-bottom: 1px solid var(--border); }
-th { color: var(--ink-muted); font-weight: 600; }
+table { border-collapse: collapse; width: 100%; font-size: 15px; }
+th, td { text-align: left; padding: var(--s2) var(--s3); border-bottom: 1px solid var(--line-soft); }
+th { background: var(--head); color: var(--ink-muted); font-weight: 600;
+     position: sticky; top: 0; }
+tr:nth-child(even) td { background: var(--zebra); }
 td.num { text-align: right; font-variant-numeric: tabular-nums; }
-.empty { color: var(--ink-dim); font-size: 17px; margin: var(--s2) 0; }
+.empty { color: var(--ink-dim); font-size: 15px; margin: var(--s2) 0; }
 .bar-label { fill: var(--ink-muted); font-size: 13px; }
 .bar-dead { fill: var(--dead); }
 .bar-provider { fill: var(--provider); }
@@ -83,10 +106,11 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .bar-backup { fill: var(--backup); }
 .bar-slow { fill: var(--slow); }
 .bar-audio { fill: var(--audio); }
-footer {
+.colophon {
   margin-top: var(--s5); padding-top: var(--s4);
-  border-top: 1px solid var(--border);
-  color: var(--ink-muted); font-size: 16px;
+  border-top: 1px solid var(--track);
+  color: var(--ink-dim); font-size: 15px;
 }
-footer a { color: var(--focus); }
-</style><header><div><h1>IPTV Checker report</h1><div class="meta">Generated 2026-08-05 12:00:00 . Plugin version 0.0.0-sample</div></div></header><div class="totals"><div class="tile"><div class="n">7</div><div class="k">channels checked</div></div><div class="tile"><div class="n">4</div><div class="k">channels playing</div></div><div class="tile"><div class="n">6</div><div class="k">listed below</div></div><div class="tile"><div class="n">1</div><div class="k">no issues found</div></div><div class="tile"><div class="n">10</div><div class="k">streams tested</div></div></div><p class="sub">Channels with nothing wrong are counted but not listed, so the groups below hold 6 of 7 channels.</p><p class="act">The provider rate limited 1 stream request(s) during this run, so some results may be wrong. Re-run before acting on anything below.</p><p class="hint">Detectors that ran: blank screen, placeholder file. Not measured, so a zero here means nobody looked: frozen video, silent audio.</p><svg class="chart" role="img" aria-label="Channel counts by group" viewBox="0 0 700 192" width="100%" height="192"><text class="bar-label" x="0" y="18">Confirmed dead</text><rect class="bar-dead" x="250" y="0" width="380" height="26" rx="3"></rect><text class="bar-label" x="638" y="18">1</text><text class="bar-label" x="0" y="50">Dead at the provider</text><rect class="bar-provider" x="250" y="32" width="380" height="26" rx="3"></rect><text class="bar-label" x="638" y="50">1</text><text class="bar-label" x="0" y="82">Not judged</text><rect class="bar-unproven" x="250" y="64" width="380" height="26" rx="3"></rect><text class="bar-label" x="638" y="82">1</text><text class="bar-label" x="0" y="114">Working on a backup stream</text><rect class="bar-backup" x="250" y="96" width="380" height="26" rx="3"></rect><text class="bar-label" x="638" y="114">1</text><text class="bar-label" x="0" y="146">Low framerate</text><rect class="bar-slow" x="250" y="128" width="380" height="26" rx="3"></rect><text class="bar-label" x="638" y="146">1</text><text class="bar-label" x="0" y="178">Audio only</text><rect class="bar-audio" x="250" y="160" width="380" height="26" rx="3"></rect><text class="bar-label" x="638" y="178">1</text></svg><details><summary><span class="dot dot-dead" aria-hidden="true"></span><span class="glyph" aria-hidden="true">🗑</span>Confirmed dead<span class="count">1</span></summary><p class="sub">Every stream on these channels failed to connect, and none was merely rate limited. This is the only group the dead-channel rename, move and delete actions should act on.</p><p class="act">What to do: Rename, move or delete them.</p><p class="hint">Expand this section before using your browser find on this page. Text inside a collapsed section is not searchable in some browsers.</p><div class="scroll"><table><thead><tr><th>Channel</th><th>Streams</th><th>Playing</th><th>Resolution</th><th>Framerate</th><th>Reasons</th></tr></thead><tbody><tr><td>Sample All Dead</td><td class="num">2</td><td class="num">0</td><td></td><td class="num"></td><td>Connection Refused, Timeout</td></tr></tbody></table></div></details><details><summary><span class="dot dot-provider" aria-hidden="true"></span><span class="glyph" aria-hidden="true">⚠</span>Dead at the provider<span class="count">1</span></summary><p class="sub">Every stream connected and returned a blank picture, a frozen picture, silence, or a fixed-duration placeholder file. The provider is serving a dead channel on every mirror, so there is no failover target and nothing local to retry.</p><p class="act">What to do: Hide them, or raise it with the provider. Renaming changes nothing.</p><p class="hint">Expand this section before using your browser find on this page. Text inside a collapsed section is not searchable in some browsers.</p><div class="scroll"><table><thead><tr><th>Channel</th><th>Streams</th><th>Playing</th><th>Resolution</th><th>Framerate</th><th>Reasons</th></tr></thead><tbody><tr><td>Sample Provider Slate</td><td class="num">1</td><td class="num">0</td><td></td><td class="num"></td><td>Black Screen</td></tr></tbody></table></div></details><details><summary><span class="dot dot-unproven" aria-hidden="true"></span><span class="glyph" aria-hidden="true">⏳</span>Not judged<span class="count">1</span></summary><p class="sub">No stream played, but at least one was skipped rather than tested: rate limited by the provider, or on a host this checker cannot validate. These channels have NOT been shown to be broken.</p><p class="act">What to do: Re-run the check later, or with fewer parallel workers. Do not delete these.</p><p class="hint">Expand this section before using your browser find on this page. Text inside a collapsed section is not searchable in some browsers.</p><div class="scroll"><table><thead><tr><th>Channel</th><th>Streams</th><th>Playing</th><th>Resolution</th><th>Framerate</th><th>Reasons</th></tr></thead><tbody><tr><td>Sample Rate Limited</td><td class="num">2</td><td class="num">0</td><td></td><td class="num"></td><td>Rate Limited, Timeout</td></tr></tbody></table></div></details><details><summary><span class="dot dot-backup" aria-hidden="true"></span><span class="glyph" aria-hidden="true">✅</span>Working on a backup stream<span class="count">1</span></summary><p class="sub">At least one stream failed but another plays, so the channel works. It appears here only so the failed streams are visible and the channel is not mistaken for a broken one.</p><p class="act">What to do: Nothing. Optionally reorder the streams so the working one is first.</p><p class="hint">Expand this section before using your browser find on this page. Text inside a collapsed section is not searchable in some browsers.</p><div class="scroll"><table><thead><tr><th>Channel</th><th>Streams</th><th>Playing</th><th>Resolution</th><th>Framerate</th><th>Reasons</th></tr></thead><tbody><tr><td>Sample Working On Backup</td><td class="num">2</td><td class="num">1</td><td>1920x1080</td><td class="num">50.0</td><td>Timeout</td></tr></tbody></table></div></details><details><summary><span class="dot dot-slow" aria-hidden="true"></span><span class="glyph" aria-hidden="true">🐢</span>Low framerate<span class="count">1</span></summary><p class="sub">Every playable stream on these channels runs below 24 frames per second. Film at 24 and PAL at 25 are not counted.</p><p class="act">What to do: Tag or move them if choppy playback matters to you.</p><p class="hint">Expand this section before using your browser find on this page. Text inside a collapsed section is not searchable in some browsers.</p><div class="scroll"><table><thead><tr><th>Channel</th><th>Streams</th><th>Playing</th><th>Resolution</th><th>Framerate</th><th>Reasons</th></tr></thead><tbody><tr><td>Sample Slow Channel</td><td class="num">1</td><td class="num">1</td><td>720x576</td><td class="num">15.0</td><td></td></tr></tbody></table></div></details><details><summary><span class="dot dot-audio" aria-hidden="true"></span><span class="glyph" aria-hidden="true">🔊</span>Audio only<span class="count">1</span></summary><p class="sub">These carry sound and no video. That is normal for radio stations and is not a fault.</p><p class="act">What to do: Nothing. They are listed so they are never mistaken for channels with no picture.</p><p class="hint">Expand this section before using your browser find on this page. Text inside a collapsed section is not searchable in some browsers.</p><div class="scroll"><table><thead><tr><th>Channel</th><th>Streams</th><th>Playing</th><th>Resolution</th><th>Framerate</th><th>Reasons</th></tr></thead><tbody><tr><td>Sample Radio Station</td><td class="num">1</td><td class="num">0</td><td></td><td class="num"></td><td>No Video Stream</td></tr></tbody></table></div></details><footer>Built by the IPTV Checker plugin. <a href="https://github.com/PiratesIRC/Dispatcharr-IPTV-Checker-Plugin">Source</a> . <a href="https://github.com/PiratesIRC/Dispatcharr-IPTV-Checker-Plugin/issues">Report a problem</a>.</footer>
+.colophon p { margin: 0 0 var(--s1) 0; }
+.colophon a { color: var(--focus); }
+</style><header class="masthead"><div><h1>IPTV Checker report</h1><div class="meta">Generated 2026-08-05 12:00:00 . Plugin version 0.0.0-sample</div></div></header><div class="totals"><div class="tile"><div class="n">7</div><div class="k">channels checked</div></div><div class="tile"><div class="n">4</div><div class="k">channels playing</div></div><div class="tile"><div class="n">6</div><div class="k">listed below</div></div><div class="tile"><div class="n">1</div><div class="k">no issues found</div></div><div class="tile"><div class="n">10</div><div class="k">streams tested</div></div></div><p class="sub">Channels with nothing wrong are counted but not listed, so the groups below hold 6 of 7 channels.</p><p class="act">The provider rate limited 1 stream request(s) during this run, so some results may be wrong. Re-run before acting on anything below.</p><p class="hint">Detectors that ran: blank screen, placeholder file. Not measured, so a zero here means nobody looked: frozen video, silent audio.</p><svg class="chart" role="img" aria-label="Channel counts by group" viewBox="0 0 700 192" width="100%" height="192"><text class="bar-label" x="0" y="18">Confirmed dead</text><rect class="bar-dead" x="250" y="0" width="380" height="26" rx="3"></rect><text class="bar-label" x="638" y="18">1</text><text class="bar-label" x="0" y="50">Dead at the provider</text><rect class="bar-provider" x="250" y="32" width="380" height="26" rx="3"></rect><text class="bar-label" x="638" y="50">1</text><text class="bar-label" x="0" y="82">Not judged</text><rect class="bar-unproven" x="250" y="64" width="380" height="26" rx="3"></rect><text class="bar-label" x="638" y="82">1</text><text class="bar-label" x="0" y="114">Working on a backup stream</text><rect class="bar-backup" x="250" y="96" width="380" height="26" rx="3"></rect><text class="bar-label" x="638" y="114">1</text><text class="bar-label" x="0" y="146">Low framerate</text><rect class="bar-slow" x="250" y="128" width="380" height="26" rx="3"></rect><text class="bar-label" x="638" y="146">1</text><text class="bar-label" x="0" y="178">Audio only</text><rect class="bar-audio" x="250" y="160" width="380" height="26" rx="3"></rect><text class="bar-label" x="638" y="178">1</text></svg><details><summary><span class="dot dot-dead" aria-hidden="true"></span><span class="glyph" aria-hidden="true">🗑</span>Confirmed dead<span class="count">1</span></summary><p class="sub">Every stream on these channels failed to connect, and none was merely rate limited. This is the only group the dead-channel rename, move and delete actions should act on.</p><p class="act">What to do: Rename, move or delete them.</p><p class="hint">Expand this section before using your browser find on this page. Text inside a collapsed section is not searchable in some browsers.</p><div class="scroll"><table><thead><tr><th>Channel</th><th>Streams</th><th>Playing</th><th>Resolution</th><th>Framerate</th><th>Reasons</th></tr></thead><tbody><tr><td>Sample All Dead</td><td class="num">2</td><td class="num">0</td><td></td><td class="num"></td><td>Connection Refused, Timeout</td></tr></tbody></table></div></details><details><summary><span class="dot dot-provider" aria-hidden="true"></span><span class="glyph" aria-hidden="true">⚠</span>Dead at the provider<span class="count">1</span></summary><p class="sub">Every stream connected and returned a blank picture, a frozen picture, silence, or a fixed-duration placeholder file. The provider is serving a dead channel on every mirror, so there is no failover target and nothing local to retry.</p><p class="act">What to do: Hide them, or raise it with the provider. Renaming changes nothing.</p><p class="hint">Expand this section before using your browser find on this page. Text inside a collapsed section is not searchable in some browsers.</p><div class="scroll"><table><thead><tr><th>Channel</th><th>Streams</th><th>Playing</th><th>Resolution</th><th>Framerate</th><th>Reasons</th></tr></thead><tbody><tr><td>Sample Provider Slate</td><td class="num">1</td><td class="num">0</td><td></td><td class="num"></td><td>Black Screen</td></tr></tbody></table></div></details><details><summary><span class="dot dot-unproven" aria-hidden="true"></span><span class="glyph" aria-hidden="true">⏳</span>Not judged<span class="count">1</span></summary><p class="sub">No stream played, but at least one was skipped rather than tested: rate limited by the provider, or on a host this checker cannot validate. These channels have NOT been shown to be broken.</p><p class="act">What to do: Re-run the check later, or with fewer parallel workers. Do not delete these.</p><p class="hint">Expand this section before using your browser find on this page. Text inside a collapsed section is not searchable in some browsers.</p><div class="scroll"><table><thead><tr><th>Channel</th><th>Streams</th><th>Playing</th><th>Resolution</th><th>Framerate</th><th>Reasons</th></tr></thead><tbody><tr><td>Sample Rate Limited</td><td class="num">2</td><td class="num">0</td><td></td><td class="num"></td><td>Rate Limited, Timeout</td></tr></tbody></table></div></details><details><summary><span class="dot dot-backup" aria-hidden="true"></span><span class="glyph" aria-hidden="true">✅</span>Working on a backup stream<span class="count">1</span></summary><p class="sub">At least one stream failed but another plays, so the channel works. It appears here only so the failed streams are visible and the channel is not mistaken for a broken one.</p><p class="act">What to do: Nothing. Optionally reorder the streams so the working one is first.</p><p class="hint">Expand this section before using your browser find on this page. Text inside a collapsed section is not searchable in some browsers.</p><div class="scroll"><table><thead><tr><th>Channel</th><th>Streams</th><th>Playing</th><th>Resolution</th><th>Framerate</th><th>Reasons</th></tr></thead><tbody><tr><td>Sample Working On Backup</td><td class="num">2</td><td class="num">1</td><td>1920x1080</td><td class="num">50.0</td><td>Timeout</td></tr></tbody></table></div></details><details><summary><span class="dot dot-slow" aria-hidden="true"></span><span class="glyph" aria-hidden="true">🐢</span>Low framerate<span class="count">1</span></summary><p class="sub">Every playable stream on these channels runs below 24 frames per second. Film at 24 and PAL at 25 are not counted.</p><p class="act">What to do: Tag or move them if choppy playback matters to you.</p><p class="hint">Expand this section before using your browser find on this page. Text inside a collapsed section is not searchable in some browsers.</p><div class="scroll"><table><thead><tr><th>Channel</th><th>Streams</th><th>Playing</th><th>Resolution</th><th>Framerate</th><th>Reasons</th></tr></thead><tbody><tr><td>Sample Slow Channel</td><td class="num">1</td><td class="num">1</td><td>720x576</td><td class="num">15.0</td><td></td></tr></tbody></table></div></details><details><summary><span class="dot dot-audio" aria-hidden="true"></span><span class="glyph" aria-hidden="true">🔊</span>Audio only<span class="count">1</span></summary><p class="sub">These carry sound and no video. That is normal for radio stations and is not a fault.</p><p class="act">What to do: Nothing. They are listed so they are never mistaken for channels with no picture.</p><p class="hint">Expand this section before using your browser find on this page. Text inside a collapsed section is not searchable in some browsers.</p><div class="scroll"><table><thead><tr><th>Channel</th><th>Streams</th><th>Playing</th><th>Resolution</th><th>Framerate</th><th>Reasons</th></tr></thead><tbody><tr><td>Sample Radio Station</td><td class="num">1</td><td class="num">0</td><td></td><td class="num"></td><td>No Video Stream</td></tr></tbody></table></div></details><footer class="colophon"><p>Built by IPTV Checker, a stream checker for Dispatcharr. It judges a channel by all of its streams, so a working backup never marks it dead.</p><p><a href="https://github.com/PiratesIRC/Dispatcharr-IPTV-Checker-Plugin">Source and documentation</a> . <a href="https://github.com/PiratesIRC/Dispatcharr-IPTV-Checker-Plugin/issues">Report a problem</a></p></footer>

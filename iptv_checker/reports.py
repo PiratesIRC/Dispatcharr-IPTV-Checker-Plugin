@@ -351,63 +351,105 @@ _DOT_GLYPH = {
 # `!important` unnecessary anywhere in this sheet.
 #
 # Type is sized for reading a television across a room. Do not shrink it.
+# Matched to Dustarr's report stylesheet (metricsarr/dustarr/reports.py) on
+# 2026-08-07, at the operator's request: same neutral palette, same spacing
+# scale, same 15 / 17 / 22 type scale, same raised card with a soft lift, same
+# zebra table with a sticky head, same flat disclosure rows with a rotating
+# marker, same masthead with the logo beside the title, same colophon.
+#
+# Two deliberate differences, both forced by this report rather than by taste:
+#
+# 1. THE TOKEN NAMES --surface AND --border ARE KEPT. Dustarr calls the same
+#    two things --raised and --line. The names are load-bearing here because
+#    tests/test_report_render.py asserts both themes redeclare them, and a
+#    rename would buy nothing visible.
+# 2. SIX CATEGORY HUES, NOT FOUR. Dustarr colours four usage categories; this
+#    report has six verdicts. Four take Dustarr's own values (red, blue, green,
+#    and its grey for slow). The amber for provider-side failure and the violet
+#    for audio-only have no counterpart there and were chosen to sit in the same
+#    saturation family.
+#
+# summary:focus-visible is additional to Dustarr and must stay: that ring is how
+# the page is driven by a television remote D-pad.
 _CSS = """
 :root {
+  color-scheme: light dark;
   --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px;
-  --bg: #ffffff; --surface: #f6f7f9; --border: #d6dae0;
-  --ink: #14181d; --ink-muted: #4a5560; --ink-dim: #66727e;
-  --dead: #b3261e; --provider: #8a4c00; --unproven: #1a5fb4;
-  --backup: #1a7f37; --slow: #8a4c00; --audio: #1a5fb4;
-  --focus: #1a5fb4;
+  --bg: #fbfbfd; --surface: #ffffff; --border: #e3e5ea;
+  --zebra: #f7f8fa; --head: #f2f3f6; --line-soft: #e6e8ec; --track: #e1e0d9;
+  --ink: #16181d; --ink-muted: #5c616b; --ink-dim: #656a76;
+  --lift: 0 1px 2px rgba(16, 18, 29, .05), 0 4px 12px rgba(16, 18, 29, .04);
+  --dead: #d03b3b; --provider: #b06f00; --unproven: #2a78d6;
+  --backup: #1baf7a; --slow: #898781; --audio: #7a5cd6;
+  --focus: #2a78d6;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #14181d; --surface: #1d232a; --border: #333c46;
-    --ink: #eef1f4; --ink-muted: #b6c0ca; --ink-dim: #99a5b1;
-    --dead: #ff8a80; --provider: #ffb86b; --unproven: #8ab4f8;
-    --backup: #7ee2a0; --slow: #ffb86b; --audio: #8ab4f8;
-    --focus: #8ab4f8;
+    --bg: #14161a; --surface: #1a1d22; --border: #2a2e35;
+    --zebra: #191c21; --head: #1e2127; --line-soft: #262a31; --track: #2c2c2a;
+    --ink: #e8eaed; --ink-muted: #a7adb8; --ink-dim: #9aa0ab;
+    --lift: 0 1px 2px rgba(0, 0, 0, .35), 0 4px 12px rgba(0, 0, 0, .25);
+    --dead: #e66767; --provider: #f2c98a; --unproven: #3987e5;
+    --backup: #199e70; --slow: #898781; --audio: #a68bf0;
+    --focus: #3987e5;
   }
 }
 :root[data-theme="dark"] {
-  --bg: #14181d; --surface: #1d232a; --border: #333c46;
-  --ink: #eef1f4; --ink-muted: #b6c0ca; --ink-dim: #99a5b1;
-  --dead: #ff8a80; --provider: #ffb86b; --unproven: #8ab4f8;
-  --backup: #7ee2a0; --slow: #ffb86b; --audio: #8ab4f8;
-  --focus: #8ab4f8;
+  --bg: #14161a; --surface: #1a1d22; --border: #2a2e35;
+  --zebra: #191c21; --head: #1e2127; --line-soft: #262a31; --track: #2c2c2a;
+  --ink: #e8eaed; --ink-muted: #a7adb8; --ink-dim: #9aa0ab;
+  --lift: 0 1px 2px rgba(0, 0, 0, .35), 0 4px 12px rgba(0, 0, 0, .25);
+  --dead: #e66767; --provider: #f2c98a; --unproven: #3987e5;
+  --backup: #199e70; --slow: #898781; --audio: #a68bf0;
+  --focus: #3987e5;
 }
 :root[data-theme="light"] {
-  --bg: #ffffff; --surface: #f6f7f9; --border: #d6dae0;
-  --ink: #14181d; --ink-muted: #4a5560; --ink-dim: #66727e;
-  --dead: #b3261e; --provider: #8a4c00; --unproven: #1a5fb4;
-  --backup: #1a7f37; --slow: #8a4c00; --audio: #1a5fb4;
-  --focus: #1a5fb4;
+  --bg: #fbfbfd; --surface: #ffffff; --border: #e3e5ea;
+  --zebra: #f7f8fa; --head: #f2f3f6; --line-soft: #e6e8ec; --track: #e1e0d9;
+  --ink: #16181d; --ink-muted: #5c616b; --ink-dim: #656a76;
+  --lift: 0 1px 2px rgba(16, 18, 29, .05), 0 4px 12px rgba(16, 18, 29, .04);
+  --dead: #d03b3b; --provider: #b06f00; --unproven: #2a78d6;
+  --backup: #1baf7a; --slow: #898781; --audio: #7a5cd6;
+  --focus: #2a78d6;
 }
 body {
   margin: 0; padding: var(--s5);
   background: var(--bg); color: var(--ink);
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  font-size: 20px; line-height: 1.55;
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
-header { display: flex; align-items: center; gap: var(--s4); margin-bottom: var(--s5); }
-header img { width: 64px; height: 64px; }
-h1 { font-size: 30px; margin: 0 0 var(--s1) 0; }
-.meta { color: var(--ink-muted); font-size: 17px; }
+/* The logo sits beside the title rather than above it, so the masthead costs
+   one line of vertical space instead of three. */
+.masthead { display: flex; align-items: center; gap: var(--s3); margin-bottom: var(--s5); }
+.mark { flex: none; width: 48px; height: 48px; display: block; }
+h1 { font-size: 22px; line-height: 1.2; letter-spacing: -.01em; margin: 0 0 var(--s1) 0; }
+.meta { color: var(--ink-muted); font-size: 15px; }
 .totals { display: flex; flex-wrap: wrap; gap: var(--s3); margin-bottom: var(--s5); }
 .tile {
   background: var(--surface); border: 1px solid var(--border);
-  border-radius: 8px; padding: var(--s3) var(--s4); min-width: 128px;
+  border-radius: 10px; box-shadow: var(--lift);
+  padding: var(--s3) var(--s4); min-width: 128px;
 }
-.tile .n { font-size: 28px; font-weight: 600; }
-.tile .k { color: var(--ink-muted); font-size: 16px; }
+.tile .n { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tile .k { color: var(--ink-muted); font-size: 15px; }
 .chart { margin-bottom: var(--s5); }
-details {
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: 8px; margin-bottom: var(--s3); padding: var(--s3) var(--s4);
+/* Flat disclosure rows separated by a rule, not stacked cards: at this row
+   count a card per section reads as a wall of boxes. */
+details { border-top: 1px solid var(--track); padding: var(--s1) 0 var(--s2); }
+summary {
+  cursor: pointer; font-size: 17px; font-weight: 600;
+  padding: var(--s2) var(--s1); list-style: none;
 }
-summary { cursor: pointer; font-size: 22px; font-weight: 600; }
+summary::-webkit-details-marker { display: none; }
+summary::before {
+  content: '\\25B8'; display: inline-block; width: 1em;
+  color: var(--ink-dim); transition: transform .12s;
+}
+details[open] > summary::before { transform: rotate(90deg); }
 summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
-.dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: var(--s2); }
+.dot {
+  display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+  margin-right: var(--s2); vertical-align: baseline;
+}
 .dot-dead { background: var(--dead); }
 .dot-provider { background: var(--provider); }
 .dot-unproven { background: var(--unproven); }
@@ -415,20 +457,21 @@ summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 .dot-slow { background: var(--slow); }
 .dot-audio { background: var(--audio); }
 .glyph { margin-right: var(--s2); }
-.count {
-  background: var(--bg); border: 1px solid var(--border);
-  border-radius: 999px; padding: 0 var(--s2); margin-left: var(--s2);
-  font-size: 17px; color: var(--ink-muted);
-}
-.sub { color: var(--ink-muted); font-size: 17px; margin: var(--s2) 0 var(--s1) 0; }
-.act { color: var(--ink); font-size: 17px; margin: 0 0 var(--s2) 0; font-weight: 600; }
+/* The heading is 600; the count staying at 400 is what separates the two, so
+   the number reads as data rather than as part of the label. */
+.count { font-weight: 400; color: var(--ink-dim); margin-left: var(--s2);
+         font-variant-numeric: tabular-nums; }
+.sub { color: var(--ink-muted); font-size: 15px; margin: var(--s2) 0 var(--s1) 0; }
+.act { color: var(--ink); font-size: 15px; margin: 0 0 var(--s2) 0; font-weight: 600; }
 .hint { color: var(--ink-dim); font-size: 15px; margin: 0 0 var(--s3) 0; }
 .scroll { overflow-x: auto; }
-table { border-collapse: collapse; width: 100%; font-size: 17px; }
-th, td { text-align: left; padding: var(--s2) var(--s3); border-bottom: 1px solid var(--border); }
-th { color: var(--ink-muted); font-weight: 600; }
+table { border-collapse: collapse; width: 100%; font-size: 15px; }
+th, td { text-align: left; padding: var(--s2) var(--s3); border-bottom: 1px solid var(--line-soft); }
+th { background: var(--head); color: var(--ink-muted); font-weight: 600;
+     position: sticky; top: 0; }
+tr:nth-child(even) td { background: var(--zebra); }
 td.num { text-align: right; font-variant-numeric: tabular-nums; }
-.empty { color: var(--ink-dim); font-size: 17px; margin: var(--s2) 0; }
+.empty { color: var(--ink-dim); font-size: 15px; margin: var(--s2) 0; }
 .bar-label { fill: var(--ink-muted); font-size: 13px; }
 .bar-dead { fill: var(--dead); }
 .bar-provider { fill: var(--provider); }
@@ -436,12 +479,13 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .bar-backup { fill: var(--backup); }
 .bar-slow { fill: var(--slow); }
 .bar-audio { fill: var(--audio); }
-footer {
+.colophon {
   margin-top: var(--s5); padding-top: var(--s4);
-  border-top: 1px solid var(--border);
-  color: var(--ink-muted); font-size: 16px;
+  border-top: 1px solid var(--track);
+  color: var(--ink-dim); font-size: 15px;
 }
-footer a { color: var(--focus); }
+.colophon p { margin: 0 0 var(--s1) 0; }
+.colophon a { color: var(--focus); }
 """
 
 _FIND_HINT = ("Expand this section before using your browser find on this page. "
@@ -637,9 +681,12 @@ def render_html(model):
 
     logo = _logo_data_uri(model.get("plugin_dir"))
 
-    out = ["<title>IPTV Checker report</title>", "<style>", _CSS, "</style>", "<header>"]
+    out = ["<title>IPTV Checker report</title>", "<style>", _CSS, "</style>",
+           '<header class="masthead">']
+    # The logo is optional by construction: no data URI renders no img element
+    # at all, rather than a broken-image icon.
     if logo:
-        out.append('<img src="%s" alt="">' % logo)
+        out.append('<img class="mark" src="%s" alt="" width="48" height="48">' % logo)
     out.extend([
         "<div><h1>IPTV Checker report</h1>",
         '<div class="meta">Generated ', _esc(stamp),
@@ -681,10 +728,11 @@ def render_html(model):
         out.append(_section_html(section))
 
     out.extend([
-        "<footer>",
-        'Built by the IPTV Checker plugin. ',
-        '<a href="', REPO_URL, '">Source</a> . ',
-        '<a href="', ISSUES_URL, '">Report a problem</a>.',
+        '<footer class="colophon">',
+        "<p>Built by IPTV Checker, a stream checker for Dispatcharr. It judges a "
+        "channel by all of its streams, so a working backup never marks it dead.</p>",
+        '<p><a href="', REPO_URL, '">Source and documentation</a> . ',
+        '<a href="', ISSUES_URL, '">Report a problem</a></p>',
         "</footer>",
     ])
     return "".join(out)
