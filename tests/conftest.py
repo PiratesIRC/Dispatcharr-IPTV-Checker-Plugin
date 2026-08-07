@@ -106,6 +106,21 @@ def pmod():
     return plugin_mod
 
 
+@pytest.fixture(autouse=True)
+def _isolate_fire_claim_dir(tmp_path, monkeypatch):
+    """Keep the scheduler fire claim inside tmp_path for every test.
+
+    PluginConfig.SCHEDULER_FIRE_CLAIM_DIR defaults to a path under /data, and
+    _claim_scheduler_fire creates it. On Windows an absolute POSIX path
+    resolves against the root of the current drive, so a test calling the claim
+    without this fixture writes into the drive root.
+    """
+    monkeypatch.setattr(
+        plugin_mod.PluginConfig, "SCHEDULER_FIRE_CLAIM_DIR",
+        str(tmp_path / "fire_claims"),
+    )
+
+
 @pytest.fixture
 def plugin(tmp_path):
     """A Plugin instance built without running __init__ (no scheduler threads,

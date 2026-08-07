@@ -10,6 +10,7 @@ import os
 import re
 import csv
 import fnmatch
+import hashlib
 import time
 import threading
 import urllib.request
@@ -112,6 +113,9 @@ class PluginConfig:
     CHANNEL_STATE_FILE = "/data/iptv_checker_channel_state.json"
     SCHEDULER_LOCK_FILE = "/data/iptv_checker_scheduler.pid"
     SCHEDULER_RELOAD_FLAG = "/data/iptv_checker_scheduler_reload.flag"
+    # One file per (cron expression, minute) actually fired. Survives a module
+    # re-import, which is what defeated every in-memory guard on 2026-08-07.
+    SCHEDULER_FIRE_CLAIM_DIR = "/data/iptv_checker_fire_claims"
     # Process types that must NOT host the scheduler (GitHub #25). The daphne
     # ASGI server can win the election but never brings a live scheduler loop up,
     # wedging every uwsgi worker into deferring to it. Matched (case-insensitive)
@@ -362,7 +366,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.2181303"
+    version = "1.26.2191151"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -1196,21 +1200,94 @@ class Plugin:
             return False
     
     @staticmethod
-    def _claim_scheduler_fire(cron_expr, current_minute):
+    def _fire_claim_path(cron_expr, current_minute):
+        """Path of the on-disk claim for one (cron expression, minute).
+
+        The cron expression is hashed rather than written into the name because
+        it contains spaces, asterisks and slashes. Eight hex characters are
+        plenty: the only thing that must not collide is two DIFFERENT schedules
+        due in the SAME minute, of which an install has a handful at most.
+        """
+        stamp = current_minute.strftime('%Y%m%dT%H%M')
+        digest = hashlib.sha256(cron_expr.encode('utf-8')).hexdigest()[:8]
+        return os.path.join(PluginConfig.SCHEDULER_FIRE_CLAIM_DIR, f"fire-{stamp}-{digest}")
+
+    @staticmethod
+    def _prune_fire_claims(current_minute):
+        """Drop claim files from an earlier DAY. Their minute cannot come round
+        again, and the directory would otherwise grow without bound. Claims from
+        earlier today are kept: an earlier minute today is exactly what stops a
+        duplicate loop re-firing it."""
+        today = current_minute.strftime('%Y%m%d')
+        try:
+            names = os.listdir(PluginConfig.SCHEDULER_FIRE_CLAIM_DIR)
+        except OSError:
+            return
+        for name in names:
+            parts = name.split('-')
+            if len(parts) != 3 or parts[0] != 'fire':
+                continue
+            day = parts[1].split('T')[0]
+            if len(day) == 8 and day.isdigit() and day < today:
+                try:
+                    os.unlink(os.path.join(PluginConfig.SCHEDULER_FIRE_CLAIM_DIR, name))
+                except OSError:
+                    pass
+
+    def _claim_scheduler_fire(self, cron_expr, current_minute):
         """Atomically claim (cron_expr, current_minute) for firing.
 
-        Returns True for the first caller in this process to claim this minute
-        and False for every caller after — so if a lifecycle race leaves two
-        scheduler_loop threads alive (each formerly with its own last_run),
-        they can't both fire the same cron minute (the 2026-07-03 double-fire).
-        Process-scoped is sufficient: cross-process double-fire is prevented by
-        the single-owner election lock.
+        Returns True for the first caller to claim this minute anywhere on the
+        box and False for every caller after.
+
+        TWO LAYERS, and the second one is the load-bearing one.
+
+        In memory, _scheduler_last_fired stops two scheduler_loop threads that
+        share a module object (the 2026-07-03 double-fire, where a lifecycle
+        race left two loops alive each with its own last_run).
+
+        On disk, os.open(O_CREAT|O_EXCL) stops everything else. A module
+        RE-IMPORT gives the new scheduler loop a fresh _scheduler_last_fired,
+        so the in-memory layer cannot see the older loop's claim at all. That
+        is what happened on 2026-08-07: a plugin discovery pass re-imported the
+        module inside the process that already owned the election lock, leaving
+        two loops in one PID holding two module objects. The election lock saw
+        one PID and passed, the in-memory claim saw two dicts and passed, and
+        '0 23 * * *' fired twice 1.34 seconds apart, running two concurrent
+        five-hour scans that emailed two reports.
+
+        FAILS OPEN. If the claim cannot be written the schedule still runs and
+        the failure is logged. A duplicate run is recoverable; a scheduler that
+        silently stops firing is not.
         """
         with _scheduler_fire_lock:
             if _scheduler_last_fired.get(cron_expr) == current_minute:
                 return False
             _scheduler_last_fired[cron_expr] = current_minute
+
+        try:
+            os.makedirs(PluginConfig.SCHEDULER_FIRE_CLAIM_DIR, exist_ok=True)
+            fd = os.open(self._fire_claim_path(cron_expr, current_minute),
+                         os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            LOGGER.warning(f"Cron '{cron_expr}' was already claimed for this minute by another "
+                           "scheduler loop; not firing again. A duplicate loop is running, which "
+                           "a container restart clears.")
+            return False
+        except OSError as e:
+            LOGGER.warning(f"Could not record the scheduler fire claim ({type(e).__name__}); "
+                           "running the schedule anyway, but a duplicate run is now possible.")
             return True
+
+        try:
+            os.write(fd, f"{os.getpid()}\n".encode('utf-8'))
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
+
+        self._prune_fire_claims(current_minute)
+        return True
 
     def _start_background_scheduler(self, settings):
         """Start the background scheduler thread."""

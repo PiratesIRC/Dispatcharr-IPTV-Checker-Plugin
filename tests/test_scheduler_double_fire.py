@@ -7,7 +7,10 @@ threads alive in the elected process, each kept its own `last_run`, so both
 fired the same cron minute — on 2026-07-03 '0 23 * * *' fired twice 4s apart
 from the same owner PID 256 and produced two overlapping CSVs. The fire-claim
 is now process-shared and lock-guarded (`_claim_scheduler_fire`): only the
-first claimant of a (cron_expr, minute) fires.
+first claimant of a (cron_expr, minute) fires. Since 2026-08-07 that claim is
+ALSO recorded on disk, so it survives a module re-import; the minute must
+therefore be a real datetime rather than the opaque marker used before, and
+`tests/test_scheduler_fire_claim.py` covers the on-disk layer directly.
 
 Fix #2 (status false negative): `check_scheduler_status_action` used to read
 the process-local `_bg_scheduler_thread`, which is None in every worker except
@@ -17,6 +20,7 @@ cross-process election lock file: a live holder PID means the scheduler is
 running somewhere.
 """
 import threading
+from datetime import datetime
 
 import pytest
 
@@ -32,7 +36,7 @@ def _reset_fire_guard(pmod):
 # --------------------------- Fix #1: fire-claim guard ---------------------------
 
 def test_claim_fires_once_per_minute(plugin, pmod):
-    minute = "2026-07-03T04:00"  # opaque marker; equality is all that matters
+    minute = datetime(2026, 7, 3, 4, 0)
     assert plugin._claim_scheduler_fire("0 23 * * *", minute) is True
     # Same (expr, minute) — a sibling loop thread — must NOT fire again.
     assert plugin._claim_scheduler_fire("0 23 * * *", minute) is False
@@ -40,23 +44,23 @@ def test_claim_fires_once_per_minute(plugin, pmod):
 
 
 def test_claim_rearms_next_minute(plugin, pmod):
-    assert plugin._claim_scheduler_fire("0 23 * * *", "min-1") is True
-    assert plugin._claim_scheduler_fire("0 23 * * *", "min-1") is False
+    assert plugin._claim_scheduler_fire("0 23 * * *", datetime(2026, 7, 3, 4, 0)) is True
+    assert plugin._claim_scheduler_fire("0 23 * * *", datetime(2026, 7, 3, 4, 0)) is False
     # A new minute re-arms.
-    assert plugin._claim_scheduler_fire("0 23 * * *", "min-2") is True
+    assert plugin._claim_scheduler_fire("0 23 * * *", datetime(2026, 7, 3, 4, 1)) is True
 
 
 def test_claim_is_per_cron_expression(plugin, pmod):
-    assert plugin._claim_scheduler_fire("0 23 * * *", "m") is True
+    assert plugin._claim_scheduler_fire("0 23 * * *", datetime(2026, 7, 3, 4, 0)) is True
     # A different cron expression matching the same minute still fires.
-    assert plugin._claim_scheduler_fire("30 11 * * *", "m") is True
-    assert plugin._claim_scheduler_fire("0 23 * * *", "m") is False
+    assert plugin._claim_scheduler_fire("30 11 * * *", datetime(2026, 7, 3, 4, 0)) is True
+    assert plugin._claim_scheduler_fire("0 23 * * *", datetime(2026, 7, 3, 4, 0)) is False
 
 
 def test_concurrent_claims_exactly_one_wins(plugin, pmod):
     """Models two (or more) scheduler_loop threads racing the same cron minute:
     exactly one claim must succeed."""
-    minute = "same-minute"
+    minute = datetime(2026, 7, 3, 4, 0)
     n = 32
     barrier = threading.Barrier(n)
     wins = []
