@@ -167,10 +167,23 @@ of the above.
 | Channel state (restore) | `/data/iptv_checker_channel_state.json` (orig group per channel; captured on Move, consumed by Restore) |
 | CSV exports | `/data/exports/` |
 | Scheduler lock | `/data/iptv_checker_scheduler.pid` (2 lines: pid + boot token) |
+| Fired-minute claims | `/data/iptv_checker_fire_claims/` (one `O_EXCL` file per cron expression and minute, mode `0o600`, holding the claiming pid; older days pruned) |
+| HTML report, dated copies, report CSV | `/config/iptv_checker/` (a real host folder, deliberately NOT `/data/logos/`, which nginx serves unauthenticated to the whole network) |
 | ffprobe | `/usr/local/bin/ffprobe` (configurable) |
 | ffmpeg | `/usr/local/bin/ffmpeg` (configurable; only used by opt-in black-screen detection) |
 
 ## Gotchas (the expensive ones)
+
+- A scheduled run can fire twice even with the election lock held, because a plugin
+  discovery pass re-imports the module and every in-memory guard is per module
+  object. The claim that prevents it is a FILE, `_claim_scheduler_fire` under
+  `/data/iptv_checker_fire_claims/`. Do not "simplify" it back to module state
+  (v1.26.2191151+, `tests/test_scheduler_fire_claim.py`).
+- The rendered report must declare its encoding. `render_html` emits a real
+  document head with `<meta charset="utf-8">` before the title; without it the
+  emoji in section headings render as a run of wrong characters in a browser and
+  in a mail client, because the file is UTF-8 with nothing saying so
+  (v1.26.2191411+, bound by a test in `tests/test_report_render.py`).
 
 - `-show_frames` must NOT be added to default `ffprobe_flags` — combined with
   `-show_packets`, ffprobe emits `packets_and_frames` and the bitrate

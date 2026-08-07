@@ -46,7 +46,9 @@ Other things it does:
   left off on the next window.
 - **An HTML report** written to `/config/iptv_checker/report.html`, grouped by what you should do
   about each finding, and optionally emailed through the
-  [Newsflasharr](https://github.com/PiratesIRC) plugin.
+  [Newsflasharr](https://github.com/PiratesIRC) plugin. It is one self-contained file that fetches
+  nothing from the internet, so it reads the same in a mail client and on a television browser, and
+  it follows a light or dark theme on its own.
 - **CSV export** with a full settings preamble, so every run leaves an audit record.
 - **Rename, move, restore and delete** actions, each with its own confirmation.
 - **Self-healing**: a channel that comes back to life is renamed back and moved to its original

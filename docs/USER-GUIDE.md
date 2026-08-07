@@ -246,6 +246,11 @@ It groups channels by **what you should do about them**, not by error code:
 Channels with nothing wrong are counted but not listed, and the report states how many, so the
 numbers add up.
 
+The page is one self-contained file: no fonts, images or scripts are fetched from the internet, so
+it renders the same on a television browser with no route out as it does in a mail client. It
+follows the same visual style as the Dustarr report, and adapts to a light or dark theme on its own.
+The footer credits Newsflasharr for the emailed copy.
+
 ### Getting it by email
 
 Delivery goes through the **Newsflasharr** plugin. Three things must be in place:
@@ -460,9 +465,17 @@ All default to off.
 | Progress state | `/data/iptv_checker_progress.json` |
 | Windowed resume state | `/data/iptv_checker_pending_resume.json` |
 | Original groups, for restore | `/data/iptv_checker_channel_state.json` |
+| Scheduler election lock | `/data/iptv_checker_scheduler.pid` |
+| Record of which cron minutes already ran | `/data/iptv_checker_fire_claims/` |
 
 `/config/` is a folder on your host, so the report opens by double-clicking it. `/data/` is inside
 the container.
+
+The fire-claim folder holds one small file per scheduled run that has already started, named after
+the schedule and the minute. It is how a second copy of the plugin loaded into the same Dispatcharr
+process is prevented from running the same nightly check twice. Files from earlier days are removed
+automatically. Deleting the folder is harmless, but do not delete it while a scheduled run is
+starting.
 
 ---
 
