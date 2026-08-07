@@ -57,9 +57,30 @@ def test_no_external_references(page):
     assert "@import" not in page
     for pattern in ("src=\"http", "src='http", "href=\"http://cdn", "url(http"):
         assert pattern not in page, pattern
-    # The only permitted absolute links are the two footer destinations.
+    # The only permitted absolute links are the three footer destinations.
     hrefs = re.findall(r'href="([^"]+)"', page)
-    assert set(hrefs) <= {reports.REPO_URL, reports.ISSUES_URL}, hrefs
+    assert set(hrefs) <= {reports.REPO_URL, reports.ISSUES_URL,
+                          reports.NEWSFLASHARR_URL}, hrefs
+
+
+def test_the_page_declares_its_encoding(page):
+    """The section headings carry emoji and the file is written as UTF-8. With
+    no declared encoding, a browser opening the file and a mail client
+    rendering the attachment both fall back to a legacy single-byte encoding
+    and show each emoji as a run of wrong characters. Reported from a real
+    emailed copy on 2026-08-07, when the page had no head element at all."""
+    head = page[:page.index("<style>")].lower()
+    assert "<!doctype html>" in head
+    assert '<meta charset="utf-8">' in head
+    # Before the title, so a parser never has to restart the document.
+    assert head.index('<meta charset="utf-8">') < head.index("<title>")
+
+
+def test_the_emailed_credit_names_newsflasharr(page):
+    """Newsflasharr does the delivery, and the same sentence appears in
+    Lineuparr and Channel-Maparr so the credit reads identically everywhere."""
+    assert "Emailed copies of this report are delivered courtesy of" in page
+    assert ">Newsflasharr</a>" in page
 
 
 def test_no_script_required_for_sections(page):

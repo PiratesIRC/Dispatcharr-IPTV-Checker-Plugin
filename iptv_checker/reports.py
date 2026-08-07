@@ -493,6 +493,7 @@ _FIND_HINT = ("Expand this section before using your browser find on this page. 
 
 REPO_URL = "https://github.com/PiratesIRC/Dispatcharr-IPTV-Checker-Plugin"
 ISSUES_URL = REPO_URL + "/issues"
+NEWSFLASHARR_URL = "https://github.com/PiratesIRC/Dispatcharr-Newsflasharr-Plugin"
 
 
 def _esc(value):
@@ -681,7 +682,18 @@ def render_html(model):
 
     logo = _logo_data_uri(model.get("plugin_dir"))
 
-    out = ["<title>IPTV Checker report</title>", "<style>", _CSS, "</style>",
+    # A REAL DOCUMENT HEAD, and the charset line is not optional. The section
+    # headings carry emoji, the file is written as UTF-8, and without a declared
+    # encoding a browser opening it as a file and a mail client rendering the
+    # attachment both fall back to a legacy single-byte encoding and show each
+    # emoji as a run of wrong characters. Reported from a real emailed copy on
+    # 2026-08-07. The page previously began at the title element with no
+    # doctype, no head and no charset at all.
+    out = ["<!doctype html>", '<html lang="en">', "<head>",
+           '<meta charset="utf-8">',
+           '<meta name="viewport" content="width=device-width, initial-scale=1">',
+           "<title>IPTV Checker report</title>", "<style>", _CSS, "</style>",
+           "</head>", "<body>",
            '<header class="masthead">']
     # The logo is optional by construction: no data URI renders no img element
     # at all, rather than a broken-image icon.
@@ -731,9 +743,14 @@ def render_html(model):
         '<footer class="colophon">',
         "<p>Built by IPTV Checker, a stream checker for Dispatcharr. It judges a "
         "channel by all of its streams, so a working backup never marks it dead.</p>",
+        # Same wording as Lineuparr and Channel-Maparr, so the credit reads
+        # identically wherever a plugin here emails a report.
+        '<p>Emailed copies of this report are delivered courtesy of ',
+        '<a href="', NEWSFLASHARR_URL, '">Newsflasharr</a>.</p>',
         '<p><a href="', REPO_URL, '">Source and documentation</a> . ',
         '<a href="', ISSUES_URL, '">Report a problem</a></p>',
         "</footer>",
+        "</body>", "</html>",
     ])
     return "".join(out)
 
