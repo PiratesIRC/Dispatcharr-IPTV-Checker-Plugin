@@ -124,6 +124,12 @@ class PluginConfig:
 
     # --- Scheduler ---
     DEFAULT_TIMEZONE = "UTC"
+    # How long progress.json may go unwritten, inside ONE container life, before
+    # it is treated as debris rather than as a running check. ProgressTracker
+    # writes at worst every 10 seconds, and a slow probe widens the real gap, so
+    # this is deliberately far above the cadence: clearing a live run is worse
+    # than leaving a dead file for another few minutes.
+    PROGRESS_STALE_AFTER_SECONDS = 900
     SCHEDULER_CHECK_INTERVAL = 30  # Check every 30 seconds
     SCHEDULER_TIME_WINDOW = 30  # ±30 second window to trigger
     SCHEDULER_ERROR_WAIT = 60  # Wait 60s if error occurs
@@ -366,7 +372,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.2191412"
+    version = "1.26.2201040"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -697,28 +703,67 @@ class Plugin:
             LOGGER.warning(f"Could not write scheduler reload flag: {e}")
 
     def _normalize_stale_progress(self):
-        """If progress.json claims a check is running at startup, clear it.
+        """Clear progress.json when it claims a check is running and no check is.
 
-        Container kill/restart bypasses the `finally` block that flips status
-        to 'idle', leaving the file stuck in 'running'. Subsequent cron fires
-        then self-queue believing a check is in flight. At __init__ time no
-        thread can possibly be running, so it's safe to normalize.
+        WHY IT EXISTS. A container kill bypasses the `finally` block that flips
+        status to 'idle', so the file is left saying 'running' forever and every
+        later cron fire self-queues believing a check is in flight. The schedule
+        then never runs again.
+
+        WHY IT MUST NOT FIRE BLINDLY. This runs from __init__, and the old
+        version assumed "at __init__ time no thread can possibly be running".
+        That is true within one process and FALSE across processes: Dispatcharr
+        runs about nine of them, and a plugin discovery pass constructs a Plugin
+        instance in whichever worker serves it. Measured on 2026-08-08, two
+        discovery passes during a live check clamped it to idle at 418/2691 and
+        488/2691 streams. The check carried on, but while the file says idle a
+        cron fire will not defer to the run that is actually in progress.
+
+        HOW THE TWO ARE TOLD APART. The container boot token, the same signal
+        the scheduler election lock uses: a file stamped by a PREVIOUS container
+        cannot belong to a running check, so it is debris whatever it says.
+        Within one container life the mtime is used instead, because a live
+        check rewrites this file continuously; silence longer than
+        PROGRESS_STALE_AFTER_SECONDS means no live writer. A file with NO token
+        was written before this release and is treated as debris, which restores
+        the old behaviour for it. That is the safe default here: the alternative
+        leaves a genuinely stuck file stuck forever.
         """
         try:
             if not os.path.exists(self.progress_file):
                 return
             with open(self.progress_file, 'r') as f:
                 data = json.load(f) or {}
-            if data.get('status') == 'running':
-                LOGGER.warning(
-                    f"Found stale progress.json with status=running "
-                    f"({data.get('current', 0)}/{data.get('total', 0)}); "
-                    f"normalizing to idle (likely a prior container kill)."
-                )
-                data['status'] = 'idle'
-                data['end_time'] = time.time()
-                self._save_json_file(self.progress_file, data, indent=2)
-                self.check_progress = data
+            if data.get('status') != 'running':
+                return
+
+            token = data.get('boot_token')
+            same_container = bool(token) and token == _container_boot_token()
+            if same_container:
+                try:
+                    quiet_for = time.time() - os.path.getmtime(self.progress_file)
+                except OSError:
+                    quiet_for = 0
+                if quiet_for < PluginConfig.PROGRESS_STALE_AFTER_SECONDS:
+                    LOGGER.debug(
+                        f"{LOG_PREFIX} progress.json says running "
+                        f"({data.get('current', 0)}/{data.get('total', 0)}) and was written "
+                        f"{int(quiet_for)}s ago by this container; leaving a live check alone."
+                    )
+                    return
+                reason = (f"nothing has written it for {int(quiet_for)}s, so its worker is gone")
+            else:
+                reason = "it was written by a previous container"
+
+            LOGGER.warning(
+                f"Found stale progress.json with status=running "
+                f"({data.get('current', 0)}/{data.get('total', 0)}); {reason}. "
+                f"Normalizing to idle."
+            )
+            data['status'] = 'idle'
+            data['end_time'] = time.time()
+            self._save_json_file(self.progress_file, data, indent=2)
+            self.check_progress = data
         except Exception as e:
             LOGGER.warning(f"Could not normalize progress.json on startup: {e}")
 
@@ -1050,7 +1095,15 @@ class Plugin:
         path writes a fresh temp file owned by the current user and renames
         it over the target, which only requires write permission on the
         parent directory, so it succeeds regardless of the old file's owner.
+
+        The container boot token is stamped on every write. Without it
+        _normalize_stale_progress cannot tell a live check from a file left
+        behind by a killed container, and it clears live checks.
         """
+        try:
+            self.check_progress['boot_token'] = _container_boot_token()
+        except Exception:
+            pass
         self._save_json_file(self.progress_file, self.check_progress)
 
     def _load_json_file(self, filepath):

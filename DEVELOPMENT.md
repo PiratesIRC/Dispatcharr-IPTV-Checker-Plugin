@@ -179,6 +179,12 @@ of the above.
   object. The claim that prevents it is a FILE, `_claim_scheduler_fire` under
   `/data/iptv_checker_fire_claims/`. Do not "simplify" it back to module state
   (v1.26.2191151+, `tests/test_scheduler_fire_claim.py`).
+- Anything that runs from `Plugin.__init__` runs in EVERY Dispatcharr worker, and
+  a plugin discovery pass triggers it at any time, including while a check is
+  running in another worker. `_normalize_stale_progress` assumed the opposite and
+  cleared live runs; it now keys on the container boot token stamped into
+  `progress.json` plus an mtime threshold (v1.26.2201040+,
+  `tests/test_stale_progress.py`).
 - The rendered report must declare its encoding. `render_html` emits a real
   document head with `<meta charset="utf-8">` before the title; without it the
   emoji in section headings render as a run of wrong characters in a browser and
