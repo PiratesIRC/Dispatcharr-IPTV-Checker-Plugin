@@ -110,6 +110,13 @@ class PluginConfig:
     LOADED_CHANNELS_FILE = "/data/iptv_checker_loaded_channels.json"
     PROGRESS_FILE = "/data/iptv_checker_progress.json"
     PENDING_RESUME_FILE = "/data/iptv_checker_pending_resume.json"
+    # Append-only tally of how many streams each completed pass probed, one JSON
+    # object per line. It exists because RESULTS_FILE is OVERWRITTEN by every run
+    # and the dated CSVs are pruned to the last few, so nothing else on disk can
+    # be added up into a lifetime total. Deliberately carries integers and a mode
+    # word only: no channel name, no group, no URL. A public README badge is
+    # built from it, so anything identifying that landed here would be published.
+    STREAM_COUNT_LEDGER_FILE = "/data/iptv_checker_stream_counts.jsonl"
     CHANNEL_STATE_FILE = "/data/iptv_checker_channel_state.json"
     SCHEDULER_LOCK_FILE = "/data/iptv_checker_scheduler.pid"
     SCHEDULER_RELOAD_FLAG = "/data/iptv_checker_scheduler_reload.flag"
@@ -372,7 +379,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.2201040"
+    version = "1.26.2201221"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -1134,6 +1141,39 @@ class Plugin:
                     os.remove(tmp_path)
                 except OSError:
                     pass
+
+    def _record_streams_checked(self, count, mode, logger=None):
+        """Append one line recording how many streams a finished pass probed.
+
+        APPEND, NOT READ-MODIFY-WRITE. Several Dispatcharr processes hold this
+        module, and a read-then-write total would lose an increment whenever two
+        of them raced. An O_APPEND write of a single short line does not.
+
+        IT NEVER RAISES. This is called from the `finally` of the two stream
+        processing paths, so an exception here would replace whatever the run was
+        already reporting. A tally that cannot be written is worth strictly less
+        than the check that produced it.
+
+        A count of zero is still written: a pass that probed nothing is a fact
+        about the run, and dropping it would make the ledger silently sparse.
+        """
+        log = logger or LOGGER
+        try:
+            count = int(count)
+        except (TypeError, ValueError):
+            log.warning("Stream tally skipped: count was not a number")
+            return False
+        if count < 0:
+            log.warning("Stream tally skipped: count was negative")
+            return False
+        line = json.dumps({"ts": int(time.time()), "streams": count, "mode": mode})
+        try:
+            with open(PluginConfig.STREAM_COUNT_LEDGER_FILE, 'a') as f:
+                f.write(line + "\n")
+            return True
+        except Exception as e:
+            log.warning(f"Could not record the stream tally: {e}")
+            return False
 
     def stop(self, context):
         logger = context.get("logger", LOGGER)
@@ -2611,6 +2651,12 @@ class Plugin:
         except Exception as e:
             logger.error(f"Background stream processing error: {e}")
         finally:
+            # In the `finally` on purpose: a pass that was cancelled or that
+            # raised part way still probed the streams it got to, and a windowed
+            # run that stops at its boundary is the NORMAL case here rather than
+            # a failure. Counting only complete passes would undercount by
+            # roughly the share of nights the window closes first.
+            self._record_streams_checked(len(results), 'sequential', logger)
             self.check_progress['status'] = 'idle'
             self.check_progress['end_time'] = time.time()
             self._save_progress()
@@ -2807,6 +2853,16 @@ class Plugin:
         except Exception as e:
             logger.error(f"Background parallel stream processing error: {e}")
         finally:
+            # See the sequential path: recorded in `finally` so a cancelled or
+            # window-truncated pass still contributes the streams it probed.
+            # Counted from results_dict, NOT from `results`: `results` is built
+            # from it near the end of the try block, so an exception before that
+            # line would report zero for a pass that probed thousands. Rows the
+            # cancel path fabricated without probing anything are excluded.
+            self._record_streams_checked(
+                sum(1 for row in results_dict.values()
+                    if (row or {}).get('error_type') != 'Cancelled'),
+                'parallel', logger)
             self.check_progress['status'] = 'idle'
             self.check_progress['end_time'] = time.time()
             self._save_progress()
