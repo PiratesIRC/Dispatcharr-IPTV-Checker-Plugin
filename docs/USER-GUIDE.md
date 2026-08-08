@@ -529,6 +529,19 @@ a missing Newsflasharr routing rule or incomplete SMTP settings. See
 [the HTML report and email](#the-html-report-and-email). The report itself is still written to
 `/config/iptv_checker/report.html` regardless.
 
+### A scheduled run left no trace in the container log
+
+Check the files it leaves behind rather than the log. Dispatcharr can be configured so that plugins
+write only warnings and errors to the log, and then a run that worked perfectly leaves nothing to
+find. These four are more reliable than the log in any case:
+
+| Question | Where to look |
+|---|---|
+| Did the schedule fire, and how many times? | One file per fired minute in `/data/iptv_checker_fire_claims/` |
+| Did it produce a report? | The dated HTML and CSV in `/config/iptv_checker/` |
+| Did a windowed run finish the whole list? | `/data/iptv_checker_pending_resume.json` is gone when it has |
+| Was the email handed over? | Your entry in Newsflasharr's own delivery record |
+
 ### Bitrate is missing for some streams
 
 A probe that captured fewer than 30 video packets leaves it unset on purpose, because short samples
