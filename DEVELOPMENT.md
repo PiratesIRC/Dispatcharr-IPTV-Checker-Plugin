@@ -29,6 +29,8 @@ tests/                         # pytest suite (runs OUTSIDE the container)
 ├── test_csv_and_status_fixes.py #  CSV no-dup header, PAL-safe low-fps, ffprobe-flags default, View-Last-Results date
 └── test_plugin_helpers.py     #   cron parse/match, streamlink hosts, JSON I/O
 scripts/check_version_sync.py  # standalone version-drift check (CI/pre-commit usable)
+scripts/update_streams_checked_badge.py   # publishes the README "Streams Checked" counter to a Gist
+scripts/update_streams_checked_badge.ps1  # wrapper the twice-daily Windows scheduled task runs
 bump_version.py                # version bump across all three files
 pytest.ini                     # pytest config
 requirements-dev.txt           # dev/CI dependencies (pytest, pytz, ruff)
@@ -127,6 +129,22 @@ Dispatcharr's Linux host), and creates/uploads the GitHub release.
 Upstream marketplace (`Dispatcharr/Plugins`) submission rules are in
 `README.md` → "To the upstream marketplace".
 
+## The README "Streams Checked" counter
+
+The badge reads a Shields.io endpoint document held in an unlisted Gist. Nothing
+in CI updates it: `scripts/update_streams_checked_badge.py` adds up the per-pass
+tally inside the running container and rewrites the Gist, and a twice-daily
+Windows scheduled task runs it through `scripts/update_streams_checked_badge.ps1`.
+
+- `--dry-run` prints the number and the document and writes nothing.
+- `--create` is first-time setup only; it refuses once `scripts/.streams_checked_badge_gist` exists.
+- Renaming the Gist file breaks the published badge, because the raw URL contains the filename.
+- Raw Gist URLs are cached for about five minutes, so a new number is not visible at once.
+
+The number is a floor. It counts streams probed, so one stream checked on two
+nights counts twice, and it starts from the release that added the tally because
+nothing earlier was recorded anywhere that survives.
+
 ## CI
 
 `.github/workflows/ci.yml`, on every push/PR to `main` and on tags:
@@ -169,6 +187,7 @@ of the above.
 | Scheduler lock | `/data/iptv_checker_scheduler.pid` (2 lines: pid + boot token) |
 | Fired-minute claims | `/data/iptv_checker_fire_claims/` (one `O_EXCL` file per cron expression and minute, mode `0o600`, holding the claiming pid; older days pruned) |
 | HTML report, dated copies, report CSV | `/config/iptv_checker/` (a real host folder, deliberately NOT `/data/logos/`, which nginx serves unauthenticated to the whole network) |
+| Streams-checked tally | `/data/iptv_checker_stream_counts.jsonl` (append-only, one JSON line per finished pass: epoch, streams probed, sequential or parallel; the public README counter badge is the sum) |
 | ffprobe | `/usr/local/bin/ffprobe` (configurable) |
 | ffmpeg | `/usr/local/bin/ffmpeg` (configurable; only used by opt-in black-screen detection) |
 
