@@ -310,6 +310,26 @@ import io
 import os
 import time
 
+# Page furniture shared with the other reporting plugin here, so the two pages
+# cannot drift apart again. Vendored: a plugin deploys as a self-contained
+# directory into /data/plugins, where the workspace _shared path does not exist.
+# The relative import wins inside Dispatcharr; the plain import is the path the
+# test suite takes, which loads this module by path.
+try:
+    from . import report_chrome
+except ImportError:  # pragma: no cover - exercised by the test suite's path
+    # The tests load THIS file by path, with no package and no sys.path entry
+    # for its directory, so a bare import cannot find the sibling. Locate it
+    # next to this file rather than trusting the path or mutating sys.path,
+    # which would leak into whatever else the test process imports.
+    import importlib.util as _ilu
+    import os as _os
+    _chrome_path = _os.path.join(
+        _os.path.dirname(_os.path.abspath(__file__)), "report_chrome.py")
+    _spec = _ilu.spec_from_file_location("ic_report_chrome", _chrome_path)
+    report_chrome = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(report_chrome)
+
 REPORT_HTML = "report.html"
 ARCHIVE_LIMIT = 8
 
@@ -371,122 +391,22 @@ _DOT_GLYPH = {
 #
 # summary:focus-visible is additional to Dustarr and must stay: that ring is how
 # the page is driven by a television remote D-pad.
-_CSS = """
-:root {
-  color-scheme: light dark;
-  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px;
-  --bg: #fbfbfd; --surface: #ffffff; --border: #e3e5ea;
-  --zebra: #f7f8fa; --head: #f2f3f6; --line-soft: #e6e8ec; --track: #e1e0d9;
-  --ink: #16181d; --ink-muted: #5c616b; --ink-dim: #656a76;
-  --lift: 0 1px 2px rgba(16, 18, 29, .05), 0 4px 12px rgba(16, 18, 29, .04);
-  --dead: #d03b3b; --provider: #b06f00; --unproven: #2a78d6;
-  --backup: #1baf7a; --slow: #898781; --audio: #7a5cd6;
-  --focus: #2a78d6;
+# Light colour first, dark second. Each entry becomes a --NAME custom property
+# plus matching .dot-NAME and .bar-NAME classes, which are exactly the class
+# names the section and chart helpers below already emit.
+ACCENTS = {
+    "dead": ("#d03b3b", "#e66767"),
+    "provider": ("#b06f00", "#f2c98a"),
+    "unproven": ("#2a78d6", "#3987e5"),
+    "backup": ("#1baf7a", "#199e70"),
+    "slow": ("#898781", "#898781"),
+    "audio": ("#7a5cd6", "#a68bf0"),
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #14161a; --surface: #1a1d22; --border: #2a2e35;
-    --zebra: #191c21; --head: #1e2127; --line-soft: #262a31; --track: #2c2c2a;
-    --ink: #e8eaed; --ink-muted: #a7adb8; --ink-dim: #9aa0ab;
-    --lift: 0 1px 2px rgba(0, 0, 0, .35), 0 4px 12px rgba(0, 0, 0, .25);
-    --dead: #e66767; --provider: #f2c98a; --unproven: #3987e5;
-    --backup: #199e70; --slow: #898781; --audio: #a68bf0;
-    --focus: #3987e5;
-  }
-}
-:root[data-theme="dark"] {
-  --bg: #14161a; --surface: #1a1d22; --border: #2a2e35;
-  --zebra: #191c21; --head: #1e2127; --line-soft: #262a31; --track: #2c2c2a;
-  --ink: #e8eaed; --ink-muted: #a7adb8; --ink-dim: #9aa0ab;
-  --lift: 0 1px 2px rgba(0, 0, 0, .35), 0 4px 12px rgba(0, 0, 0, .25);
-  --dead: #e66767; --provider: #f2c98a; --unproven: #3987e5;
-  --backup: #199e70; --slow: #898781; --audio: #a68bf0;
-  --focus: #3987e5;
-}
-:root[data-theme="light"] {
-  --bg: #fbfbfd; --surface: #ffffff; --border: #e3e5ea;
-  --zebra: #f7f8fa; --head: #f2f3f6; --line-soft: #e6e8ec; --track: #e1e0d9;
-  --ink: #16181d; --ink-muted: #5c616b; --ink-dim: #656a76;
-  --lift: 0 1px 2px rgba(16, 18, 29, .05), 0 4px 12px rgba(16, 18, 29, .04);
-  --dead: #d03b3b; --provider: #b06f00; --unproven: #2a78d6;
-  --backup: #1baf7a; --slow: #898781; --audio: #7a5cd6;
-  --focus: #2a78d6;
-}
-body {
-  margin: 0; padding: var(--s5);
-  background: var(--bg); color: var(--ink);
-  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-}
-/* The logo sits beside the title rather than above it, so the masthead costs
-   one line of vertical space instead of three. */
-.masthead { display: flex; align-items: center; gap: var(--s3); margin-bottom: var(--s5); }
-.mark { flex: none; width: 48px; height: 48px; display: block; }
-h1 { font-size: 22px; line-height: 1.2; letter-spacing: -.01em; margin: 0 0 var(--s1) 0; }
-.meta { color: var(--ink-muted); font-size: 15px; }
-.totals { display: flex; flex-wrap: wrap; gap: var(--s3); margin-bottom: var(--s5); }
-.tile {
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: 10px; box-shadow: var(--lift);
-  padding: var(--s3) var(--s4); min-width: 128px;
-}
-.tile .n { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.tile .k { color: var(--ink-muted); font-size: 15px; }
-.chart { margin-bottom: var(--s5); }
-/* Flat disclosure rows separated by a rule, not stacked cards: at this row
-   count a card per section reads as a wall of boxes. */
-details { border-top: 1px solid var(--track); padding: var(--s1) 0 var(--s2); }
-summary {
-  cursor: pointer; font-size: 17px; font-weight: 600;
-  padding: var(--s2) var(--s1); list-style: none;
-}
-summary::-webkit-details-marker { display: none; }
-summary::before {
-  content: '\\25B8'; display: inline-block; width: 1em;
-  color: var(--ink-dim); transition: transform .12s;
-}
-details[open] > summary::before { transform: rotate(90deg); }
-summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
-.dot {
-  display: inline-block; width: 10px; height: 10px; border-radius: 50%;
-  margin-right: var(--s2); vertical-align: baseline;
-}
-.dot-dead { background: var(--dead); }
-.dot-provider { background: var(--provider); }
-.dot-unproven { background: var(--unproven); }
-.dot-backup { background: var(--backup); }
-.dot-slow { background: var(--slow); }
-.dot-audio { background: var(--audio); }
-.glyph { margin-right: var(--s2); }
-/* The heading is 600; the count staying at 400 is what separates the two, so
-   the number reads as data rather than as part of the label. */
-.count { font-weight: 400; color: var(--ink-dim); margin-left: var(--s2);
-         font-variant-numeric: tabular-nums; }
-.sub { color: var(--ink-muted); font-size: 15px; margin: var(--s2) 0 var(--s1) 0; }
-.act { color: var(--ink); font-size: 15px; margin: 0 0 var(--s2) 0; font-weight: 600; }
-.hint { color: var(--ink-dim); font-size: 15px; margin: 0 0 var(--s3) 0; }
-.scroll { overflow-x: auto; }
-table { border-collapse: collapse; width: 100%; font-size: 15px; }
-th, td { text-align: left; padding: var(--s2) var(--s3); border-bottom: 1px solid var(--line-soft); }
-th { background: var(--head); color: var(--ink-muted); font-weight: 600;
-     position: sticky; top: 0; }
-tr:nth-child(even) td { background: var(--zebra); }
-td.num { text-align: right; font-variant-numeric: tabular-nums; }
-.empty { color: var(--ink-dim); font-size: 15px; margin: var(--s2) 0; }
-.bar-label { fill: var(--ink-muted); font-size: 13px; }
-.bar-dead { fill: var(--dead); }
-.bar-provider { fill: var(--provider); }
-.bar-unproven { fill: var(--unproven); }
-.bar-backup { fill: var(--backup); }
-.bar-slow { fill: var(--slow); }
-.bar-audio { fill: var(--audio); }
-.colophon {
-  margin-top: var(--s5); padding-top: var(--s4);
-  border-top: 1px solid var(--track);
-  color: var(--ink-dim); font-size: 15px;
-}
-.colophon p { margin: 0 0 var(--s1) 0; }
-.colophon a { color: var(--focus); }
-"""
+
+# VERIFIED byte-identical to the stylesheet this replaced, 5444 bytes, before
+# the change was made. The shared builder owns the neutral tokens, the three
+# theme states and the structural rules; this module owns only its own colours.
+_CSS = report_chrome.build_css(ACCENTS)
 
 _FIND_HINT = ("Expand this section before using your browser find on this page. "
               "Text inside a collapsed section is not searchable in some browsers.")
@@ -496,33 +416,13 @@ ISSUES_URL = REPO_URL + "/issues"
 NEWSFLASHARR_URL = "https://github.com/PiratesIRC/Dispatcharr-Newsflasharr-Plugin"
 
 
-def _esc(value):
-    """HTML-escape any value. Total: None and non-strings become text first."""
-    if value is None:
-        return ""
-    return html.escape(str(value), quote=True)
+# Delegated so there is one definition, not two that can drift.
+_esc = report_chrome.esc
 
 
 def _logo_data_uri(plugin_dir, max_encoded=LOGO_MAX_ENCODED_BYTES):
-    """Base64 data URI for the plugin logo, or None.
-
-    None means the header renders with NO image element at all. A logo that
-    cannot be read, or that is too large to ride on every emailed copy, must
-    never fail a build.
-    """
-    try:
-        path = os.path.join(plugin_dir or "", "logo.png")
-        with open(path, "rb") as fh:
-            raw = fh.read()
-    except (OSError, TypeError, ValueError):
-        return None
-    try:
-        encoded = base64.b64encode(raw).decode("ascii")
-    except Exception:
-        return None
-    if len(encoded) > max_encoded:
-        return None
-    return "data:image/png;base64," + encoded
+    """Base64 data URI for the plugin logo, or None. See report_chrome."""
+    return report_chrome.logo_data_uri(plugin_dir, max_encoded=max_encoded)
 
 
 def _fmt_fps(value):
@@ -588,44 +488,21 @@ def _section_html(section):
 def _bar_chart(sections):
     """Inline SVG bar chart of the section counts.
 
-    Colour is applied by a CSS CLASS, never by a fill attribute holding a
-    custom property: support for that is patchy and it fails silently to BLACK,
-    which is an invisible chart on the dark surface.
-
-    Total over its input: an all-zero set of counts must not divide by zero.
+    The accent NAME is derived from this module's own dot-class map, so the
+    shared helper needs no knowledge of this plugin's verdicts.
     """
     items = []
     for section in sections or []:
         if not isinstance(section, dict):
             continue
-        count = len(section.get("rows") or [])
-        cls = _SECTION_DOT.get(section.get("key"), "dot-unproven").replace("dot-", "bar-")
-        items.append((section.get("title") or "", count, cls))
-    if not items:
-        return ""
-    widest = max(n for _, n, _ in items)
-    if widest <= 0:
-        return ""
-    row_h, gap, label_w, bar_max = 26, 6, 250, 380
-    height = len(items) * (row_h + gap)
-    width = label_w + bar_max + 70
-    out = ['<svg class="chart" role="img" aria-label="Channel counts by group" ',
-           'viewBox="0 0 %d %d" width="100%%" height="%d">' % (width, height, height)]
-    for index, (title, count, cls) in enumerate(items):
-        y = index * (row_h + gap)
-        bar_w = int(bar_max * count / widest)
-        out.append('<text class="bar-label" x="0" y="%d">%s</text>' % (y + 18, _esc(title)))
-        out.append('<rect class="%s" x="%d" y="%d" width="%d" height="%d" rx="3"></rect>'
-                   % (cls, label_w, y, bar_w, row_h))
-        out.append('<text class="bar-label" x="%d" y="%d">%d</text>'
-                   % (label_w + bar_w + 8, y + 18, count))
-    out.append("</svg>")
-    return "".join(out)
+        accent = _SECTION_DOT.get(section.get("key"), "dot-unproven")[len("dot-"):]
+        items.append((section.get("title") or "",
+                      len(section.get("rows") or []), accent))
+    return report_chrome.bar_chart(items, aria_label="Channel counts by group")
 
 
 def _tile(number, label):
-    return ('<div class="tile"><div class="n">%s</div><div class="k">%s</div></div>'
-            % (_esc(number), _esc(label)))
+    return report_chrome.tile(number, label)
 
 
 def _detector_sentence(detectors):

@@ -4,3 +4,10 @@
 # back on a Linux checkout, stops matching its pin, and fails CI for a reason
 # that has nothing to do with the code.
 iptv_checker/notify_client.py text eol=lf
+
+# The vendored report page furniture is hash-pinned by
+# scripts/chrome_manifest.json and must stay byte-identical to the canonical
+# copy at ../_shared/report_chrome.py, which Stream-Mapparr also vendors. Same
+# reasoning as above: a CRLF copy normalises back on a Linux checkout and stops
+# matching its pin.
+iptv_checker/report_chrome.py text eol=lf
