@@ -303,9 +303,9 @@ def build_model(results, settings=None, now=None, version="", run_health=None):
 # literal brace inside an f-string becomes a format field and raises at render
 # time, which is a runtime failure in the one function that has no net.
 
-import base64
+# base64 and html were dropped when the escaper and the logo reader moved into
+# report_chrome: the shared module owns those now.
 import csv
-import html
 import io
 import os
 import time
