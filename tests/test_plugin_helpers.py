@@ -202,3 +202,43 @@ def test_match_group_names_case_sensitive(pmod):
     assert P._match_group_names("graveyard", groups) == set()   # exact is case-sensitive
     assert P._match_group_names("grave*", groups) == set()      # fnmatchcase is case-sensitive
     assert P._match_group_names("Grave*", groups) == {"Graveyard"}
+
+
+# --- _parse_scheduled_times: comma is legal INSIDE a cron field ----------------
+# GitHub issue 27. The setting holds several cron expressions, and the
+# documented separator was a comma. A comma is also legal inside a single cron
+# field, where it means a list of values, so "0 0,8,16 * * *" (one valid
+# expression meaning midnight, 08:00 and 16:00) was chopped into three
+# fragments and the whole schedule was rejected. Worse, a string mixing both
+# uses returned a PARTIAL schedule with no error, so the action reported
+# success while saving times the operator never asked for.
+
+def test_parse_scheduled_times_keeps_a_value_list_inside_one_field(plugin):
+    assert plugin._parse_scheduled_times("0 0,8,16 * * *") == ["0 0,8,16 * * *"]
+
+
+def test_parse_scheduled_times_splits_on_semicolon(plugin):
+    assert plugin._parse_scheduled_times("0 0,8 * * * ; 0 30 2 * *") == [
+        "0 0,8 * * *",
+        "0 30 2 * *",
+    ]
+
+
+def test_parse_scheduled_times_splits_on_newline(plugin):
+    assert plugin._parse_scheduled_times("0 0,8 * * *\n0 30 2 * *") == [
+        "0 0,8 * * *",
+        "0 30 2 * *",
+    ]
+
+def test_value_list_schedule_fires_at_each_listed_hour(plugin):
+    # End to end over the pair the operator actually depends on: the string is
+    # parsed into one expression, and that expression matches at each of the
+    # three listed hours and at no other hour.
+    from datetime import datetime
+
+    exprs = plugin._parse_scheduled_times("0 0,8,16 * * *")
+    assert len(exprs) == 1
+    fires = [h for h in range(24)
+             if plugin._cron_matches(exprs[0], datetime(2026, 8, 28, h, 0))]
+    assert fires == [0, 8, 16]
+

@@ -379,7 +379,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.2201221"
+    version = "1.26.2402308"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -1185,25 +1185,46 @@ class Plugin:
     
     def _parse_scheduled_times(self, scheduled_times_str):
         """
-        Parse comma-separated cron expressions.
+        Parse one or more cron expressions separated by a semicolon, a newline
+        or a comma.
         Format: 'minute hour day month weekday'
         Example: "0 4 * * *" = daily at 4:00 AM
         Example: "0 3 1 * *" = 1st of month at 3:00 AM
+        Example: "0 0,8,16 * * *" = daily at midnight, 8 AM and 4 PM
         Returns list of cron expression strings.
         """
         if not scheduled_times_str or not scheduled_times_str.strip():
             return []
         
         cron_expressions = []
-        for expr in scheduled_times_str.split(','):
-            expr = expr.strip()
-            if expr:
-                # Validate basic cron format (5 fields)
-                parts = expr.split()
-                if len(parts) == 5:
+        for chunk in re.split(r'[;\r\n]', scheduled_times_str):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+
+            # A comma is legal INSIDE a cron field, where it lists values, so a
+            # chunk that already reads as one complete 5-field expression is
+            # taken whole. Splitting on commas first turned the single valid
+            # expression "0 0,8,16 * * *" into three fragments and rejected the
+            # whole schedule (GitHub issue 27).
+            if len(chunk.split()) == 5:
+                cron_expressions.append(chunk)
+                continue
+
+            # Otherwise fall back to the comma as a separator, which is what
+            # the setting has always documented and what saved schedules use.
+            for expr in chunk.split(','):
+                expr = expr.strip()
+                if not expr:
+                    continue
+                if len(expr.split()) == 5:
                     cron_expressions.append(expr)
                 else:
-                    LOGGER.warning(f"Invalid cron expression (must have 5 fields): {expr}")
+                    LOGGER.warning(
+                        "Invalid cron expression (must have 5 fields): %s. If this is part of a "
+                        "list of values inside one expression, separate your expressions with a "
+                        "semicolon instead of a comma." % expr
+                    )
         
         return cron_expressions
 
@@ -3833,7 +3854,7 @@ class Plugin:
             if not scheduled_times:
                 return {
                     "status": "error",
-                    "message": f"❌ Invalid cron expression format: '{scheduled_times_str}'\n\nPlease use cron format (e.g., '0 4 * * *' for daily at 4 AM).\nFormat: minute hour day month weekday"
+                    "message": f"❌ Invalid cron expression format: '{scheduled_times_str}'\n\nPlease use cron format (e.g., '0 4 * * *' for daily at 4 AM).\nFormat: minute hour day month weekday\nSeparate several expressions with a semicolon."
                 }
             
             # Timezone comes from Dispatcharr's global setting; only pytz is required.

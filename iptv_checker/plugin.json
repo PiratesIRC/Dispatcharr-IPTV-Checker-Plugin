@@ -1,6 +1,6 @@
 {
   "name": "IPTV Checker",
-  "version": "1.26.2201221",
+  "version": "1.26.2402308",
   "description": "A Dispatcharr Plugin that goes through a playlist to check IPTV channels",
   "author": "PiratesIRC",
   "logo": "logo.png",
@@ -289,8 +289,8 @@
       "label": "\u23f0 Scheduled Check Times (Cron Format)",
       "type": "string",
       "default": "",
-      "placeholder": "0 4 * * *,0 3 1 * *",
-      "help_text": "Comma-separated cron expressions. Format: 'minute hour day month weekday' (weekday: 0=Sunday, 6=Saturday). Examples: '0 4 * * *' (daily at 4 AM), '0 3 * * 0' (Sundays at 3 AM), '0 2 */2 * *' (every 2 days at 2 AM). Leave blank to disable scheduling. \ud83d\udcbe After editing this field, click \"\ud83d\udcbe Save Schedule\" below to apply the new schedule."
+      "placeholder": "0 0,8,16 * * *",
+      "help_text": "One or more cron expressions. Format: 'minute hour day month weekday' (weekday: 0=Sunday, 6=Saturday). Examples: '0 4 * * *' (daily at 4 AM), '0 0,8,16 * * *' (daily at midnight, 8 AM and 4 PM), '0 3 * * 0' (Sundays at 3 AM), '0 2 */2 * *' (every 2 days at 2 AM). To run several different expressions, separate them with a semicolon, for example '0 4 * * * ; 0 3 1 * *'. Leave blank to disable scheduling. \ud83d\udcbe After editing this field, click \"\ud83d\udcbe Save Schedule\" below to apply the new schedule."
     },
     {
       "id": "schedule_window_enabled",
