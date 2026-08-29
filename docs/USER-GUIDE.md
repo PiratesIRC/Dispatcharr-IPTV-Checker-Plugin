@@ -281,10 +281,16 @@ afterwards on Newsflasharr's own retry schedule.
 Set **Scheduled Times** to a standard cron expression, then click **Save Schedule**.
 
 ```
-0 4 * * *     every day at 04:00
-0 2 * * 0     Sundays at 02:00
-0 0 * * 0-4   Sunday through Thursday at midnight
+0 4 * * *        every day at 04:00
+0 2 * * 0        Sundays at 02:00
+0 0 * * 0-4      Sunday through Thursday at midnight
+0 0,8,16 * * *   every day at midnight, 08:00 and 16:00
 ```
+
+**To run several separate expressions, put a semicolon between them**, for example
+`0 4 * * * ; 0 3 1 * *`. A comma also works as a separator, but only when none of your expressions
+contains a list of values of its own. Mixing the two, as in `0 0,8 * * *,0 30 2 * *`, is ambiguous
+and will store only part of what you typed, so use the semicolon whenever you have both.
 
 **The timezone comes from Dispatcharr**, at Settings, General, Time Zone. There is no separate
 plugin timezone to keep in sync.
@@ -496,7 +502,8 @@ Refresh the page, then restart the container. Dispatcharr caches plugin code unt
 ### The scheduler is not running
 
 - It starts on its own at container boot. No button press is needed.
-- Confirm the cron expression has five fields.
+- Confirm the cron expression has five fields. If you are running several expressions, separate
+  them with a semicolon rather than a comma.
 - Set your timezone in Dispatcharr, at Settings, General, Time Zone.
 - Use **Check Scheduler**. It reports the owning process, so "not running" from one worker is not
   proof.
