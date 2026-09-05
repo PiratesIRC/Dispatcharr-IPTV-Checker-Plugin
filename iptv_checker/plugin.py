@@ -346,6 +346,25 @@ _RATE_LIMIT_GUARD = RateLimitGuard()
 _CONTAINER_BOOT_TOKEN = None
 
 
+def _as_bool(value, default=False):
+    """Read a stored setting as a boolean, whatever shape it arrives in.
+
+    Plain truthiness is wrong here: a value stored as the string "false" is a
+    non-empty string and reads as True, which would arm a scheduled rename, move
+    or delete that the operator had switched off. Measured on this installation
+    Dispatcharr stores these as real booleans, so the string handling is
+    defensive, but a sibling plugin records receiving "true" and "false".
+
+    _yes_no renders through this, so the CSV record and the behaviour of the
+    code cannot disagree about what a setting says.
+    """
+    if value is None:
+        value = default
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "yes", "1", "on")
+    return bool(value)
+
+
 def _pct(count, total):
     """Render a share of a total, or nothing at all when the total is zero.
 
@@ -370,11 +389,7 @@ def _yes_no(value, default=False):
     truthiness, so a value stored as the string "false" would run as if it were
     on while this renders No.
     """
-    if value is None:
-        value = default
-    if isinstance(value, str):
-        value = value.strip().lower() in ("true", "yes", "1", "on")
-    return "Yes" if value else "No"
+    return "Yes" if _as_bool(value, default) else "No"
 
 
 def _container_boot_token():
@@ -419,7 +434,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.2481544"
+    version = "1.26.2481600"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -922,8 +937,8 @@ class Plugin:
             'channel_groups': patterns,
             'channel_groups_mode': mode,
             'channel_groups_legacy_exclude': legacy_exclude,
-            'check_alternative_streams': bool(settings.get('check_alternative_streams', True)),
-            'only_visible_channels': bool(settings.get('only_visible_channels', False)),
+            'check_alternative_streams': _as_bool(settings.get('check_alternative_streams'), True),
+            'only_visible_channels': _as_bool(settings.get('only_visible_channels'), False),
         }
 
     def _seed_pending_from_loaded_channels(self, settings):
@@ -1059,7 +1074,7 @@ class Plugin:
 
     def _maybe_resume_after_restart(self, settings):
         """If a window was open when the container died, kick off the check immediately."""
-        if not settings.get("schedule_window_enabled", False):
+        if not _as_bool(settings.get("schedule_window_enabled"), False):
             return
         pending = self._load_json_file(self.pending_resume_file)
         if not pending or not pending.get("remaining_stream_ids"):
@@ -1812,7 +1827,7 @@ class Plugin:
         if not any(isinstance(f, PluginNameFilter) for f in scheduled_logger.filters):
             scheduled_logger.addFilter(PluginNameFilter())
 
-        is_window = bool(settings.get("schedule_window_enabled", False))
+        is_window = _as_bool(settings.get("schedule_window_enabled"), False)
         if is_window:
             if preserved_window_end is not None and preserved_window_tz is not None:
                 self._active_window_end = preserved_window_end
@@ -1920,7 +1935,7 @@ class Plugin:
             # runs on every scheduled session, BEFORE the mid-list gate, so a
             # window that closes part-way still leaves a report. Wrapped in
             # try/except so a delivery failure never aborts the post-actions.
-            if settings.get('scheduler_email_report', False):
+            if _as_bool(settings.get('scheduler_email_report'), False):
                 LOGGER.info("⏰ SCHEDULED: Building and emailing the report...")
                 try:
                     written, problems = self._build_and_deliver_report(
@@ -1947,56 +1962,56 @@ class Plugin:
             
             # Step 3b: Restore recovered channels FIRST (heal before re-marking)
             restored_count = 0
-            if settings.get('scheduler_restore_channels', False):
+            if _as_bool(settings.get('scheduler_restore_channels'), False):
                 LOGGER.info("⏰ SCHEDULED: Restoring recovered channels...")
                 restore_result = self.restore_channels_action(settings, scheduled_logger)
                 restored_count = restore_result.get('restored', 0)
                 LOGGER.info(f"⏰ SCHEDULED: {restore_result.get('message')}")
 
             # Step 4: Rename dead channels if enabled
-            if settings.get('scheduler_rename_dead_channels', False):
+            if _as_bool(settings.get('scheduler_rename_dead_channels'), False):
                 LOGGER.info("⏰ SCHEDULED: Renaming dead channels...")
                 rename_result = self.rename_channels_action(settings, scheduled_logger)
                 LOGGER.info(f"⏰ SCHEDULED: {rename_result.get('message')}")
 
             # Step 5: Rename low framerate channels if enabled
-            if settings.get('scheduler_rename_low_framerate_channels', False):
+            if _as_bool(settings.get('scheduler_rename_low_framerate_channels'), False):
                 LOGGER.info("⏰ SCHEDULED: Renaming low framerate channels...")
                 rename_low_fps_result = self.rename_low_framerate_channels_action(settings, scheduled_logger)
                 LOGGER.info(f"⏰ SCHEDULED: {rename_low_fps_result.get('message')}")
 
             # Step 5b: Rename black-screen channels if enabled
-            if settings.get('scheduler_rename_black_screen_channels', False):
+            if _as_bool(settings.get('scheduler_rename_black_screen_channels'), False):
                 LOGGER.info("⏰ SCHEDULED: Renaming black-screen channels...")
                 rename_black_result = self.rename_black_screen_channels_action(settings, scheduled_logger)
                 LOGGER.info(f"⏰ SCHEDULED: {rename_black_result.get('message')}")
 
             # Step 6: Add video format suffix if enabled
-            if settings.get('scheduler_add_video_format_suffix', False):
+            if _as_bool(settings.get('scheduler_add_video_format_suffix'), False):
                 LOGGER.info("⏰ SCHEDULED: Adding video format suffixes...")
                 suffix_result = self.add_video_format_suffix_action(settings, scheduled_logger)
                 LOGGER.info(f"⏰ SCHEDULED: {suffix_result.get('message')}")
             
             # Step 7: Move dead channels if enabled
-            if settings.get('scheduler_move_dead_channels', False):
+            if _as_bool(settings.get('scheduler_move_dead_channels'), False):
                 LOGGER.info("⏰ SCHEDULED: Moving dead channels to group...")
                 move_dead_result = self.move_dead_channels_action(settings, scheduled_logger)
                 LOGGER.info(f"⏰ SCHEDULED: {move_dead_result.get('message')}")
             
             # Step 8: Move low framerate channels if enabled
-            if settings.get('scheduler_move_low_framerate_channels', False):
+            if _as_bool(settings.get('scheduler_move_low_framerate_channels'), False):
                 LOGGER.info("⏰ SCHEDULED: Moving low framerate channels to group...")
                 move_low_fps_result = self.move_low_framerate_channels_action(settings, scheduled_logger)
                 LOGGER.info(f"⏰ SCHEDULED: {move_low_fps_result.get('message')}")
 
             # Step 8b: Move black-screen channels if enabled
-            if settings.get('scheduler_move_black_screen_channels', False):
+            if _as_bool(settings.get('scheduler_move_black_screen_channels'), False):
                 LOGGER.info("⏰ SCHEDULED: Moving black-screen channels to group...")
                 move_black_result = self.move_black_screen_channels_action(settings, scheduled_logger)
                 LOGGER.info(f"⏰ SCHEDULED: {move_black_result.get('message')}")
 
             # Step 9: Delete dead channels if enabled
-            if settings.get('scheduler_delete_dead_channels', False):
+            if _as_bool(settings.get('scheduler_delete_dead_channels'), False):
                 LOGGER.info("⏰ SCHEDULED: Deleting dead channels...")
                 delete_result = self.delete_dead_channels_action(settings, scheduled_logger)
                 if delete_result.get('status') == 'ok':
@@ -2266,7 +2281,7 @@ class Plugin:
             else:
                 facts.append(f"cron {', '.join(scheduled_times)} {self._dispatcharr_timezone()}")
 
-        if settings.get('scheduler_delete_dead_channels', False):
+        if _as_bool(settings.get('scheduler_delete_dead_channels'), False):
             if (settings.get('auto_delete_confirmation', '') or '').strip() != 'DELETE':
                 problems.append("auto-delete on but confirmation is not DELETE, so it will not run")
             else:
@@ -2671,7 +2686,7 @@ class Plugin:
             target_group_ids = {group_name_to_id[name] for name in target_group_names}
             channels_in_groups = self._get_all_channels(logger, group_ids=target_group_ids)
 
-            only_visible = bool(settings.get("only_visible_channels", False))
+            only_visible = _as_bool(settings.get("only_visible_channels"), False)
             if only_visible:
                 visible_ids = self._get_visible_channel_ids(logger)
                 before = len(channels_in_groups)
@@ -2687,7 +2702,7 @@ class Plugin:
 
     def _load_groups_sync(self, channels_in_groups, settings, logger, group_names_str, target_group_names):
         """Load groups using bulk ORM queries."""
-        check_alternative_streams = settings.get("check_alternative_streams", True)
+        check_alternative_streams = _as_bool(settings.get("check_alternative_streams"), True)
 
         # Bulk-fetch all streams for all channels in one query
         channel_ids = [ch['id'] for ch in channels_in_groups]
@@ -2715,7 +2730,7 @@ class Plugin:
     
     def _estimate_check_seconds(self, total_streams, settings):
         """Wall-clock estimate for a full check, including cooldown, retries, and an assumed dead rate."""
-        workers = max(1, int(settings.get("parallel_workers", 2) or 1)) if settings.get("enable_parallel_checking", False) else 1
+        workers = max(1, int(settings.get("parallel_workers", 2) or 1)) if _as_bool(settings.get("enable_parallel_checking"), False) else 1
         analysis = float(settings.get("ffprobe_analysis_duration", 5) or 0)
         probe_timeout = float(settings.get("probe_timeout", 20) or 0)
         retries = max(0, int(settings.get("dead_connection_retries", 3) or 0))
@@ -2740,12 +2755,12 @@ class Plugin:
             group_msg = f"group(s): {', '.join(sorted(target_group_names))}"
         if legacy_exclude:
             group_msg += f" (also excluding '{legacy_exclude}' from the old setting)"
-        if settings.get("only_visible_channels", False):
+        if _as_bool(settings.get("only_visible_channels"), False):
             group_msg += " (visible channels only)"
 
-        parallel_enabled = settings.get("enable_parallel_checking", False)
+        parallel_enabled = _as_bool(settings.get("enable_parallel_checking"), False)
         parallel_workers = settings.get("parallel_workers", 2)
-        check_alternative_streams = settings.get("check_alternative_streams", True)
+        check_alternative_streams = _as_bool(settings.get("check_alternative_streams"), True)
 
         mode_info = f"parallel mode with {parallel_workers} workers" if parallel_enabled else "sequential mode"
         estimated_seconds = self._estimate_check_seconds(total_streams, settings)
@@ -2787,7 +2802,7 @@ class Plugin:
         logger.info(f"Starting check for {len(all_streams)} streams...")
 
         # Calculate estimated time for the response message
-        parallel_enabled = settings.get("enable_parallel_checking", False)
+        parallel_enabled = _as_bool(settings.get("enable_parallel_checking"), False)
         parallel_workers = settings.get("parallel_workers", 2)
         mode_info = f"parallel mode with {parallel_workers} workers" if parallel_enabled else "sequential mode"
         estimated_total_time = max(1, int(self._estimate_check_seconds(len(all_streams), settings) / 60))
@@ -2796,7 +2811,7 @@ class Plugin:
 
     def _process_streams_background(self, all_streams, settings, logger):
         """Background processing of streams to avoid request timeout"""
-        enable_parallel = settings.get("enable_parallel_checking", True)
+        enable_parallel = _as_bool(settings.get("enable_parallel_checking"), True)
 
         if enable_parallel:
             self._process_streams_parallel(all_streams, settings, logger)
@@ -3845,7 +3860,7 @@ class Plugin:
         if csv_legacy_exclude:
             lines.append(f"#   Also excluded (old setting): {csv_legacy_exclude}")
         lines.append(f"#   Only Visible Channels: {_yes_no(settings.get('only_visible_channels'))}")
-        if settings.get('schedule_window_enabled', False):
+        if _as_bool(settings.get('schedule_window_enabled'), False):
             end_mode = settings.get('schedule_end_mode', 'duration')
             if end_mode == 'duration':
                 lines.append(f"#   Schedule Mode: window (duration {settings.get('schedule_duration_hours', 4)}h, tz {self._dispatcharr_timezone()})")
@@ -5043,7 +5058,7 @@ class Plugin:
                         # across many dead channels. Null metadata mirrors
                         # every other Dead stream so the DB stats get cleared
                         # (see _update_dispatcharr_metadata all_none).
-                        if (settings and settings.get('placeholder_file_detection')
+                        if (settings and _as_bool(settings.get('placeholder_file_detection'))
                                 and self._is_placeholder_file(probe_data)):
                             logger.info(
                                 f"✗ '{channel_name}' DEAD - Placeholder File "
@@ -5070,11 +5085,11 @@ class Plugin:
                         # nulls its metadata so the DB stats get cleared (see
                         # _update_dispatcharr_metadata all_none).
                         s = settings or {}
-                        want_black = bool(s.get('black_screen_detection'))
-                        want_freeze = bool(s.get('frozen_video_detection'))
+                        want_black = _as_bool(s.get('black_screen_detection'))
+                        want_freeze = _as_bool(s.get('frozen_video_detection'))
                         # A stream with no audio track cannot be silent; that is
                         # a different fault and this detector must not claim it.
-                        want_audio = bool(s.get('silent_audio_detection')) and audio_stream is not None
+                        want_audio = _as_bool(s.get('silent_audio_detection')) and audio_stream is not None
 
                         if (want_black or want_freeze or want_audio) and not self._stop_event.is_set():
                             verdicts = self._analyze_stream_content(

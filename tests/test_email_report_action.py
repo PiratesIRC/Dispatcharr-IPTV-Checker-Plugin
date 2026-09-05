@@ -203,15 +203,19 @@ def test_the_scheduled_step_reads_exactly_its_own_setting():
     """A substring check is NOT enough. Renaming the key to
     scheduler_email_report_DISABLED still CONTAINS the original name, so a
     mutation that stopped the scheduled step ever running passed unnoticed.
-    Assert the exact read instead."""
+    Assert the exact read instead.
+
+    The pinned text changed on 2026-09-05, when every boolean read moved to
+    _as_bool: plain truthiness read a value stored as the string "false" as on,
+    which would have armed a scheduled action the operator had switched off."""
     source = io.open(str(PLUGIN_PY), encoding="utf-8").read()
-    assert "settings.get('scheduler_email_report', False)" in source, \
+    assert "_as_bool(settings.get('scheduler_email_report'), False)" in source, \
         "the scheduled step does not read its own setting"
 
 
 def test_the_scheduled_step_calls_the_shared_builder():
     source = io.open(str(PLUGIN_PY), encoding="utf-8").read()
-    start = source.index("settings.get('scheduler_email_report', False)")
+    start = source.index("_as_bool(settings.get('scheduler_email_report'), False)")
     window = source[start:start + 900]
     assert "_build_and_deliver_report" in window, \
         "the scheduled step must use the same builder as the button"

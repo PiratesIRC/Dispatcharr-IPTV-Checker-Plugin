@@ -238,3 +238,23 @@ def test_a_session_that_was_not_cancelled_reports_and_acts(plugin, monkeypatch):
 
     for name in _PHASE_METHODS:
         assert name in calls, f"{name} did not run for a session that ended normally"
+
+
+def test_a_scheduled_delete_stored_as_the_string_false_does_not_run(plugin, monkeypatch):
+    """End to end, because the unit test alone cannot show the wiring.
+
+    Every boolean read used plain truthiness until 2026-09-05, so a value stored
+    as the string "false" was read as on. Nine of those reads gate a scheduled
+    rename, move or delete.
+    """
+    calls = _arrange(plugin, monkeypatch, scan_writes_results=True)
+    settings = dict(_ALL_PHASE_GATES)
+    settings["scheduler_delete_dead_channels"] = "false"
+    settings["scheduler_move_dead_channels"] = "false"
+
+    plugin._execute_scheduled_check(settings)
+
+    assert "delete_dead_channels_action" not in calls, "a switched-off delete ran"
+    assert "move_dead_channels_action" not in calls, "a switched-off move ran"
+    assert "rename_channels_action" in calls, (
+        "the settings left on must still run, or this proves nothing")
