@@ -27,14 +27,14 @@ This plugin renames, moves and can permanently delete channels. Before using it,
 Probes every stream behind your channels with `ffprobe`, records what it finds, and lets you act on
 the result.
 
-**It answers three questions per stream**, and keeps them apart because acting on the wrong one
+It answers three questions per stream, and keeps them apart because acting on the wrong one
 deletes channels that work:
 
-- **Alive.** The stream plays. Resolution, framerate, codecs and bitrate are recorded and synced
+- Alive. The stream plays. Resolution, framerate, codecs and bitrate are recorded and synced
   back into Dispatcharr so the channel menu can show them.
-- **Dead.** The stream does not play, or it plays but shows nothing worth watching: a blank picture,
+- Dead. The stream does not play, or it plays but shows nothing worth watching: a blank picture,
   a frozen picture, silence, or a fixed-duration placeholder file. Those last four are opt-in.
-- **Skipped.** The checker could not judge it. That covers a provider rate-limit response, a
+- Skipped. The checker could not judge it. That covers a provider rate-limit response, a
   radio station with no video track, and hosts `ffprobe` cannot read at all. **Skipped is never
   treated as dead**, so nothing destructive touches a stream that was merely throttled.
 
@@ -44,22 +44,25 @@ when **every** stream failed, so one dead backup never marks a working channel f
 
 Other things it does:
 
-- **Scheduled checks**, including overnight windows that pause at a set time and resume where they
+- Scheduled checks, including overnight windows that pause at a set time and resume where they
   left off on the next window.
-- **An HTML report** written to `/config/iptv_checker/report.html`, grouped by what you should do
+- An HTML report written to `/config/iptv_checker/report.html`, grouped by what you should do
   about each finding, and optionally emailed through the
   [Newsflasharr](https://github.com/PiratesIRC) plugin. It is one self-contained file that fetches
   nothing from the internet, so it reads the same in a mail client and on a television browser, and
   it follows a light or dark theme on its own.
-- **CSV export** with a full settings preamble, so every run leaves an audit record.
-- **Rename, move, restore and delete** actions, each with its own confirmation.
-- **Self-healing**: a channel that comes back to life is renamed back and moved to its original
+- CSV export with a preamble that says what the run did before it says how it was configured, so
+  every run leaves a record. Old exports can be deleted automatically after a number of days you
+  choose.
+- Rename, move, restore and delete actions. Only deleting is irreversible, and only that button is
+  red.
+- Self-healing: a channel that comes back to life is renamed back and moved to its original
   group automatically.
 
 ## Requirements
 
 - Dispatcharr v0.20.0 or newer, with channels and groups already configured.
-- **`ffprobe`** in the container. **`ffmpeg`** as well if you enable blank-screen, frozen-video or
+- `ffprobe` in the container, and `ffmpeg` as well if you enable blank-screen, frozen-video or
   silent-audio detection.
 - `pytz` for the scheduler, which is normally already present.
 

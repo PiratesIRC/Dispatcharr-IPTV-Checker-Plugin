@@ -22,10 +22,16 @@ def test_the_button_sits_directly_after_export_to_csv():
     assert ids[ids.index("export_results") + 1] == "email_report"
 
 
-def test_the_scheduled_setting_sits_directly_after_the_csv_setting():
+def test_the_scheduled_setting_opens_the_auto_run_section():
+    """It used to be pinned after scheduler_export_csv, which has been removed.
+
+    That setting was a control that did nothing: the scheduled CSV export is
+    unconditional by design. With it gone, the emailed report is the first
+    choice in the section, which is the position worth pinning.
+    """
     ids = [f["id"] for f in _DATA["fields"]]
     assert "scheduler_email_report" in ids
-    assert ids[ids.index("scheduler_export_csv") + 1] == "scheduler_email_report"
+    assert ids[ids.index("_section_auto_run") + 1] == "scheduler_email_report"
 
 
 def test_the_scheduled_setting_defaults_to_off():

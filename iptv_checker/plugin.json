@@ -1,6 +1,6 @@
 {
   "name": "IPTV Checker",
-  "version": "1.26.2481442",
+  "version": "1.26.2481544",
   "description": "A Dispatcharr Plugin that goes through a playlist to check IPTV channels",
   "author": "PiratesIRC",
   "logo": "logo.png",
@@ -14,7 +14,7 @@
       "id": "_section_scope",
       "label": "\ud83d\udce5 Group Selection",
       "type": "info",
-      "description": "Which Dispatcharr groups to check and whether to include backup streams."
+      "description": "Which Dispatcharr channel groups get checked, and whether backup streams are checked as well as the first one. An empty list means every group in both modes. Take care with a typo: in include mode a pattern that matches nothing selects nothing, but in exclude mode it excludes nothing, so the run covers every group and every one of them becomes eligible for the scheduled rename, move and delete. Press Validate Settings to see how many groups are in scope before running anything."
     },
     {
       "id": "channel_groups",
@@ -148,7 +148,7 @@
       "label": "\ud83d\udcc4 Detect Placeholder-File Streams",
       "type": "boolean",
       "default": false,
-      "help_text": "When ON, any stream reporting a fixed container duration is marked Dead under the `Placeholder File` error type, so the dead-channel rename/move/delete actions handle it. Adds no probe time. Measured against a full sweep of 156 provider channels: all 138 healthy channels reported no duration, while all 19 that did were serving a placeholder file. The duration and container bitrate are recorded in the CSV for every stream even when this is OFF, so you can check the evidence before turning it on. Leave OFF if any channel here is fed by a genuinely finite file you want to keep."
+      "help_text": "When ON, any stream reporting a fixed container duration is marked Dead under the `Placeholder File` error type, so the dead-channel rename/move/delete actions handle it. Adds no probe time. Measured against a full sweep of 156 provider channels: all 138 healthy channels reported no duration, while all 19 that did were serving a placeholder file. The duration and container bitrate are recorded in the CSV for every stream even when this is OFF, so you can check the evidence before turning it on. Leave OFF if any channel here is fed by a finite file you want to keep."
     },
     {
       "id": "_section_frozen_video",
@@ -194,13 +194,13 @@
       "id": "_section_post_check",
       "type": "info",
       "label": "\ud83c\udff7\ufe0f Post-Check Actions",
-      "description": "What to do with channels after a check completes: rename / move them by category, and restore recovered ones. Configure the tags and destination groups below; enable auto-apply on a schedule in 'Scheduling & Automation'."
+      "description": "What to do with channels once a check has finished: rename them, move them to another group, or restore ones that recovered. The five sections below set the tags and destination groups only. Nothing is applied until you press the matching action, or switch it on for scheduled runs further down the form."
     },
     {
       "id": "_section_dead",
       "label": "\u270f\ufe0f Dead Channel Handling",
       "type": "info",
-      "description": "How to rename and relocate channels that fail every stream check."
+      "description": "How to rename and relocate a channel when every one of its streams failed to play. These settings only describe the tag and the destination; nothing is applied until you press the matching action or switch it on for scheduled runs further down the form."
     },
     {
       "id": "dead_rename_format",
@@ -282,7 +282,7 @@
       "id": "_section_scheduling",
       "label": "\u23f0 Scheduling & Automation",
       "type": "info",
-      "description": "Run checks on a cron schedule and optionally apply rename / move / delete / webhook actions automatically afterwards."
+      "description": "When the plugin runs on its own, and how long each run is allowed to last. Times use the timezone Dispatcharr is configured with, not this machine's clock. Separate several schedules with a semicolon or a newline, never a comma, because a comma is also legal inside a cron field where it lists values. Which actions a scheduled run then applies is set in the three sections below this one."
     },
     {
       "id": "scheduled_times",
@@ -335,14 +335,7 @@
       "id": "_section_auto_run",
       "type": "info",
       "label": "\u2699\ufe0f Auto-run After Scheduled Checks",
-      "description": "Which post-check actions to apply automatically after each scheduled check completes. (Manual actions are always available on the Actions tab.)"
-    },
-    {
-      "id": "scheduler_export_csv",
-      "label": "\ud83d\udcbe Export CSV for Scheduled Checks",
-      "type": "boolean",
-      "default": false,
-      "help_text": "Automatically export results to CSV after scheduled checks complete."
+      "description": "What a scheduled check leaves behind. The CSV export always runs and is not optional, because it is the record of what was probed when a destructive action follows. A window that closes part way through the list still writes its CSV and still sends the report, and defers only the channel changes to the window that finishes the list. A run stopped from outside, which happens when the Dispatcharr Plugins page is opened during a check, writes its CSV and sends nothing else."
     },
     {
       "id": "scheduler_email_report",
@@ -357,6 +350,12 @@
       "type": "number",
       "default": 0,
       "help_text": "Housekeeping for the CSV files this plugin writes to /data/exports/. After each export, its own exports older than this many days are deleted. 0 keeps every file, which is the default, so nothing is removed unless you ask for it. The file just written is never deleted, and at least one file always survives. Only files named iptv_checker_results_*.csv are touched, because that directory is shared with other plugins."
+    },
+    {
+      "id": "_section_auto_rename_move",
+      "label": "\ud83d\udd04 Auto-run: Reversible Channel Changes",
+      "type": "info",
+      "description": "Which renaming and moving a scheduled check applies on its own. Restore Recovered Channels undoes the renames and the moves, because each move records the group the channel came from. It does NOT strip the video format suffix, which is applied to channels that play rather than to ones that failed. A channel is judged by all of its streams, so one that still plays on a backup is never renamed or moved however many of its other streams failed."
     },
     {
       "id": "scheduler_restore_channels",
@@ -415,6 +414,12 @@
       "help_text": "Automatically move low framerate channels to the configured group after scheduled checks complete."
     },
     {
+      "id": "_section_auto_delete",
+      "label": "\ud83d\uddd1 Auto-run: Deletion, Which Cannot Be Undone",
+      "type": "info",
+      "description": "The only automatic action that removes something. Deleting needs both the toggle below and the confirmation word typed beside it, and it acts only on channels where every stream failed to play and none was merely skipped. A channel whose streams were rate limited, or which carries audio only, has not been shown to be broken and is never deleted."
+    },
+    {
       "id": "scheduler_delete_dead_channels",
       "label": "\ud83d\uddd1\ufe0f Delete Dead Channels After Scheduled Checks",
       "type": "boolean",
@@ -440,7 +445,7 @@
       "type": "string",
       "default": "-show_streams,-show_packets,-loglevel error",
       "placeholder": "-show_streams, -show_packets",
-      "help_text": "Comma-separated ffprobe flags for stream analysis. Options: -show_streams (basic validation), -show_packets (per-packet data; required for video bitrate calculation on live MPEG-TS streams), -loglevel error (errors only). Default: -show_streams,-show_packets,-loglevel error. Note: do not add -show_frames \u2014 when both -show_frames and -show_packets are passed, ffprobe returns a combined packets_and_frames array instead of separate packets[], which prevents the bitrate fallback from running."
+      "help_text": "Comma-separated ffprobe flags for stream analysis. Options: -show_streams (basic validation), -show_packets (per-packet data; required for video bitrate calculation on live MPEG-TS streams), -loglevel error (errors only). Default: -show_streams,-show_packets,-loglevel error. Note: do not add -show_frames. When both -show_frames and -show_packets are passed, ffprobe returns a combined packets_and_frames array instead of separate packets[], which stops the bitrate fallback running."
     },
     {
       "id": "ffprobe_analysis_duration",
@@ -554,9 +559,9 @@
       "id": "rename_channels",
       "label": "\u270f\ufe0f Rename Dead Channels",
       "description": "Rename all channels marked as Dead in the last check using the configured rename format.",
-      "button_color": "red",
+      "button_color": "orange",
       "confirm": {
-        "message": "This will rename dead channels. This action is irreversible. Continue?"
+        "message": "This renames channels where every stream failed to play. Restore Recovered Channels undoes this. Continue?"
       },
       "button_variant": "filled",
       "button_label": "\u270f\ufe0f Rename Dead"
@@ -565,9 +570,9 @@
       "id": "move_dead_channels",
       "label": "\u26b0\ufe0f Move Dead Channels to Group",
       "description": "Moves all channels marked as Dead in the last check to the specified group.",
-      "button_color": "red",
+      "button_color": "orange",
       "confirm": {
-        "message": "This will move dead channels to the configured group. This action is irreversible. Continue?"
+        "message": "This moves channels where every stream failed to play into the configured group. Restore Recovered Channels undoes this. Continue?"
       },
       "button_variant": "filled",
       "button_label": "\u26b0\ufe0f Move Dead"
@@ -576,9 +581,9 @@
       "id": "rename_black_screen_channels",
       "label": "\u2b1b Rename Blank-Screen Channels",
       "description": "Rename all channels detected as a blank screen in the last check using the configured format.",
-      "button_color": "red",
+      "button_color": "orange",
       "confirm": {
-        "message": "This will rename blank-screen channels. This action is irreversible. Continue?"
+        "message": "This renames channels serving a blank picture on every stream. Restore Recovered Channels undoes this. Continue?"
       },
       "button_variant": "filled",
       "button_label": "\u2b1b Rename Blank"
@@ -587,9 +592,9 @@
       "id": "move_black_screen_channels",
       "label": "\u2b1b Move Blank-Screen Channels to Group",
       "description": "Moves all channels detected as a blank screen in the last check to the specified group.",
-      "button_color": "red",
+      "button_color": "orange",
       "confirm": {
-        "message": "This will move blank-screen channels to the configured group. This action is irreversible. Continue?"
+        "message": "This moves channels serving a blank picture into the configured group. Restore Recovered Channels undoes this. Continue?"
       },
       "button_variant": "filled",
       "button_label": "\u2b1b Move Blank"
@@ -598,7 +603,7 @@
       "id": "restore_channels",
       "label": "\u267b\ufe0f Restore Recovered Channels",
       "description": "For channels that are Alive again but were previously marked: strip plugin name tags and move them back to their original group.",
-      "button_color": "green",
+      "button_color": "orange",
       "confirm": {
         "message": "This will strip plugin tags from recovered channel names and move them back to their original groups. Continue?"
       },
@@ -610,10 +615,10 @@
       "label": "\ud83d\udc0c Rename Low Framerate Channels",
       "description": "Rename channels with streams under 30fps using the configured rename format.",
       "confirm": {
-        "message": "This will rename low framerate channels. This action is irreversible. Continue?"
+        "message": "This renames channels running below the framerate threshold. Restore Recovered Channels undoes this. Continue?"
       },
       "button_variant": "filled",
-      "button_color": "red",
+      "button_color": "orange",
       "button_label": "\ud83d\udc0c Rename Low FPS"
     },
     {
@@ -621,10 +626,10 @@
       "label": "\ud83d\udcc1 Move Low Framerate Channels",
       "description": "Moves channels with streams under 30fps to the specified group.",
       "confirm": {
-        "message": "This will move low framerate channels to the configured group. This action is irreversible. Continue?"
+        "message": "This moves channels running below the framerate threshold into the configured group. Restore Recovered Channels undoes this. Continue?"
       },
       "button_variant": "filled",
-      "button_color": "red",
+      "button_color": "orange",
       "button_label": "\ud83d\udcc1 Move Low FPS"
     },
     {
@@ -632,10 +637,10 @@
       "label": "\ud83c\udfac Add Video Format Suffix",
       "description": "Adds a format suffix like [HD] or [FHD] to alive channel names.",
       "confirm": {
-        "message": "This will rename channels based on the last check. This action is irreversible. Continue?"
+        "message": "This appends a quality suffix to the names of channels that play. Restore Recovered Channels does NOT strip these suffixes, because it acts only on channels this plugin marked as failing. Continue?"
       },
       "button_variant": "filled",
-      "button_color": "red",
+      "button_color": "orange",
       "button_label": "\ud83c\udfac Add Format Suffix"
     },
     {
@@ -674,9 +679,9 @@
       "id": "clear_csv_exports",
       "label": "\ud83d\uddd1\ufe0f Clear CSV Exports",
       "description": "Delete all CSV export files created by this plugin.",
-      "button_color": "red",
+      "button_color": "orange",
       "confirm": {
-        "message": "This will delete all CSV files in /data/exports/. This action cannot be undone. Continue?"
+        "message": "This deletes every CSV this plugin wrote to /data/exports/. Files other plugins wrote to that shared directory are not touched. Continue?"
       },
       "button_variant": "filled",
       "button_label": "\ud83d\uddd1\ufe0f Clear CSV Exports"

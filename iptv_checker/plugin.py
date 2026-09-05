@@ -346,6 +346,37 @@ _RATE_LIMIT_GUARD = RateLimitGuard()
 _CONTAINER_BOOT_TOKEN = None
 
 
+def _pct(count, total):
+    """Render a share of a total, or nothing at all when the total is zero.
+
+    Every percentage in the CSV preamble goes through here so none of them can
+    divide by zero, which is what an export of an empty results list used to do.
+    """
+    if not total:
+        return ""
+    return f" ({(count / total * 100):.1f}%)"
+
+
+def _yes_no(value, default=False):
+    """Render a stored setting as Yes or No for a person, not as a Python value.
+
+    Measured on this installation, Dispatcharr stores these as real booleans, so
+    the string handling below is defensive rather than something seen here. It
+    matters because a sibling plugin records receiving the strings "true" and
+    "false" for the same kind of field. An unset value falls back to the caller's
+    default, so the file reports the behaviour rather than No.
+
+    Known disagreement, recorded in the project notes: the read sites use plain
+    truthiness, so a value stored as the string "false" would run as if it were
+    on while this renders No.
+    """
+    if value is None:
+        value = default
+    if isinstance(value, str):
+        value = value.strip().lower() in ("true", "yes", "1", "on")
+    return "Yes" if value else "No"
+
+
 def _container_boot_token():
     """A token that is stable within one container lifetime but changes on every
     container (re)start. Used to detect a scheduler lock file left behind on the
@@ -388,7 +419,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.2481442"
+    version = "1.26.2481544"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -3750,6 +3781,36 @@ class Plugin:
         lines.append(f"# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         lines.append(f"# Plugin Version: {self.version}")
         lines.append("#")
+        lines.append("# WHAT THIS FILE IS")
+        lines.append("# A report from the IPTV Checker plugin for Dispatcharr, listing every")
+        lines.append("# stream it probed and what it found. Each line starting with a hash is")
+        lines.append("# explanation rather than data. The table begins at the first line without")
+        lines.append("# one, so tell your spreadsheet to skip comment lines when importing, or")
+        lines.append("# delete them first.")
+        lines.append("#")
+        lines.append("# The settings below are the ones in force when this file was written.")
+        lines.append("# A scheduled run exports with the settings the check used. A manual")
+        lines.append("# export uses whatever is saved now, which may have changed since the")
+        lines.append("# check ran, so compare the timestamps above before relying on them.")
+        lines.append("#")
+
+        # Counted up here, not at the foot of the file, because what the run did
+        # is what a reader wants before how it was configured.
+        total_streams = len(results)
+        alive_streams = sum(1 for r in results if r.get('status') == 'Alive')
+        skipped_streams = sum(1 for r in results if r.get('status') == 'Skipped')
+        dead_streams = sum(1 for r in results if r.get('status') == 'Dead')
+
+        lines.append("# WHAT THIS RUN DID")
+        lines.append(f"#   Streams checked: {total_streams}")
+        lines.append(f"#   Playing: {alive_streams}{_pct(alive_streams, total_streams)}")
+        lines.append(f"#   Not playing: {dead_streams}{_pct(dead_streams, total_streams)}")
+        lines.append(f"#   Not judged: {skipped_streams}{_pct(skipped_streams, total_streams)}")
+        lines.append("#     Not judged means rate limited, audio only, or a host this")
+        lines.append("#     checker cannot read. It is not evidence of a fault.")
+        lines.append("#   A channel is judged by ALL of its streams, so a channel with one")
+        lines.append("#   stream not playing and another playing is a working channel.")
+        lines.append("#")
 
         # Add timing information
         if self.check_progress.get('start_time') and self.check_progress.get('end_time'):
@@ -3783,7 +3844,7 @@ class Plugin:
         lines.append(f"#   Channel Groups Mode: {csv_mode}")
         if csv_legacy_exclude:
             lines.append(f"#   Also excluded (old setting): {csv_legacy_exclude}")
-        lines.append(f"#   Only Visible Channels: {settings.get('only_visible_channels', False)}")
+        lines.append(f"#   Only Visible Channels: {_yes_no(settings.get('only_visible_channels'))}")
         if settings.get('schedule_window_enabled', False):
             end_mode = settings.get('schedule_end_mode', 'duration')
             if end_mode == 'duration':
@@ -3792,7 +3853,8 @@ class Plugin:
                 lines.append(f"#   Schedule Mode: window (until {settings.get('schedule_end_time', '04:00')}, tz {self._dispatcharr_timezone()})")
         lines.append(f"#   Connection Timeout: {settings.get('timeout', 10)} seconds")
         lines.append(f"#   Probe Timeout: {settings.get('probe_timeout', 20)} seconds")
-        lines.append(f"#   Dead Connection Retries: {settings.get('dead_connection_retries', 3)}")
+        lines.append(f"#   Dead Connection Retries: {settings.get('dead_connection_retries', 3)} "
+                     "(extra attempts before a stream is called not playing)")
         lines.append(f"#   Dead Rename Format: {settings.get('dead_rename_format', '{name} [DEAD]')}")
         lines.append(f"#   Move Dead to Group: {settings.get('move_to_group_name', 'Graveyard')}")
         lines.append(f"#   Black-Screen Rename Format: {settings.get('black_screen_rename_format', '{name} [Blank]')}")
@@ -3800,17 +3862,38 @@ class Plugin:
         lines.append(f"#   Low Framerate Rename Format: {settings.get('low_framerate_rename_format', '{name} [Slow]')}")
         lines.append(f"#   Move Low Framerate to Group: {settings.get('move_low_framerate_group', 'Slow')}")
         lines.append(f"#   Video Format Suffixes: {settings.get('video_format_suffixes', 'UHD, FHD, HD, SD, Unknown')}")
-        lines.append(f"#   Parallel Checking Enabled: {settings.get('enable_parallel_checking', False)}")
-        lines.append(f"#   Parallel Workers: {settings.get('parallel_workers', 2)}")
+        lines.append(f"#   Parallel Checking Enabled: {_yes_no(settings.get('enable_parallel_checking'), True)}")
+        lines.append(f"#   Parallel Workers: {settings.get('parallel_workers', 2)} "
+                     "(streams probed at once; each one uses a provider connection)")
         lines.append(f"#   FFprobe Flags: {settings.get('ffprobe_flags', PluginConfig.DEFAULT_FFPROBE_FLAGS)}")
         lines.append(f"#   FFprobe Analysis Duration: {settings.get('ffprobe_analysis_duration', 5)} seconds")
         lines.append("#")
 
-        # Calculate cumulative statistics
-        total_streams = len(results)
-        alive_streams = sum(1 for r in results if r.get('status') == 'Alive')
-        skipped_streams = sum(1 for r in results if r.get('status') == 'Skipped')
-        dead_streams = sum(1 for r in results if r.get('status') == 'Dead')
+        # All four detectors are opt-in, so a report listing none of a category
+        # means either that none were found or that nobody looked. Recording
+        # which ran is what lets a reader tell those apart.
+        lines.append("# Detectors That Ran:")
+        for label, key in (("Blank Screen", "black_screen_detection"),
+                           ("Placeholder File", "placeholder_file_detection"),
+                           ("Frozen Video", "frozen_video_detection"),
+                           ("Silent Audio", "silent_audio_detection")):
+            lines.append(f"#   {label}: {_yes_no(settings.get(key))}")
+        lines.append("#")
+
+        # This file is the record kept when a destructive action follows it, so
+        # it has to say which of those actions were armed at the time.
+        lines.append("# Automatic Channel Changes Armed For Scheduled Runs:")
+        for label, key in (("Restore Recovered Channels", "scheduler_restore_channels"),
+                           ("Rename Dead Channels", "scheduler_rename_dead_channels"),
+                           ("Rename Blank Channels", "scheduler_rename_black_screen_channels"),
+                           ("Rename Slow Channels", "scheduler_rename_low_framerate_channels"),
+                           ("Add Format Suffix", "scheduler_add_video_format_suffix"),
+                           ("Move Dead Channels", "scheduler_move_dead_channels"),
+                           ("Move Blank Channels", "scheduler_move_black_screen_channels"),
+                           ("Move Slow Channels", "scheduler_move_low_framerate_channels"),
+                           ("Delete Dead Channels", "scheduler_delete_dead_channels")):
+            lines.append(f"#   {label}: {_yes_no(settings.get(key))}")
+        lines.append("#")
 
         # Format distribution
         format_counts = {}
@@ -3831,19 +3914,16 @@ class Plugin:
                 error_counts[error_type] = error_counts.get(error_type, 0) + 1
 
         # Add cumulative statistics
+        # The four counts are reported under WHAT THIS RUN DID at the top. This
+        # section carries only what is not repeated there.
         lines.append("# Cumulative Statistics:")
-        lines.append(f"#   Total Streams: {total_streams}")
-        lines.append(f"#   Alive Streams: {alive_streams} ({(alive_streams/total_streams*100):.1f}%)")
-        lines.append(f"#   Dead Streams: {dead_streams} ({(dead_streams/total_streams*100):.1f}%)")
-        if skipped_streams:
-            lines.append(f"#   Skipped Streams: {skipped_streams} ({(skipped_streams/total_streams*100):.1f}%)")
 
         if format_counts:
             lines.append("#")
             lines.append("#   Alive Stream Formats:")
             for fmt in sorted(format_counts.keys()):
                 count = format_counts[fmt]
-                lines.append(f"#     {fmt}: {count} ({(count/alive_streams*100):.1f}%)")
+                lines.append(f"#     {fmt}: {count}{_pct(count, alive_streams)}")
 
         if avg_framerate > 0:
             lines.append("#")
@@ -3859,7 +3939,7 @@ class Plugin:
             lines.append("#   Error Type Distribution:")
             for error_type in sorted(error_counts.keys()):
                 count = error_counts[error_type]
-                lines.append(f"#     {error_type}: {count} ({(count/dead_streams*100):.1f}%)")
+                lines.append(f"#     {error_type}: {count}{_pct(count, dead_streams)}")
 
         lines.append("#")
         lines.append("# " + "="*80)

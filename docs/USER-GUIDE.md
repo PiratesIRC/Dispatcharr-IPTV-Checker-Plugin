@@ -79,7 +79,7 @@ them. So the plugin judges a channel by **all** of its streams together:
 - **Any stream Alive** means the channel works. It is never reported dead, whatever the others did.
 - **Any stream Skipped, with none Alive** means the channel is **unproven**. A rate-limited stream
   might be fine, so nothing destructive touches it.
-- **Every stream Dead** is the only case that counts as dead.
+- **Every stream Dead** is the case the destructive actions act on.
 
 The same rule applies to the other categories. A channel is only reported as low framerate when
 every stream that actually plays is slow: if one plays at full rate, Dispatcharr can use it.
@@ -407,17 +407,26 @@ stream. The placeholder-file check adds none.
 
 ### After a scheduled check
 
-All default to off.
+The CSV export is not a setting. It runs after every scheduled check and cannot
+be switched off, because it is the record of what was probed when a destructive
+action follows. There was a toggle for it until 1.26.2481442; it never did
+anything, so it was removed rather than left promising a choice.
+
+A run that is stopped part way, which happens when the Dispatcharr Plugins page
+is opened during a check, still writes its CSV but sends no report and applies
+none of the actions below, because its verdicts are incomplete.
 
 | Setting | What it does |
 |---|---|
-| Export CSV | Write a CSV of the results |
-| **Email Report After Scheduled Check** | Build the HTML report and queue it for delivery |
+| Email Report After Scheduled Check | Build the HTML report and queue it for delivery |
+| Delete CSV Exports Older Than (Days) | Housekeeping for `/data/exports/`. 0 keeps every file, which is the default. Only files this plugin wrote are ever deleted, because that directory is shared with other plugins |
 | Restore Recovered Channels | Un-tag and move back channels that recovered. Runs first |
 | Rename Dead / Slow / Blank | Apply the matching rename format |
 | Add Video Format Suffix | Tag alive channels with their quality |
 | Move Dead / Slow / Blank | Move to the matching group |
 | Delete Dead Channels | Permanently delete. Also needs the confirmation setting |
+
+Every setting above defaults to off, and the retention setting defaults to 0.
 
 ### Advanced
 
@@ -455,7 +464,7 @@ All default to off.
 - **View Table** shows the results as text you can copy
 - **Export CSV** writes results plus a full settings preamble to `/data/exports/`
 - **Email Report** builds the HTML report and queues it for delivery
-- **Clear CSV Exports** deletes the exported files
+- **Clear CSV Exports** deletes every CSV this plugin wrote to `/data/exports/`
 - **Cleanup Orphaned Tasks** clears stale background state
 
 ---
@@ -525,7 +534,7 @@ them. Re-run later with fewer workers.
 
 ### A channel was marked dead but it plays
 
-Check whether the report puts it under **Working on a backup stream**. If it is genuinely listed as
+Check whether the report puts it under **Working on a backup stream**. If it is listed as
 dead, the last check found every one of its streams failing. Re-run before acting, especially if
 the report warns that the run was rate limited.
 

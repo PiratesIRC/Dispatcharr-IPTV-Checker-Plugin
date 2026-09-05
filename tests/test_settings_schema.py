@@ -30,7 +30,7 @@ FIELD_IDS = {
     'low_framerate_rename_format', 'move_low_framerate_group', '_section_format',
     'video_format_suffixes', '_section_restore',
     '_section_scheduling', 'scheduled_times', 'schedule_window_enabled', 'schedule_end_mode',
-    'schedule_duration_hours', 'schedule_end_time', '_section_auto_run', 'scheduler_export_csv',
+    'schedule_duration_hours', 'schedule_end_time', '_section_auto_run', '_section_auto_rename_move', '_section_auto_delete',
     'csv_retention_days',
     'scheduler_email_report',
     'scheduler_restore_channels', 'scheduler_rename_dead_channels',
