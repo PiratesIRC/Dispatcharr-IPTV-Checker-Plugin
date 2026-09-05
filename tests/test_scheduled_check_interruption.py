@@ -188,3 +188,53 @@ def test_window_state_is_cleared_when_the_scan_completed(plugin, monkeypatch):
     plugin._execute_scheduled_check(settings)
 
     assert cleared == [True]
+
+
+# --- a cancelled session must not report or act ------------------------------
+
+def test_a_cancelled_session_still_exports_the_csv(plugin, monkeypatch):
+    """The CSV is the audit record of what was probed, so it is unconditional."""
+    calls = _arrange(plugin, monkeypatch, scan_writes_results=True)
+    plugin._stop_event.set()
+
+    plugin._execute_scheduled_check(dict(_ALL_PHASE_GATES))
+
+    assert "export_results_action" in calls
+
+
+def test_a_cancelled_session_does_not_email_a_report(plugin, monkeypatch):
+    """Loading the Dispatcharr Plugins page ends the session and used to email.
+
+    Measured on 2026-09-05: one window produced two reports, because a plugin
+    reload ended the first session part way and the end-of-session step treated
+    it like a finished one. The second covered nine minutes and 125 streams.
+    """
+    calls = _arrange(plugin, monkeypatch, scan_writes_results=True)
+    plugin._stop_event.set()
+
+    plugin._execute_scheduled_check(dict(_ALL_PHASE_GATES))
+
+    assert "_build_and_deliver_report" not in calls
+
+
+def test_a_cancelled_session_does_not_rename_move_or_delete(plugin, monkeypatch):
+    """Those verdicts would come from a list that was only partly probed."""
+    calls = _arrange(plugin, monkeypatch, scan_writes_results=True)
+    plugin._stop_event.set()
+
+    plugin._execute_scheduled_check(dict(_ALL_PHASE_GATES))
+
+    for name in ("restore_channels_action", "rename_channels_action",
+                 "move_dead_channels_action", "delete_dead_channels_action"):
+        assert name not in calls, f"{name} ran after a cancelled session"
+
+
+def test_a_session_that_was_not_cancelled_reports_and_acts(plugin, monkeypatch):
+    """Control, so the three tests above are not passing for another reason."""
+    calls = _arrange(plugin, monkeypatch, scan_writes_results=True)
+    assert not plugin._stop_event.is_set()
+
+    plugin._execute_scheduled_check(dict(_ALL_PHASE_GATES))
+
+    for name in _PHASE_METHODS:
+        assert name in calls, f"{name} did not run for a session that ended normally"

@@ -92,6 +92,12 @@ class PluginConfig:
     # --- File Paths ---
     DATA_DIR = "/data"
     EXPORTS_DIR = "/data/exports"
+    # This plugin's own export files. EXPORTS_DIR is SHARED with other plugins,
+    # so every selection is scoped to this prefix: matching every .csv there
+    # would delete another project's data.
+    CSV_EXPORT_PREFIX = "iptv_checker_results_"
+    CSV_EXPORT_SUFFIX = ".csv"
+    SECONDS_PER_DAY = 86400.0
 
     # --- Report output ---
     # /config/<plugin>/ sits under Dispatcharr's existing bind mount, so it is a
@@ -382,7 +388,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.2481422"
+    version = "1.26.2481442"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -1231,6 +1237,83 @@ class Plugin:
                    for field, (low, high) in zip(fields, cls.CRON_FIELD_RANGES))
 
     @staticmethod
+    def _csv_exports_to_delete(entries, retention_days, now, protect=None):
+        """Which of this plugin's CSV exports are old enough to remove.
+
+        entries is a sequence of (filename, modification time) pairs, normally
+        the whole export directory. Returns the names to delete, sorted.
+
+        Nothing is deleted unless a positive number of days is configured, so an
+        installation that never asked for this keeps every file. The file just
+        written is never deleted. At least one of this plugin's files always
+        survives, so a small number cannot empty the directory.
+        """
+        try:
+            days = int(retention_days)
+        except (TypeError, ValueError):
+            return []
+        if days <= 0:
+            return []
+
+        mine = []
+        for name, mtime in entries:
+            if not (name.startswith(PluginConfig.CSV_EXPORT_PREFIX)
+                    and name.endswith(PluginConfig.CSV_EXPORT_SUFFIX)):
+                continue
+            try:
+                stamp = float(mtime)
+            except (TypeError, ValueError):
+                continue
+            if stamp != stamp:  # not a number, so its age is unknown
+                continue
+            mine.append((name, stamp))
+        if not mine:
+            return []
+
+        # One file is guaranteed to survive. The file just written is the
+        # natural choice when it is here, otherwise the most recent one.
+        survivor = protect if any(name == protect for name, _ in mine) else None
+        if survivor is None:
+            survivor = max(mine, key=lambda pair: (pair[1], pair[0]))[0]
+
+        cutoff = float(now) - days * PluginConfig.SECONDS_PER_DAY
+        return sorted(name for name, stamp in mine
+                      if stamp < cutoff and name != survivor)
+
+    def _prune_csv_exports(self, retention_days, protect=None):
+        """Delete this plugin's CSV exports older than retention_days.
+
+        Returns how many were removed. NEVER raises: this runs immediately after
+        a successful export, and a failure to tidy up must not turn a successful
+        export into a reported error.
+        """
+        directory = PluginConfig.EXPORTS_DIR
+        try:
+            names = os.listdir(directory)
+        except OSError:
+            return 0
+
+        entries = []
+        for name in names:
+            try:
+                entries.append((name, os.path.getmtime(os.path.join(directory, name))))
+            except OSError:
+                # It vanished between listing and asking, so there is nothing
+                # left to delete.
+                continue
+
+        removed = 0
+        for name in self._csv_exports_to_delete(entries, retention_days,
+                                                time.time(), protect):
+            try:
+                os.remove(os.path.join(directory, name))
+                removed += 1
+                LOGGER.info(f"Deleted CSV export older than {retention_days} days: {name}")
+            except OSError as exc:
+                LOGGER.warning(f"Could not delete old CSV export {name}: {exc}")
+        return removed
+
+    @staticmethod
     def _sort_schedule_candidate(expr, usable, rejected):
         """Put one candidate expression into the usable or the rejected list."""
         if Plugin._cron_expression_can_fire(expr):
@@ -1779,6 +1862,28 @@ class Plugin:
                 LOGGER.info(f"⏰ SCHEDULED: {export_result.get('message')}")
             except Exception as e:
                 LOGGER.error(f"⏰ SCHEDULED: CSV export failed: {e}", exc_info=True)
+            # A session can end because its window closed or the list finished,
+            # or because something stopped it underneath. Only the first two
+            # deserve a report and the rename, move and delete actions.
+            #
+            # Plugin.stop sets this event when Dispatcharr unloads the plugin,
+            # which a plugin discovery pass does, and opening the Dispatcharr
+            # Plugins page causes one. The window-end path does NOT set it. On
+            # 2026-09-05 a single window emailed two reports, because a page
+            # load ended the first session part way and it was treated as
+            # finished; the second covered nine minutes and 125 streams. The
+            # verdicts from a session that was cut short also come from a list
+            # that was only partly probed, which is why the post-actions stop
+            # here too. The CSV above is deliberately left unconditional: it is
+            # the record of what was probed, and that is true either way.
+            if self._stop_event.is_set():
+                LOGGER.warning(
+                    "⏰ SCHEDULED: this session was stopped before it finished, so "
+                    "no report is being sent and no rename, move or delete will run. "
+                    "The CSV export above records what was probed, and the next window "
+                    "continues from the saved progress."
+                )
+                return
 
             # Emailed report, beside the CSV export and on the same terms: it
             # runs on every scheduled session, BEFORE the mid-list gate, so a
@@ -3906,7 +4011,10 @@ class Plugin:
         # Determine all possible fieldnames including dynamic ffprobe fields
         fieldnames = self._compute_csv_fieldnames(results)
 
-        filepath = f"/data/exports/iptv_checker_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        filename = (PluginConfig.CSV_EXPORT_PREFIX
+                    + datetime.now().strftime('%Y%m%d_%H%M%S')
+                    + PluginConfig.CSV_EXPORT_SUFFIX)
+        filepath = os.path.join(PluginConfig.EXPORTS_DIR, filename)
         os.makedirs(PluginConfig.EXPORTS_DIR, exist_ok=True)
         with open(filepath, 'w', newline='', encoding='utf-8') as f:
             # Write header comments
@@ -3918,7 +4026,18 @@ class Plugin:
             writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
             writer.writeheader()
             writer.writerows(results)
-        return {"status": "ok", "message": f"Results exported to {filepath}"}
+
+        # Tidy up here rather than on a schedule: files only accumulate when one
+        # is written, so pruning at that moment keeps the directory bounded, and
+        # this plugin does not need a second timer. The file just written is
+        # protected regardless of what the arithmetic says.
+        pruned = self._prune_csv_exports(settings.get('csv_retention_days'),
+                                         protect=filename)
+        message = f"Results exported to {filepath}"
+        if pruned:
+            message += (f". Also removed {pruned} older export"
+                        f"{'s' if pruned != 1 else ''}.")
+        return {"status": "ok", "message": message}
 
     def clear_csv_exports_action(self, settings, logger):
         """Delete all CSV export files created by this plugin."""

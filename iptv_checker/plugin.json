@@ -1,6 +1,6 @@
 {
   "name": "IPTV Checker",
-  "version": "1.26.2481422",
+  "version": "1.26.2481442",
   "description": "A Dispatcharr Plugin that goes through a playlist to check IPTV channels",
   "author": "PiratesIRC",
   "logo": "logo.png",
@@ -350,6 +350,13 @@
       "type": "boolean",
       "default": false,
       "help_text": "When ON, each scheduled check builds the HTML report and queues it for delivery by email through Newsflasharr. Runs beside the CSV export and on the same terms, so a window that closes part way through the channel list still leaves a report. Requires the Newsflasharr plugin, its SMTP settings, and a routing rule matching source iptv_checker and event usage_report with channel smtp. Without that rule the report is delivered somewhere else, so the plugin checks for it first and refuses rather than reporting a success you cannot verify."
+    },
+    {
+      "id": "csv_retention_days",
+      "label": "\ud83e\uddf9 Delete CSV Exports Older Than (Days)",
+      "type": "number",
+      "default": 0,
+      "help_text": "Housekeeping for the CSV files this plugin writes to /data/exports/. After each export, its own exports older than this many days are deleted. 0 keeps every file, which is the default, so nothing is removed unless you ask for it. The file just written is never deleted, and at least one file always survives. Only files named iptv_checker_results_*.csv are touched, because that directory is shared with other plugins."
     },
     {
       "id": "scheduler_restore_channels",
