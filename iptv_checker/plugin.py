@@ -379,7 +379,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.2402308"
+    version = "1.26.2481321"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -1576,6 +1576,36 @@ class Plugin:
                                    "it will self-evict on its next iteration")
                 LOGGER.info("Scheduler thread stopped")
     
+    @staticmethod
+    def _post_scan_phases_should_run(results_mtime_before, results_mtime_after):
+        """True only when this session's scan wrote a new results file.
+
+        The results file is written exactly once, at the end of a scan, so a
+        scan that was interrupted leaves the PREVIOUS run's complete results in
+        place. Running the CSV export, the emailed report and the rename, move
+        and delete actions against that file re-applies verdicts from an earlier
+        run at an arbitrary later time, which can delete a channel that has
+        recovered since.
+
+        A status value cannot answer this. The in-memory copy is process local,
+        and the on-disk copy is written a moment after the status flips, so a
+        scan that genuinely finished can briefly read as still running and would
+        lose its report. Comparing the file's own modification time across the
+        scan is a direct test and needs no clock.
+        """
+        if results_mtime_after is None:
+            return False
+        if results_mtime_before is None:
+            return True
+        return results_mtime_after > results_mtime_before
+
+    def _results_file_mtime(self):
+        """Modification time of the results file, or None when unreadable."""
+        try:
+            return os.path.getmtime(self.results_file)
+        except OSError:
+            return None
+
     def _execute_scheduled_check(self, settings, preserved_window_end=None, preserved_window_tz=None):
         """Execute the scheduled stream check (Load Groups + Start Check).
 
@@ -1605,6 +1635,10 @@ class Plugin:
             elif not self._setup_window_state(settings):
                 return
 
+        # Set before the try so the finally can tell an interrupted session from a
+        # finished one without having to re-read anything.
+        scan_unfinished = False
+
         try:
             # Step 1: Load Groups (or apply pending resume in window mode)
             resumed = False
@@ -1624,6 +1658,9 @@ class Plugin:
                     self._seed_pending_from_loaded_channels(settings)
 
             # Step 2: Start Stream Check
+            # Recorded before the scan so the post-scan phases can tell whether THIS
+            # session produced results, rather than trusting a status value.
+            results_mtime_before = self._results_file_mtime()
             LOGGER.info("⏰ SCHEDULED: Starting stream check...")
             check_result = self.check_streams_action(settings, scheduled_logger, context={'scheduled': True})
             
@@ -1638,6 +1675,25 @@ class Plugin:
             while self.check_progress.get('status') == 'running' and not _scheduler_stop_event.is_set():
                 time.sleep(5)
             
+            # The wait above also ends when the scheduler stop event is set, which
+            # _stop_background_scheduler does in order to end the scheduler loop. That
+            # leaves the scan thread still running, so reaching this point is not proof
+            # that anything was probed. Acting anyway would run the CSV export, the
+            # emailed report and every rename, move and delete against a results file
+            # that still holds the PREVIOUS run, re-applying that run's verdicts at an
+            # arbitrary later time and potentially deleting a channel that has since
+            # recovered.
+            if not self._post_scan_phases_should_run(
+                    results_mtime_before, self._results_file_mtime()):
+                scan_unfinished = True
+                LOGGER.warning(
+                    "⏰ SCHEDULED: this session wrote no new results, so the scan did "
+                    "not finish. Skipping the CSV export, the emailed report and every "
+                    "rename, move and delete, because the results file still holds the "
+                    "previous run. A scan that is still running continues unaffected."
+                )
+                return
+
             LOGGER.info("⏰ SCHEDULED: Stream check completed")
 
             # CSV export runs on every scheduled session, BEFORE the mid-list gate.
@@ -1745,7 +1801,10 @@ class Plugin:
         except Exception as e:
             LOGGER.error(f"⏰ SCHEDULED: Error during scheduled check: {e}", exc_info=True)
         finally:
-            if is_window:
+            # Clearing the window state removes the boundary the running scan checks
+            # between streams, so an interrupted session must leave it alone or that
+            # scan runs on to the end of the list instead of stopping at its window end.
+            if is_window and not scan_unfinished:
                 self._clear_window_state()
 
     def _get_latest_version(self, owner="PiratesIRC", repo="Dispatcharr-IPTV-Checker-Plugin"):
