@@ -218,16 +218,16 @@ def test_parse_scheduled_times_keeps_a_value_list_inside_one_field(plugin):
 
 
 def test_parse_scheduled_times_splits_on_semicolon(plugin):
-    assert plugin._parse_scheduled_times("0 0,8 * * * ; 0 30 2 * *") == [
+    assert plugin._parse_scheduled_times("0 0,8 * * * ; 30 2 * * *") == [
         "0 0,8 * * *",
-        "0 30 2 * *",
+        "30 2 * * *",
     ]
 
 
 def test_parse_scheduled_times_splits_on_newline(plugin):
-    assert plugin._parse_scheduled_times("0 0,8 * * *\n0 30 2 * *") == [
+    assert plugin._parse_scheduled_times("0 0,8 * * *\n30 2 * * *") == [
         "0 0,8 * * *",
-        "0 30 2 * *",
+        "30 2 * * *",
     ]
 
 def test_value_list_schedule_fires_at_each_listed_hour(plugin):

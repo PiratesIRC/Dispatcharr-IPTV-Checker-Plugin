@@ -138,6 +138,9 @@ class PluginConfig:
     # than leaving a dead file for another few minutes.
     PROGRESS_STALE_AFTER_SECONDS = 900
     SCHEDULER_CHECK_INTERVAL = 30  # Check every 30 seconds
+    # Beyond this many clock times a description would be longer than the
+    # interface message can show, so the expression is shown as written instead.
+    CRON_MAX_DESCRIBED_TIMES = 6
     SCHEDULER_TIME_WINDOW = 30  # ±30 second window to trigger
     SCHEDULER_ERROR_WAIT = 60  # Wait 60s if error occurs
     SCHEDULER_STOP_TIMEOUT = 5  # Max wait for thread to stop
@@ -379,7 +382,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.2481321"
+    version = "1.26.2481422"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -1183,20 +1186,77 @@ class Plugin:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5)
     
-    def _parse_scheduled_times(self, scheduled_times_str):
+    # minute, hour, day of month, month, day of week. Day of week allows 7
+    # because standard cron uses it for Sunday; _cron_matches accepts both.
+    CRON_FIELD_RANGES = ((0, 59), (0, 23), (1, 31), (1, 12), (0, 7))
+
+    @staticmethod
+    def _cron_field_can_fire(field, low, high):
+        """True when this field can match at least one real value.
+
+        Mirrors what _cron_field_matches actually reads: a wildcard, a step, a
+        list of plain integers, one range, or one integer. Anything else, and
+        any value outside the range, matches nothing however it is written, so
+        a schedule built from it would be saved and then never run.
         """
-        Parse one or more cron expressions separated by a semicolon, a newline
-        or a comma.
-        Format: 'minute hour day month weekday'
-        Example: "0 4 * * *" = daily at 4:00 AM
-        Example: "0 3 1 * *" = 1st of month at 3:00 AM
-        Example: "0 0,8,16 * * *" = daily at midnight, 8 AM and 4 PM
-        Returns list of cron expression strings.
+        field = field.strip()
+        if field == '*':
+            return True
+        if field.startswith('*/'):
+            step = field[2:]
+            return step.isdigit() and int(step) > 0
+        if ',' in field:
+            # The matcher reads a list as plain integers, so a range or a step
+            # inside a list never matches.
+            values = [value.strip() for value in field.split(',')]
+            return bool(values) and all(
+                value.isdigit() and low <= int(value) <= high for value in values)
+        if '-' in field:
+            bounds = field.split('-')
+            if len(bounds) != 2:
+                return False
+            start, end = (bound.strip() for bound in bounds)
+            if not (start.isdigit() and end.isdigit()):
+                return False
+            return low <= int(start) <= int(end) <= high
+        return field.isdigit() and low <= int(field) <= high
+
+    @classmethod
+    def _cron_expression_can_fire(cls, expr):
+        """True when every field of a 5-field expression can match."""
+        fields = expr.split()
+        if len(fields) != 5:
+            return False
+        return all(cls._cron_field_can_fire(field, low, high)
+                   for field, (low, high) in zip(fields, cls.CRON_FIELD_RANGES))
+
+    @staticmethod
+    def _sort_schedule_candidate(expr, usable, rejected):
+        """Put one candidate expression into the usable or the rejected list."""
+        if Plugin._cron_expression_can_fire(expr):
+            usable.append(expr)
+        else:
+            rejected.append(expr)
+            LOGGER.warning(
+                "Refusing cron expression '%s': it cannot ever match. Check the field "
+                "count and for values out of range, quotation marks, day names rather "
+                "than numbers, spaces after a comma, or a trailing comma." % expr
+            )
+
+    def _split_schedule_input(self, scheduled_times_str):
+        """Return (usable, rejected) for a raw schedule string.
+
+        Kept separate from _parse_scheduled_times so the two callers can differ.
+        Saving a schedule refuses anything rejected, because the operator is
+        there to correct it. Loading a STORED schedule keeps whatever still
+        works, because refusing the lot would turn an installation that was
+        partly running into one that runs nothing, silently, at boot.
         """
         if not scheduled_times_str or not scheduled_times_str.strip():
-            return []
-        
+            return [], []
+
         cron_expressions = []
+        rejected = []
         for chunk in re.split(r'[;\r\n]', scheduled_times_str):
             chunk = chunk.strip()
             if not chunk:
@@ -1208,7 +1268,7 @@ class Plugin:
             # expression "0 0,8,16 * * *" into three fragments and rejected the
             # whole schedule (GitHub issue 27).
             if len(chunk.split()) == 5:
-                cron_expressions.append(chunk)
+                self._sort_schedule_candidate(chunk, cron_expressions, rejected)
                 continue
 
             # Otherwise fall back to the comma as a separator, which is what
@@ -1217,16 +1277,21 @@ class Plugin:
                 expr = expr.strip()
                 if not expr:
                     continue
-                if len(expr.split()) == 5:
-                    cron_expressions.append(expr)
-                else:
-                    LOGGER.warning(
-                        "Invalid cron expression (must have 5 fields): %s. If this is part of a "
-                        "list of values inside one expression, separate your expressions with a "
-                        "semicolon instead of a comma." % expr
-                    )
-        
-        return cron_expressions
+                self._sort_schedule_candidate(expr, cron_expressions, rejected)
+
+        return cron_expressions, rejected
+
+    def _parse_scheduled_times(self, scheduled_times_str):
+        """Cron expressions from a raw schedule string, skipping unusable ones.
+
+        Format: 'minute hour day month weekday'. Several expressions are
+        separated by a semicolon or a newline; a comma also works and is what
+        older saved schedules use, but a comma is legal INSIDE a field too, so a
+        chunk that already reads as one complete 5-field expression is taken
+        whole (GitHub issue 27).
+        """
+        usable, _rejected = self._split_schedule_input(scheduled_times_str)
+        return usable
 
     def _cron_matches(self, cron_expr, dt):
         """
@@ -1261,7 +1326,14 @@ class Plugin:
             # Python's weekday() returns 0=Monday, so convert: (weekday + 1) % 7
             python_weekday = dt.weekday()
             cron_weekday = (python_weekday + 1) % 7
-            if not self._cron_field_matches(weekday_expr, cron_weekday, 0, 6):
+            # Standard cron also numbers Sunday 7, and the conversion above only
+            # ever yields 0 for it. Without offering 7 as well, an expression
+            # written that way matches nothing, while the interface describes it
+            # as Sunday: a schedule that is saved, described, and never runs.
+            weekday_ok = self._cron_field_matches(weekday_expr, cron_weekday, 0, 6)
+            if not weekday_ok and cron_weekday == 0:
+                weekday_ok = self._cron_field_matches(weekday_expr, 7, 0, 7)
+            if not weekday_ok:
                 return False
             
             return True
@@ -3908,8 +3980,22 @@ class Plugin:
                     "message": "✅ Schedule cleared. Scheduler has been stopped.\n\nTo enable scheduling, configure scheduled times in cron format."
                 }
             
-            # Validate scheduled times format (cron expressions)
-            scheduled_times = self._parse_scheduled_times(scheduled_times_str)
+            # Validate scheduled times format (cron expressions). Saving is the
+            # moment to be strict, because the operator is here to correct it.
+            # Loading a stored schedule stays lenient, so an installation that
+            # was partly running does not silently stop running altogether.
+            scheduled_times, rejected = self._split_schedule_input(scheduled_times_str)
+            if rejected:
+                return {
+                    "status": "error",
+                    "message": self._fit(
+                        "Not saved. These cannot ever run: "
+                        + "; ".join(f"'{expr}'" for expr in rejected)
+                        + ". Check for values out of range, quotation marks, day names "
+                          "rather than numbers, a space after a comma inside a field, or "
+                          "a trailing comma. Separate several schedules with a semicolon.",
+                        PluginConfig.TOAST_BUDGET),
+                }
             if not scheduled_times:
                 return {
                     "status": "error",
@@ -3934,7 +4020,14 @@ class Plugin:
                 self._request_scheduler_reload()
             
             # Build status message
-            times_display = ', '.join(scheduled_times)  # Already strings (cron expressions)
+            # Show what each expression means. _humanize_cron returns the
+            # expression unchanged when it cannot describe it, and repeating it in
+            # brackets would be noise, so only a real description is appended.
+            described = []
+            for expr in scheduled_times:
+                phrase = self._humanize_cron(expr)
+                described.append(expr if phrase == expr else f"{expr} ({phrase})")
+            times_display = ', '.join(described)
             
             message = f"✅ Schedule updated successfully!\n\n"
             message += f"Cron Schedules: {times_display}\n"
@@ -3942,8 +4035,10 @@ class Plugin:
             message += f"Status: Enabled ✓\n\n"
             message += f"The scheduler will run checks at the configured times."
             
-            return {"status": "ok", "message": message}
-            
+            # A toast is clipped from the MIDDLE with no ellipsis, so an over-long
+            # message loses the schedule itself. _fit trims from the end instead.
+            return {"status": "ok", "message": self._fit(message, PluginConfig.TOAST_BUDGET)}
+
         except Exception as e:
             logger.error(f"Error updating schedule: {e}", exc_info=True)
             return {"status": "error", "message": f"Failed to update schedule: {str(e)}"}
@@ -4003,80 +4098,110 @@ class Plugin:
             }
     
     def _humanize_cron(self, expr):
-        """Convert a 5-field cron expression into a human-readable phrase."""
+        """Describe a 5-field cron expression in plain language.
+
+        Returns the expression unchanged whenever it cannot be described with
+        certainty. A wrong description is worse than none, because it would tell
+        the operator their check runs at a time it never will. The unrunnable
+        expression "0 25 * * *" is the worked example: this plugin's parser
+        accepts it and it can never match an hour, so it is shown as written.
+        """
         parts = expr.strip().split()
         if len(parts) != 5:
             return expr
         minute, hour, dom, month, dow = parts
 
-        day_names = {"0": "Sun", "1": "Mon", "2": "Tue", "3": "Wed",
-                     "4": "Thu", "5": "Fri", "6": "Sat", "7": "Sun"}
-        month_names = {"1": "Jan", "2": "Feb", "3": "Mar", "4": "Apr",
-                       "5": "May", "6": "Jun", "7": "Jul", "8": "Aug",
-                       "9": "Sep", "10": "Oct", "11": "Nov", "12": "Dec"}
+        day_abbr = {"0": "Sun", "1": "Mon", "2": "Tue", "3": "Wed",
+                    "4": "Thu", "5": "Fri", "6": "Sat", "7": "Sun"}
+        day_full = {"0": "Sunday", "1": "Monday", "2": "Tuesday", "3": "Wednesday",
+                    "4": "Thursday", "5": "Friday", "6": "Saturday", "7": "Sunday"}
+        month_full = {"1": "January", "2": "February", "3": "March", "4": "April",
+                      "5": "May", "6": "June", "7": "July", "8": "August",
+                      "9": "September", "10": "October", "11": "November",
+                      "12": "December"}
 
-        def fmt_time(h, m):
-            try:
-                if any(c in h for c in "*/,-") or any(c in m for c in "*/,-"):
+        def join_words(items):
+            if len(items) == 1:
+                return items[0]
+            return ", ".join(items[:-1]) + " and " + items[-1]
+
+        def values(field, low, high):
+            """Explicit values of a plain or comma-listed field, else None."""
+            out = []
+            for chunk in field.split(","):
+                if not chunk.isdigit():
                     return None
-                hi, mi = int(h), int(m)
-                if not (0 <= hi < 24 and 0 <= mi < 60):
+                number = int(chunk)
+                if not (low <= number <= high):
                     return None
-                suffix = "AM" if hi < 12 else "PM"
-                disp = hi % 12 or 12
-                return f"{disp}:{mi:02d} {suffix}"
-            except ValueError:
-                return None
+                out.append(number)
+            return out
 
-        def fmt_step(minute_field, hour_field):
-            if hour_field == "*" and minute_field.startswith("*/"):
-                step = minute_field[2:]
-                if step.isdigit():
-                    return f"every {step} minute{'s' if step != '1' else ''}"
-            if minute_field == "0" and hour_field.startswith("*/"):
-                step = hour_field[2:]
-                if step.isdigit():
-                    return f"every {step} hour{'s' if step != '1' else ''}"
-            return None
+        def clock(hours_value, minutes_value):
+            suffix = "AM" if hours_value < 12 else "PM"
+            return f"{hours_value % 12 or 12}:{minutes_value:02d} {suffix}"
 
-        def fmt_dow(d):
-            if d == "*":
-                return "every day"
-            if "-" in d and "/" not in d:
-                a, b = d.split("-", 1)
-                return f"{day_names.get(a, a)}–{day_names.get(b, b)}"
-            if "," in d:
-                return ", ".join(day_names.get(x, x) for x in d.split(","))
-            return day_names.get(d, d)
+        # A step expression describes a frequency rather than a clock time.
+        frequency = None
+        if hour == "*" and minute.startswith("*/") and minute[2:].isdigit():
+            count = int(minute[2:])
+            frequency = "Every minute" if count == 1 else f"Every {count} minutes"
+        elif minute == "0" and hour.startswith("*/") and hour[2:].isdigit():
+            count = int(hour[2:])
+            frequency = "Every hour" if count == 1 else f"Every {count} hours"
 
-        step_str = fmt_step(minute, hour)
-        time_str = fmt_time(hour, minute)
-        when = []
-        if step_str:
-            when.append(step_str)
-        elif time_str:
-            when.append(f"at {time_str}")
-        else:
-            return expr
+        times = None
+        if frequency is None:
+            minutes = values(minute, 0, 59)
+            hours = values(hour, 0, 23)
+            if minutes is None or hours is None:
+                return expr
+            if len(minutes) * len(hours) > PluginConfig.CRON_MAX_DESCRIBED_TIMES:
+                return expr
+            times = [clock(h, m) for h in sorted(hours) for m in sorted(minutes)]
 
         if dow != "*":
-            when.append(f"on {fmt_dow(dow)}")
-        elif dom != "*":
-            if "/" in dom:
-                _, step = dom.split("/", 1)
-                when.append(f"every {step} days")
+            if "/" in dow:
+                return expr
+            if "-" in dow:
+                first, last = dow.split("-", 1)
+                if first not in day_abbr or last not in day_abbr:
+                    return expr
+                days = f"{day_abbr[first]} to {day_abbr[last]}"
+            elif "," in dow:
+                picked = dow.split(",")
+                if any(value not in day_abbr for value in picked):
+                    return expr
+                days = join_words([day_abbr[value] for value in picked])
             else:
-                when.append(f"on day {dom} of the month")
+                if dow not in day_full:
+                    return expr
+                days = f"{day_full[dow]}s"
+        elif dom != "*":
+            if dom.startswith("*/") and dom[2:].isdigit():
+                days = f"Every {dom[2:]} days"
+            elif dom.isdigit() and 1 <= int(dom) <= 31:
+                days = f"Day {int(dom)} of each month"
+            else:
+                return expr
         else:
-            when.append("daily")
+            days = "Daily"
+
+        if frequency is not None:
+            described = frequency if days == "Daily" else f"{frequency}, {days}"
+        else:
+            described = (f"Daily at {join_words(times)}" if days == "Daily"
+                         else f"{days} at {join_words(times)}")
 
         if month != "*":
-            if "," in month:
-                when.append("in " + ", ".join(month_names.get(x, x) for x in month.split(",")))
-            else:
-                when.append(f"in {month_names.get(month, month)}")
+            named = []
+            for chunk in month.split(","):
+                if chunk not in month_full:
+                    return expr
+                named.append(month_full[chunk])
+            described = f"{described} in {join_words(named)}"
 
-        return " ".join(when)
+        return described
 
     def check_scheduler_status_action(self, settings, logger):
         """Compact scheduler status — fits in a single toast notification."""
