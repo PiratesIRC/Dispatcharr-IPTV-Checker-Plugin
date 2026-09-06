@@ -122,7 +122,7 @@ Follow this plugin's own release runbook. In outline, and in this order:
 
 1. Run the publish audit before anything leaves the machine:
    `python ../.claude/skills/pre-publish-audit/audit_publish.py --ref <tag> --rules .publish-audit.json`
-2. Bump the version with the plugin's own `bump_version.py`. Never hand-edit versions.
+2. Bump the version with `python scripts/bump_version.py`. Never hand-edit versions.
 3. Commit, tag, push. Confirm continuous integration built and attached the release asset, and that
    the asset URL returns HTTP 200.
 4. Update `version` in `plugins/<slug>/plugin.json` on the Hub pull request branch. `source_url`

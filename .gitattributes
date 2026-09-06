@@ -11,3 +11,4 @@ iptv_checker/notify_client.py text eol=lf
 # reasoning as above: a CRLF copy normalises back on a Linux checkout and stops
 # matching its pin.
 iptv_checker/report_chrome.py text eol=lf
+.githooks/* text eol=lf

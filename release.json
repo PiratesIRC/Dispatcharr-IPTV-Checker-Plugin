@@ -1,0 +1,34 @@
+{
+  "repo": "iptv_checker",
+  "tag_prefix": "v",
+  "default_branch": "main",
+  "remote": "origin",
+  "changelog": "CHANGELOG.md",
+  "version_attr_regex": null,
+  "hub_mode": "external",
+  "publish_model": "tag",
+  "publish_branch": null,
+  "python": "3.12",
+  "extra_gates": [],
+  "tests_tracked": true,
+  "package_dir": "iptv_checker",
+  "plugin_key": "iptv_checker",
+  "zip_name": "iptv_checker-v{version}.zip",
+  "hub_slug": "iptv-checker",
+  "version_files": [
+    {
+      "path": "iptv_checker/plugin.json",
+      "regex": "\"version\"\\s*:\\s*\"([^\"]+)\""
+    },
+    {
+      "path": "iptv_checker/plugin.py",
+      "regex": "^\\s*version\\s*=\\s*\"([^\"]+)\""
+    },
+    {
+      "path": "CLAUDE.md",
+      "regex": "^\\*\\*Current Version: v([^*]+)\\*\\*",
+      "optional": true
+    }
+  ],
+  "_note": "Contract read by scripts/*.py, .githooks, .github/workflows and the workspace release, pre-release-qa, deploy-plugin and hub-release skills. Values marked null are unknown or not applicable. Keep keys in this order."
+}

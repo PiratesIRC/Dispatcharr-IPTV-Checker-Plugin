@@ -66,15 +66,24 @@ def test_bump_version_can_actually_rewrite_claude_md():
     early for the same reason; this one says so in the report.
     """
     import importlib.util
+    import json
 
     import pytest
 
     if not CLAUDE_MD.exists():
         pytest.skip("CLAUDE.md is gitignored and absent in a clean clone")
 
-    spec = importlib.util.spec_from_file_location("bump_version", PROJECT_ROOT / "bump_version.py")
-    bump = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(bump)
+    # Since 2026-09-06 the bump lives in scripts/bump_version.py (vendored from
+    # the workspace) and the files it stamps are declared in release.json.
+    # The CLAUDE.md line must be one of them, or a release ships a stale line.
+    release = json.loads((PROJECT_ROOT / "release.json").read_text(encoding="utf-8"))
+    entries = [e for e in release["version_files"] if e["path"] == "CLAUDE.md"]
+    assert entries, "release.json version_files does not include CLAUDE.md"
+
+    spec = importlib.util.spec_from_file_location(
+        "release_config", PROJECT_ROOT / "scripts" / "release_config.py")
+    release_config = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(release_config)
 
     # Back up and restore in BINARY. A text-mode round trip reads with
     # universal newlines and would silently rewrite a CRLF file as LF, so a
@@ -83,7 +92,7 @@ def test_bump_version_can_actually_rewrite_claude_md():
     # would not even show up in a diff.
     original = CLAUDE_MD.read_bytes()
     try:
-        bump.write_claude_md_version("9.99.9999999")
+        release_config.write_version(PROJECT_ROOT, entries[0], "9.99.9999999")
         rewritten = CLAUDE_MD.read_text(encoding="utf-8")
         m = CURRENT_VERSION_RE.search(rewritten)
         assert m, "Current Version line vanished after a bump"

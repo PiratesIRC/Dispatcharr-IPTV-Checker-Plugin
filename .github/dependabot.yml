@@ -1,0 +1,16 @@
+# Version updates for the pinned GitHub Actions in .github/workflows. Every
+# action is pinned to a commit SHA, which means nothing moves on its own, not
+# even through a security release of that action. Dependabot understands SHA
+# pins and raises a pull request that moves the SHA and the version comment
+# together.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    labels:
+      - dependencies
