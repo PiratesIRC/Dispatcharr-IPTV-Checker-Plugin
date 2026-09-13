@@ -419,6 +419,7 @@ none of the actions below, because its verdicts are incomplete.
 | Setting | What it does |
 |---|---|
 | Email Report After Scheduled Check | Build the HTML report and queue it for delivery |
+| Trigger Stream-Mapparr After Scheduled Check | Call the Stream-Mapparr plugin as the last step, so it sorts and matches against the fresh results. Only after a check that finished the whole list, and only if Stream-Mapparr has its own Run After IPTV Checker Scan setting on |
 | Delete CSV Exports Older Than (Days) | Housekeeping for `/data/exports/`. 0 keeps every file, which is the default. Only files this plugin wrote are ever deleted, because that directory is shared with other plugins |
 | Restore Recovered Channels | Un-tag and move back channels that recovered. Runs first |
 | Rename Dead / Slow / Blank | Apply the matching rename format |

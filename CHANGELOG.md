@@ -2,6 +2,29 @@
 
 Newest first. Versions are calver Major.YY.DDDHHMM (UTC).
 
+## 1.26.2561754 (2026-09-13)
+
+One addition.
+
+### A finished scheduled check can hand off to Stream-Mapparr
+
+A new setting, **Trigger Stream-Mapparr After Scheduled Check**, in the Auto-run
+After Scheduled Checks section, off by default. When it is on, a scheduled check
+that reached the end of its channel list calls the Stream-Mapparr plugin as its
+last step, after every rename, move and delete, and Stream-Mapparr then runs
+its own scheduled steps against the fresh results. A window that closed part
+way through the list, or a session stopped from outside, does not call it.
+
+Stream-Mapparr must be installed and enabled with its own Run After IPTV
+Checker Scan setting on. When it is not installed the step logs one line and
+does nothing; when it is disabled, or the call fails for any reason, the
+failure is logged and the check still reports completion, because the scan and
+its post-actions were already done.
+
+Dispatcharr's event system could not carry this, since it drops any event name
+outside its fixed list, so the hand-off is an in-process call through the
+plugin manager, the same call Dispatcharr makes for its own M3U refresh event.
+
 ## 1.26.2481600 (2026-09-05)
 
 Five changes. Two of them stop the plugin acting on stale or incomplete

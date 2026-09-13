@@ -78,6 +78,7 @@ _PHASE_METHODS = (
     "move_black_screen_channels_action",
     "delete_dead_channels_action",
     "_build_and_deliver_report",
+    "_trigger_stream_mapparr",
 )
 
 _ALL_PHASE_GATES = {
@@ -91,6 +92,7 @@ _ALL_PHASE_GATES = {
     "scheduler_move_low_framerate_channels": True,
     "scheduler_move_black_screen_channels": True,
     "scheduler_delete_dead_channels": True,
+    "scheduler_trigger_stream_mapparr": True,
 }
 
 

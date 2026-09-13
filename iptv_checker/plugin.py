@@ -113,6 +113,12 @@ class PluginConfig:
     # path, so nothing the operator must read may live there.
     REPORT_DIR = "/config/iptv_checker"
     RESULTS_FILE = "/data/iptv_checker_results.json"
+    # The plugin a finished scheduled scan is handed to, in process, through
+    # PluginManager.run_action. Dispatcharr's connect event bus refuses event
+    # names outside its fixed list, so this is the only route.
+    STREAM_MAPPARR_PLUGIN_KEY = "stream-mapparr"
+    STREAM_MAPPARR_ACTION_ID = "on_iptv_checker_scan"
+    STREAM_MAPPARR_EVENT_NAME = "iptv_checker_scan_complete"
     LOADED_CHANNELS_FILE = "/data/iptv_checker_loaded_channels.json"
     PROGRESS_FILE = "/data/iptv_checker_progress.json"
     PENDING_RESUME_FILE = "/data/iptv_checker_pending_resume.json"
@@ -434,7 +440,7 @@ class Plugin:
     
     # Explicitly set the plugin key
     key = "iptv_checker"
-    version = "1.26.2481600"
+    version = "1.26.2561754"
 
     # Fields and actions are defined in plugin.json (single source of truth)
     def __init__(self):
@@ -2019,6 +2025,13 @@ class Plugin:
                 else:
                     LOGGER.warning(f"⏰ SCHEDULED: {delete_result.get('message')}")
 
+            # Step 10: Hand the finished scan to Stream-Mapparr if enabled. Sits
+            # behind the mid-list gate above on purpose: a window that closed
+            # part way must not sort against half a scan.
+            if _as_bool(settings.get('scheduler_trigger_stream_mapparr'), False):
+                LOGGER.info("⏰ SCHEDULED: Triggering Stream-Mapparr...")
+                self._trigger_stream_mapparr(settings, scheduled_logger)
+
             LOGGER.info("⏰ SCHEDULED: Check sequence completed successfully")
 
         except Exception as e:
@@ -2029,6 +2042,43 @@ class Plugin:
             # scan runs on to the end of the list instead of stopping at its window end.
             if is_window and not scan_unfinished:
                 self._clear_window_state()
+
+    def _trigger_stream_mapparr(self, settings, logger):
+        """Call the Stream-Mapparr plugin's post-scan handler, in process.
+
+        Runs synchronously in this thread, so the scheduled sequence waits for
+        Stream-Mapparr to finish before it reports completion. Every failure is
+        logged and swallowed: the scan and its post-actions are already done,
+        and a sibling plugin's fault must not turn this session into an error.
+        Returns True only when the call was made and returned.
+        """
+        key = PluginConfig.STREAM_MAPPARR_PLUGIN_KEY
+        action_id = PluginConfig.STREAM_MAPPARR_ACTION_ID
+        progress = getattr(self, "check_progress", None) or {}
+        payload = {
+            "source": "iptv_checker",
+            "version": self.version,
+            "finished_at": datetime.now().isoformat(timespec="seconds"),
+            "streams_checked": progress.get("total") if isinstance(progress, dict) else None,
+        }
+        try:
+            from apps.plugins.loader import PluginManager
+            pm = PluginManager.get()
+            if pm.get_plugin(key) is None:
+                logger.info(f"Stream-Mapparr trigger: plugin '{key}' is not installed, nothing to call")
+                return False
+            logger.info(f"Stream-Mapparr trigger: calling {key}/{action_id}")
+            result = pm.run_action(key, action_id,
+                                   {"event": PluginConfig.STREAM_MAPPARR_EVENT_NAME, "payload": payload})
+            status = result.get("status") if isinstance(result, dict) else None
+            logger.info(f"Stream-Mapparr trigger: {key}/{action_id} returned status {status!r}")
+            return True
+        except PermissionError as e:
+            logger.warning(f"Stream-Mapparr trigger: {e}. Enable the Stream-Mapparr plugin or switch this setting off.")
+            return False
+        except Exception as e:
+            logger.error(f"Stream-Mapparr trigger failed: {e}", exc_info=True)
+            return False
 
     def _get_latest_version(self, owner="PiratesIRC", repo="Dispatcharr-IPTV-Checker-Plugin"):
         """
