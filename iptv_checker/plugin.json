@@ -1,6 +1,6 @@
 {
   "name": "IPTV Checker",
-  "version": "1.26.2481600",
+  "version": "1.26.2561754",
   "description": "A Dispatcharr Plugin that goes through a playlist to check IPTV channels",
   "author": "PiratesIRC",
   "logo": "logo.png",
@@ -343,6 +343,13 @@
       "type": "boolean",
       "default": false,
       "help_text": "When ON, each scheduled check builds the HTML report and queues it for delivery by email through Newsflasharr. Runs beside the CSV export and on the same terms, so a window that closes part way through the channel list still leaves a report. Requires the Newsflasharr plugin, its SMTP settings, and a routing rule matching source iptv_checker and event usage_report with channel smtp. Without that rule the report is delivered somewhere else, so the plugin checks for it first and refuses rather than reporting a success you cannot verify."
+    },
+    {
+      "id": "scheduler_trigger_stream_mapparr",
+      "label": "\ud83d\udd01 Trigger Stream-Mapparr After Scheduled Check",
+      "type": "boolean",
+      "default": false,
+      "help_text": "When ON, a scheduled check that reached the end of its channel list hands off to the Stream-Mapparr plugin, which then runs its own scheduled steps (Sort Alternate Streams and Match and Assign, whichever it has ticked) against the fresh results. Stream-Mapparr must be installed and enabled and must have its 'Run After IPTV Checker Scan' setting on; otherwise this logs a line and does nothing. Runs after the rename, move and delete steps, and not at all for a window that closed part way through the list."
     },
     {
       "id": "csv_retention_days",
