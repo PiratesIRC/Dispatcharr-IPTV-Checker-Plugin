@@ -4902,20 +4902,7 @@ class Plugin:
                 'format': 'N/A',
                 'framerate_num': 0,
                 'ffprobe_data': {},
-                'dispatcharr_metadata': {
-                    'video_codec': None,
-                    'resolution': '0x0',
-                    'width': 0,
-                    'height': 0,
-                    'source_fps': None,
-                    'pixel_format': None,
-                    'video_bitrate': None,
-                    'audio_codec': None,
-                    'sample_rate': None,
-                    'audio_channels': None,
-                    'audio_bitrate': None,
-                    'stream_type': None
-                },
+                'dispatcharr_metadata': {},
                 'retry_count': retry_attempt,
                 'connection_timeout_seconds': timeout,
                 'probe_timeout_seconds': probe_timeout,
@@ -5319,6 +5306,8 @@ class Plugin:
             logger.info(f"⤼ '{channel_name}' SKIPPED - Rate Limited (HTTP 429)")
             default_return['status'] = 'Skipped'
             default_return['error'] = masked_error
+            # A Skipped stream was not judged, so write no stats: 0x0 would read as dead to other plugins.
+            default_return['dispatcharr_metadata'] = {}
             default_return['error_type'] = 'Rate Limited'
             return default_return
 
@@ -5330,6 +5319,7 @@ class Plugin:
             logger.info(f"⤼ '{channel_name}' SKIPPED - No Video Stream (audio-only)")
             default_return['status'] = 'Skipped'
             default_return['error'] = masked_error
+            default_return['dispatcharr_metadata'] = {}
             default_return['error_type'] = 'No Video Stream'
             return default_return
 
