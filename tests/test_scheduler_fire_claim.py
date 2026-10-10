@@ -170,7 +170,24 @@ def test_no_permission_to_write_a_claim_runs_anyway_and_names_the_repair(
 
     errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
     assert errors, "a claim that cannot be written must be logged at ERROR"
-    assert any("chmod 1777" in m and claims in m for m in errors), errors
+    assert any("as root: chmod 1777" in m and claims in m for m in errors), errors
+
+
+def test_a_directory_it_cannot_create_names_mkdir(plugin, pmod, claims, monkeypatch, caplog):
+    """A parent folder that is not writable: the directory never exists, so
+    chmod cannot help and the ERROR must name the mkdir repair instead."""
+    assert not os.path.exists(claims)
+
+    def denied_makedirs(*_a, **_k):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(pmod.os, "makedirs", denied_makedirs)
+    with caplog.at_level("ERROR", logger="plugins.iptv_checker"):
+        assert plugin._claim_scheduler_fire("0 23 * * *", _minute(pmod)) is True
+
+    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert any("mkdir -m 1777" in m and claims in m for m in errors), errors
+    assert not any("chmod" in m for m in errors), errors
 
 
 def test_other_os_errors_still_run_anyway_with_a_warning(

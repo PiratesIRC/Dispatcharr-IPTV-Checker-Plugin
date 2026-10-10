@@ -1629,9 +1629,15 @@ class Plugin:
                            "a container restart clears.")
             return False
         except PermissionError:
-            LOGGER.error(f"Could not record the scheduler fire claim: no permission to write in "
-                         f"{PluginConfig.SCHEDULER_FIRE_CLAIM_DIR}. A duplicate scheduled run is now "
-                         f"possible. Repair it once with: chmod 1777 {PluginConfig.SCHEDULER_FIRE_CLAIM_DIR}")
+            claim_dir = PluginConfig.SCHEDULER_FIRE_CLAIM_DIR
+            if os.path.isdir(claim_dir):
+                LOGGER.error(f"Could not record the scheduler fire claim: no permission to write in "
+                             f"{claim_dir}. A duplicate scheduled run is now possible. Repair it once, "
+                             f"as root: chmod 1777 {claim_dir}")
+            else:
+                LOGGER.error(f"Could not record the scheduler fire claim: no permission to create "
+                             f"{claim_dir}. A duplicate scheduled run is now possible. Repair it once, "
+                             f"as root: mkdir -m 1777 {claim_dir}")
             return True
         except OSError as e:
             LOGGER.warning(f"Could not record the scheduler fire claim ({type(e).__name__}); "
