@@ -117,7 +117,8 @@ class PluginConfig:
     # The plugin a finished scheduled scan is handed to, in process, through
     # PluginManager.run_action. Dispatcharr's connect event bus refuses event
     # names outside its fixed list, so this is the only route.
-    STREAM_MAPPARR_PLUGIN_KEY = "stream-mapparr"
+    # The Hub installer turns hyphens into underscores; a hand-copied folder keeps them.
+    STREAM_MAPPARR_PLUGIN_KEYS = ("stream_mapparr", "stream-mapparr")
     STREAM_MAPPARR_ACTION_ID = "on_iptv_checker_scan"
     STREAM_MAPPARR_EVENT_NAME = "iptv_checker_scan_complete"
     LOADED_CHANNELS_FILE = "/data/iptv_checker_loaded_channels.json"
@@ -2079,7 +2080,6 @@ class Plugin:
         and a sibling plugin's fault must not turn this session into an error.
         Returns True only when the call was made and returned.
         """
-        key = PluginConfig.STREAM_MAPPARR_PLUGIN_KEY
         action_id = PluginConfig.STREAM_MAPPARR_ACTION_ID
         progress = getattr(self, "check_progress", None) or {}
         payload = {
@@ -2091,8 +2091,11 @@ class Plugin:
         try:
             from apps.plugins.loader import PluginManager
             pm = PluginManager.get()
-            if pm.get_plugin(key) is None:
-                logger.info(f"Stream-Mapparr trigger: plugin '{key}' is not installed, nothing to call")
+            key = next((k for k in PluginConfig.STREAM_MAPPARR_PLUGIN_KEYS
+                        if pm.get_plugin(k) is not None), None)
+            if key is None:
+                names = "' and '".join(PluginConfig.STREAM_MAPPARR_PLUGIN_KEYS)
+                logger.info(f"Stream-Mapparr trigger: plugin not installed (looked for '{names}'), nothing to call")
                 return False
             logger.info(f"Stream-Mapparr trigger: calling {key}/{action_id}")
             result = pm.run_action(key, action_id,

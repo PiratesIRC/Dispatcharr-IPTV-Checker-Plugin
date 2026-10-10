@@ -29,13 +29,16 @@ def plugin_mod_manifest():
 
 
 class _FakeManager:
-    def __init__(self, registered=True, raises=None):
+    def __init__(self, registered=True, raises=None, keys=("stream-mapparr",)):
         self.registered = registered
         self.raises = raises
+        self.keys = set(keys)
         self.calls = []
 
     def get_plugin(self, key):
-        return object() if self.registered else None
+        if not self.registered or key not in self.keys:
+            return None
+        return object()
 
     def run_action(self, key, action_id, params=None):
         self.calls.append((key, action_id, params))
@@ -112,3 +115,30 @@ def test_the_streams_checked_count_survives_a_missing_progress_dict(plugin, load
         del plugin.check_progress
     assert plugin._trigger_stream_mapparr({}, log) is True
     assert loader.calls[0][2]["payload"]["streams_checked"] is None
+
+
+def test_it_finds_a_hub_install_keyed_with_underscores(plugin, loader):
+    loader.keys = {"stream_mapparr"}
+    assert plugin._trigger_stream_mapparr({}, log) is True
+    assert [c[0] for c in loader.calls] == ["stream_mapparr"]
+
+
+def test_it_finds_a_hand_copied_install_keyed_with_a_hyphen(plugin, loader):
+    loader.keys = {"stream-mapparr"}
+    assert plugin._trigger_stream_mapparr({}, log) is True
+    assert [c[0] for c in loader.calls] == ["stream-mapparr"]
+
+
+def test_it_prefers_the_hub_key_when_both_exist(plugin, loader):
+    loader.keys = {"stream_mapparr", "stream-mapparr"}
+    assert plugin._trigger_stream_mapparr({}, log) is True
+    assert [c[0] for c in loader.calls] == ["stream_mapparr"]
+
+
+def test_it_names_both_keys_when_neither_is_installed(plugin, loader, caplog):
+    loader.keys = set()
+    with caplog.at_level(logging.INFO):
+        assert plugin._trigger_stream_mapparr({}, log) is False
+    assert loader.calls == []
+    assert ("Stream-Mapparr trigger: plugin not installed "
+            "(looked for 'stream_mapparr' and 'stream-mapparr'), nothing to call") in caplog.text
