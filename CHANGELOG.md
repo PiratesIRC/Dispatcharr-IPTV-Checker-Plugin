@@ -2,6 +2,24 @@
 
 Newest first. Versions are calver Major.YY.DDDHHMM (UTC).
 
+## 1.26.2831712 (2026-10-10)
+
+One change to the 1.26.2831654 claim folder fix. The Plugin Hub refused
+1.26.2831654 because that fix made the folder writable by every user, so this
+version replaces it; everything else in 1.26.2831654 is included unchanged.
+
+### Changed
+
+- **A claim folder created by root is handed to the plugin's owner (#29).**
+  Instead of making `/data/iptv_checker_fire_claims` writable by every user, a
+  process running as root now gives the folder to the user that owns the
+  plugin's own folder, which is the user the Dispatcharr workers run as. This
+  also repairs a folder that root created earlier, the next time a root
+  process writes a claim. Nothing changes when the plugin's own folder is
+  owned by root, and the folder is never changed through a symbolic link.
+  When the workers still cannot write a claim, the log prints an error with
+  the `chown` command that repairs it, to run once as root.
+
 ## 1.26.2831654 (2026-10-10)
 
 Three fixes and one addition.
