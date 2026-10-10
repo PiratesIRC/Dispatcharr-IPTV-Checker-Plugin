@@ -528,8 +528,10 @@ this install's figures. Once the server confirms the delete, the plugin forgets
 its id, and ticking the setting again later starts a new one; if the delete
 could not reach the server, the plugin keeps the id and retries. The plugin
 keeps that id and the timing of its reports in /data/plugin_stats/iptv_checker/
-(install_id, sent, backoff, disabled, delete_backoff, lock); delete the folder
-to start a new id.
+(install_id, sent, backoff, disabled, delete_backoff, lock). To start a new id,
+untick the setting and let an action or check finish so the server deletes this
+install's figures; deleting the folder instead leaves the old figures on the
+server, and the new id sends the full total again, so the badge counts it twice.
 
 ---
 
