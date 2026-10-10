@@ -34,8 +34,6 @@ scripts/bump_version.py        # next UTC calver into plugin.json, plugin.py and
 scripts/check_version_sync.py  # standalone version-drift check (CI/pre-commit usable)
 scripts/validate_zip.py        # release zip guard: separators, package root, dev files, CRLF
 scripts/build_release_zip.py   # git archive from the index (LF forced) then validate
-scripts/update_streams_checked_badge.py   # publishes the README "Streams Checked" counter to a Gist
-scripts/update_streams_checked_badge.ps1  # wrapper the twice-daily Windows scheduled task runs
 pytest.ini                     # pytest config
 requirements-dev.txt           # dev/CI dependencies (pytest, pytz, ruff)
 pyproject.toml                 # ruff config (tooling only, not a package)
@@ -135,15 +133,7 @@ Upstream marketplace (`Dispatcharr/Plugins`) submission rules are in
 
 ## The README "Streams Checked" counter
 
-The badge reads a Shields.io endpoint document held in an unlisted Gist. Nothing
-in CI updates it: `scripts/update_streams_checked_badge.py` adds up the per-pass
-tally inside the running container and rewrites the Gist, and a twice-daily
-Windows scheduled task runs it through `scripts/update_streams_checked_badge.ps1`.
-
-- `--dry-run` prints the number and the document and writes nothing.
-- `--create` is first-time setup only; it refuses once `scripts/.streams_checked_badge_gist` exists.
-- Renaming the Gist file breaks the published badge, because the raw URL contains the filename.
-- Raw Gist URLs are cached for about five minutes, so a new number is not visible at once.
+The README badges read the plugin-stats Worker (`badge/iptv_checker/streams_checked` and `badge/iptv_checker/installs`). The gist pipeline (`scripts/update_streams_checked_badge.py`, its `.ps1` wrapper, the gist id file and the scheduled task `IPTV Checker badge refresh`) was retired 2026-10-10 on operator approval, after other installs began reporting. The gist itself still exists on GitHub and is no longer updated.
 
 The number is a floor. It counts streams probed, so one stream checked on two
 nights counts twice, and it starts from the release that added the tally because
@@ -188,7 +178,7 @@ of the above.
 | Scheduler lock | `/data/iptv_checker_scheduler.pid` (2 lines: pid + boot token) |
 | Fired-minute claims | `/data/iptv_checker_fire_claims/` (one `O_EXCL` file per cron expression and minute, mode `0o600`, holding the claiming pid; older days pruned) |
 | HTML report, dated copies, report CSV | `/config/iptv_checker/` (a real host folder, deliberately NOT `/data/logos/`, which nginx serves unauthenticated to the whole network) |
-| Streams-checked tally | `/data/iptv_checker_stream_counts.jsonl` (append-only, one JSON line per finished pass: epoch, streams probed, sequential or parallel; the public README counter badge is the sum) |
+| Streams-checked tally | `/data/iptv_checker_stream_counts.jsonl` (append-only, one JSON line per finished pass: epoch, streams probed, sequential or parallel) |
 | ffprobe | `/usr/local/bin/ffprobe` (configurable) |
 | ffmpeg | `/usr/local/bin/ffmpeg` (configurable; only used by opt-in black-screen detection) |
 
