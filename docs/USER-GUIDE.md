@@ -20,6 +20,7 @@ The [README](../README.md) is the short version.
 - [Every setting](#every-setting)
 - [Every button](#every-button)
 - [File locations](#file-locations)
+- [Anonymous usage counts](#anonymous-usage-counts)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -492,6 +493,40 @@ the schedule and the minute. It is how a second copy of the plugin loaded into t
 process is prevented from running the same nightly check twice. Files from earlier days are removed
 automatically. Deleting the folder is harmless, but do not delete it while a scheduled run is
 starting.
+
+## Anonymous usage counts
+
+The Streams Checked and Active Installs badges count every install that leaves
+the "Share anonymous usage counts" setting (on by default) ticked and runs at
+least one action or check. When an action or check finishes, at most once an
+hour, or ten minutes after the last report when a check has just checked
+streams, the plugin sends this plugin's Streams Checked total and a random id
+for this plugin on this install to the plugin author's counter at
+plugin-stats.dpas.workers.dev. The server stores that id with the total and the
+date of the last report. The connection shows the server your public IP
+address; the server uses it only to limit abuse and does not store it in its
+database, though when an install first registers it keeps a salted one-way hash
+of it (of its /64 block for IPv6) for up to three days. Cloudflare, which hosts
+the server, keeps its own request logs. No names, channels, streams, URLs,
+providers or settings are sent. The figures are self-reported by installs and
+capped by the server, not verified. Untick the setting to stop sending; this
+install's figures are deleted from the server the next time an action or check
+finishes after you untick.
+
+What counts as an active install: an install that sent at least one report in
+the last 30 UTC days. A report is sent when an action or check finishes
+(scheduled checks report when their pass finishes), at most once an hour, or ten
+minutes after the last report when a check has just checked streams, so an
+install that stops being used stops counting after 30 days. A badge changes when
+an install reports, and the badge cache updates within about five minutes.
+
+The setting is the last one in the settings form. Unticking it takes effect when
+the next action or check finishes; the plugin then asks the server to delete
+this install's figures. Once the server confirms the delete, the plugin forgets
+its id, and ticking the setting again later starts a new one; if the delete
+could not reach the server, the plugin keeps the id and retries. The plugin keeps that id and the timing of its reports in
+/data/plugin_stats/iptv_checker/ (install_id, sent, backoff, disabled,
+delete_backoff, lock); delete the folder to start a new id.
 
 ---
 

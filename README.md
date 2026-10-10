@@ -10,7 +10,8 @@
 
 [![GitHub Release](https://img.shields.io/github/v/release/PiratesIRC/Dispatcharr-IPTV-Checker-Plugin?include_prereleases&logo=github)](https://github.com/PiratesIRC/Dispatcharr-IPTV-Checker-Plugin/releases)
 [![Downloads](https://img.shields.io/github/downloads/PiratesIRC/Dispatcharr-IPTV-Checker-Plugin/total?color=success&label=Downloads&logo=github)](https://github.com/PiratesIRC/Dispatcharr-IPTV-Checker-Plugin/releases)
-[![Streams Checked](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/PiratesIRC/1340224197f29ad9efaa5a4b27ec99af/raw/iptv-checker-streams-checked.json)](#what-it-does)
+[![Streams Checked](https://img.shields.io/endpoint?url=https://plugin-stats.dpas.workers.dev/badge/iptv_checker/streams_checked)](#anonymous-usage-counts)
+[![Active Installs](https://img.shields.io/endpoint?url=https://plugin-stats.dpas.workers.dev/badge/iptv_checker/installs)](#anonymous-usage-counts)
 
 ![Top Language](https://img.shields.io/github/languages/top/PiratesIRC/Dispatcharr-IPTV-Checker-Plugin)
 ![Repo Size](https://img.shields.io/github/repo-size/PiratesIRC/Dispatcharr-IPTV-Checker-Plugin)
@@ -117,6 +118,25 @@ Contribution steps, the CI gates, and how updates reach the Dispatcharr plugin m
 This plugin makes bulk changes to your channel database, including permanent deletion when you
 enable it. Test on a small group first, keep a database backup, and read what an action says it will
 do before confirming it.
+
+## Anonymous usage counts
+
+The Streams Checked and Active Installs badges count every install that leaves
+the "Share anonymous usage counts" setting (on by default) ticked and runs at
+least one action or check. When an action or check finishes, at most once an
+hour, or ten minutes after the last report when a check has just checked
+streams, the plugin sends this plugin's Streams Checked total and a random id
+for this plugin on this install to the plugin author's counter at
+plugin-stats.dpas.workers.dev. The server stores that id with the total and the
+date of the last report. The connection shows the server your public IP
+address; the server uses it only to limit abuse and does not store it in its
+database, though when an install first registers it keeps a salted one-way hash
+of it (of its /64 block for IPv6) for up to three days. Cloudflare, which hosts
+the server, keeps its own request logs. No names, channels, streams, URLs,
+providers or settings are sent. The figures are self-reported by installs and
+capped by the server, not verified. Untick the setting to stop sending; this
+install's figures are deleted from the server the next time an action or check
+finishes after you untick. Details: [User Guide](docs/USER-GUIDE.md#anonymous-usage-counts).
 
 ## License
 
