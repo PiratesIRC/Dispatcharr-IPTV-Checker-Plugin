@@ -530,6 +530,7 @@ could not reach the server, the plugin keeps the id and retries. The plugin
 keeps that id and the timing of its reports in /data/plugin_stats/iptv_checker/
 (install_id, sent, backoff, disabled, delete_backoff, lock); delete the folder
 to start a new id.
+
 ---
 
 ## Troubleshooting
