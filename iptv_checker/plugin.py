@@ -1616,6 +1616,11 @@ class Plugin:
 
         try:
             os.makedirs(PluginConfig.SCHEDULER_FIRE_CLAIM_DIR, exist_ok=True)
+            # Any user may create claims; whichever process made the directory, the others can still write.
+            try:
+                os.chmod(PluginConfig.SCHEDULER_FIRE_CLAIM_DIR, 0o1777)
+            except OSError:
+                pass
             fd = os.open(self._fire_claim_path(cron_expr, current_minute),
                          os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
@@ -1623,6 +1628,11 @@ class Plugin:
                            "scheduler loop; not firing again. A duplicate loop is running, which "
                            "a container restart clears.")
             return False
+        except PermissionError:
+            LOGGER.error(f"Could not record the scheduler fire claim: no permission to write in "
+                         f"{PluginConfig.SCHEDULER_FIRE_CLAIM_DIR}. A duplicate scheduled run is now "
+                         f"possible. Repair it once with: chmod 1777 {PluginConfig.SCHEDULER_FIRE_CLAIM_DIR}")
+            return True
         except OSError as e:
             LOGGER.warning(f"Could not record the scheduler fire claim ({type(e).__name__}); "
                            "running the schedule anyway, but a duplicate run is now possible.")

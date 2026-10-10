@@ -131,3 +131,57 @@ def test_a_claim_from_a_previous_run_of_the_same_day_is_kept(plugin, pmod, claim
     assert plugin._claim_scheduler_fire("0 4 * * *", _minute(pmod, hour=4)) is True
     assert plugin._claim_scheduler_fire("0 23 * * *", _minute(pmod, hour=23)) is True
     assert len(os.listdir(claims)) == 2
+
+
+def test_the_claim_directory_is_made_writable_by_every_user(plugin, pmod, claims):
+    """Any user may create claims, so the directory carries the sticky bit like
+    /tmp. Windows ignores POSIX mode bits, so this runs on Linux (CI) only."""
+    if os.name == "nt":
+        pytest.skip("Windows ignores POSIX mode bits; this runs on Linux CI")
+    assert plugin._claim_scheduler_fire("0 23 * * *", _minute(pmod)) is True
+    assert os.stat(claims).st_mode & 0o7777 == 0o1777
+
+
+def test_a_directory_it_cannot_chmod_is_still_used(plugin, pmod, claims, monkeypatch):
+    """chmod fails when another user owns the directory. That is expected and
+    ignored, and the claim is still recorded."""
+    def no_chmod(*_a, **_k):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(pmod.os, "chmod", no_chmod)
+    assert plugin._claim_scheduler_fire("0 23 * * *", _minute(pmod)) is True
+    assert len(os.listdir(claims)) == 1
+
+
+def test_no_permission_to_write_a_claim_runs_anyway_and_names_the_repair(
+        plugin, pmod, claims, monkeypatch, caplog):
+    """The root-owned directory case from issue #29. The schedule still runs
+    (fail open), and the ERROR names the directory and the one-line repair."""
+    real_open = pmod.os.open
+
+    def denied_for_claims(path, flags, mode=0o777, *args, **kwargs):
+        if claims in str(path):
+            raise PermissionError(13, "Permission denied")
+        return real_open(path, flags, mode, *args, **kwargs)
+
+    monkeypatch.setattr(pmod.os, "open", denied_for_claims)
+    with caplog.at_level("ERROR", logger="plugins.iptv_checker"):
+        assert plugin._claim_scheduler_fire("0 23 * * *", _minute(pmod)) is True
+
+    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert errors, "a claim that cannot be written must be logged at ERROR"
+    assert any("chmod 1777" in m and claims in m for m in errors), errors
+
+
+def test_other_os_errors_still_run_anyway_with_a_warning(
+        plugin, pmod, claims, monkeypatch, caplog):
+    """Errors other than permission keep the original WARNING branch."""
+    def no_space(*_a, **_k):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(pmod.os, "open", no_space)
+    with caplog.at_level("WARNING", logger="plugins.iptv_checker"):
+        assert plugin._claim_scheduler_fire("0 23 * * *", _minute(pmod)) is True
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("Could not record the scheduler fire claim (OSError)" in m for m in warnings), warnings
