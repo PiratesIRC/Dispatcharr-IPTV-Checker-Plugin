@@ -517,17 +517,19 @@ What counts as an active install: an install that sent at least one report in
 the last 30 UTC days. A report is sent when an action or check finishes
 (scheduled checks report when their pass finishes), at most once an hour, or ten
 minutes after the last report when a check has just checked streams, so an
-install that stops being used stops counting after 30 days. A badge changes when
-an install reports, and the badge cache updates within about five minutes.
+install that stops being used stops counting after 30 days. A badge changes
+after the server's hourly recount, which runs at the start of each UTC hour, and
+Shields may cache the badge for up to an hour more, so a new report can take up
+to about two hours to show.
 
 The setting is the last one in the settings form. Unticking it takes effect when
 the next action or check finishes; the plugin then asks the server to delete
 this install's figures. Once the server confirms the delete, the plugin forgets
 its id, and ticking the setting again later starts a new one; if the delete
-could not reach the server, the plugin keeps the id and retries. The plugin keeps that id and the timing of its reports in
-/data/plugin_stats/iptv_checker/ (install_id, sent, backoff, disabled,
-delete_backoff, lock); delete the folder to start a new id.
-
+could not reach the server, the plugin keeps the id and retries. The plugin
+keeps that id and the timing of its reports in /data/plugin_stats/iptv_checker/
+(install_id, sent, backoff, disabled, delete_backoff, lock); delete the folder
+to start a new id.
 ---
 
 ## Troubleshooting
