@@ -39,7 +39,7 @@ FIELD_IDS = {
     'scheduler_move_black_screen_channels', 'scheduler_move_low_framerate_channels',
     'scheduler_delete_dead_channels', 'auto_delete_confirmation',
     '_section_advanced', 'ffprobe_flags', 'ffprobe_analysis_duration', 'streamlink_hosts',
-    'ffprobe_path', 'ffmpeg_path',
+    'ffprobe_path', 'ffmpeg_path', 'share_usage_counts',
 }
 ACTION_IDS = {
     'validate_settings', 'update_schedule', 'reset_progress', 'check_scheduler_status',

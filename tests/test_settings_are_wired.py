@@ -52,13 +52,24 @@ def _string_literals():
 
 _LITERALS = _string_literals()
 
+# Read by the vendored usage client (usage_client.SETTING_ID), not by a literal in plugin.py.
+_READ_BY_VENDORED_CLIENT = {"share_usage_counts"}
+
 
 @pytest.mark.parametrize("field_id", _stored_field_ids())
 def test_every_setting_is_read_somewhere_in_the_plugin(field_id):
+    if field_id in _READ_BY_VENDORED_CLIENT:
+        pytest.skip("read by the vendored usage client, not by plugin.py")
     assert field_id in _LITERALS, (
         f"the settings form offers {field_id!r} and no string literal in the code "
         "matches it, so the control does nothing"
     )
+
+
+def test_the_vendored_client_exemption_names_its_setting():
+    from iptv_checker import usage_client
+
+    assert usage_client.SETTING_ID in _READ_BY_VENDORED_CLIENT
 
 
 def test_the_dead_scheduled_export_toggle_is_gone():

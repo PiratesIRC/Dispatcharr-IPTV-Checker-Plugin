@@ -484,6 +484,13 @@
       "default": "/usr/local/bin/ffmpeg",
       "placeholder": "/usr/local/bin/ffmpeg",
       "help_text": "Full path to the ffmpeg executable, used for blank-screen detection. Default: /usr/local/bin/ffmpeg (Dispatcharr's default location)"
+    },
+    {
+      "id": "share_usage_counts",
+      "label": "Share anonymous usage counts",
+      "type": "boolean",
+      "default": true,
+      "help_text": "Sends this plugin's Streams Checked total and a random id for this plugin on this install to the plugin author's counter at plugin-stats.dpas.workers.dev when the plugin runs, at most once an hour, or ten minutes after the last report when the plugin has just recorded new work, so the README badges count every install that runs at least one action. The server stores that id with the total and the date of the last report. The connection shows the server your public IP address; the server uses it only to limit abuse and does not store it in its database, though when an install first registers it keeps a salted one-way hash of it (of its /64 block for IPv6) for up to three days. Cloudflare, which hosts the server, keeps its own request logs. No names, channels, streams, providers or settings are sent. Untick to stop sending; this install's figures are deleted from the server the next time the plugin runs after you untick."
     }
   ],
   "actions": [

@@ -25,6 +25,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from apps.channels.models import Channel, ChannelGroup, Stream, ChannelStream, ChannelProfileMembership
 from django.db import transaction
 from core.utils import send_websocket_update
+from .usage_client import UsageReporter, jsonl_sum, load_plugin_settings
 
 # Scheduler imports
 try:
@@ -226,6 +227,18 @@ class PluginConfig:
 
     # --- Version Check ---
     VERSION_CHECK_DURATION = 86400  # Cache version check for 24 hours
+
+
+# Reports the Streams Checked total and a random install id to the plugin-stats Worker so
+# the README badges count every install (docs/USER-GUIDE.md, "Anonymous usage counts").
+# report() returns at once and never raises; the network work runs on a background thread.
+USAGE = UsageReporter(
+    plugin="iptv_checker",
+    counter="streams_checked",
+    label="Streams Checked",
+    total_fn=lambda: jsonl_sum(PluginConfig.STREAM_COUNT_LEDGER_FILE + "*", key="streams"),
+    settings_fn=lambda: load_plugin_settings("iptv_checker"),
+)
 
 
 class ProgressTracker:
@@ -1135,13 +1148,26 @@ class Plugin:
     def _try_start_thread(self, target, args):
         """Atomically check if a thread is running and start a new one.
         Returns True if started, False if another operation is running."""
+        def _run_then_report(*call_args):
+            try:
+                target(*call_args)
+            finally:
+                self._report_usage(None, LOGGER)
+
         with self._thread_lock:
             if self._thread and self._thread.is_alive():
                 return False
             self._stop_event.clear()
-            self._thread = threading.Thread(target=target, args=args, daemon=True)
+            self._thread = threading.Thread(target=_run_then_report, args=args, daemon=True)
             self._thread.start()
             return True
+
+    def _report_usage(self, settings, logger, force=False):
+        """Send the usage counter if due. Never raises: a failed report is not a failed action."""
+        try:
+            USAGE.report(settings, logger, force=force)
+        except Exception:
+            pass
 
     def _load_progress(self):
         """Load check progress from persistent storage"""
@@ -1231,6 +1257,7 @@ class Plugin:
         try:
             with open(PluginConfig.STREAM_COUNT_LEDGER_FILE, 'a') as f:
                 f.write(line + "\n")
+            self._report_usage(None, log, force=count > 0)
             return True
         except Exception as e:
             log.warning(f"Could not record the stream tally: {e}")
@@ -2236,6 +2263,9 @@ class Plugin:
                     "type": "plugin", "plugin": "IPTV Checker",
                     "message": f"{emoji} {notify_msg}"
                 })
+
+            if not is_bg:
+                self._report_usage(settings, logger)
 
             return result
 
