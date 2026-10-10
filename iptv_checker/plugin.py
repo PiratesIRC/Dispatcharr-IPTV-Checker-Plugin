@@ -1583,6 +1583,31 @@ class Plugin:
                 except OSError:
                     pass
 
+    @staticmethod
+    def _plugin_owner_ids():
+        """(uid, gid) of the folder this plugin is installed in, or None if it cannot be read."""
+        try:
+            st = os.stat(os.path.dirname(os.path.abspath(__file__)))
+            return st.st_uid, st.st_gid
+        except OSError:
+            return None
+
+    @staticmethod
+    def _hand_claim_dir_to_plugin_owner():
+        """A root process must not leave the claim folder root-owned: give it to whoever owns this
+        plugin's folder, so the Dispatcharr workers can write claims in it."""
+        if not hasattr(os, "geteuid") or os.geteuid() != 0:
+            return
+        owner = Plugin._plugin_owner_ids()
+        if owner is None:
+            return
+        try:
+            st = os.stat(PluginConfig.SCHEDULER_FIRE_CLAIM_DIR)
+            if (st.st_uid, st.st_gid) != owner:
+                os.chown(PluginConfig.SCHEDULER_FIRE_CLAIM_DIR, owner[0], owner[1])
+        except OSError:
+            pass
+
     def _claim_scheduler_fire(self, cron_expr, current_minute):
         """Atomically claim (cron_expr, current_minute) for firing.
 
@@ -1616,11 +1641,7 @@ class Plugin:
 
         try:
             os.makedirs(PluginConfig.SCHEDULER_FIRE_CLAIM_DIR, exist_ok=True)
-            # Any user may create claims; whichever process made the directory, the others can still write.
-            try:
-                os.chmod(PluginConfig.SCHEDULER_FIRE_CLAIM_DIR, 0o1777)
-            except OSError:
-                pass
+            self._hand_claim_dir_to_plugin_owner()
             fd = os.open(self._fire_claim_path(cron_expr, current_minute),
                          os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
@@ -1630,14 +1651,16 @@ class Plugin:
             return False
         except PermissionError:
             claim_dir = PluginConfig.SCHEDULER_FIRE_CLAIM_DIR
+            owner = self._plugin_owner_ids()
+            who = f"{owner[0]}:{owner[1]}" if owner else "the user that runs Dispatcharr"
             if os.path.isdir(claim_dir):
                 LOGGER.error(f"Could not record the scheduler fire claim: no permission to write in "
                              f"{claim_dir}. A duplicate scheduled run is now possible. Repair it once, "
-                             f"as root: chmod 1777 {claim_dir}")
+                             f"as root: chown {who} {claim_dir}")
             else:
                 LOGGER.error(f"Could not record the scheduler fire claim: no permission to create "
                              f"{claim_dir}. A duplicate scheduled run is now possible. Repair it once, "
-                             f"as root: mkdir -m 1777 {claim_dir}")
+                             f"as root: mkdir {claim_dir} && chown {who} {claim_dir}")
             return True
         except OSError as e:
             LOGGER.warning(f"Could not record the scheduler fire claim ({type(e).__name__}); "

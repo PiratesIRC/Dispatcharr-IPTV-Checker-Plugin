@@ -133,24 +133,100 @@ def test_a_claim_from_a_previous_run_of_the_same_day_is_kept(plugin, pmod, claim
     assert len(os.listdir(claims)) == 2
 
 
-def test_the_claim_directory_is_made_writable_by_every_user(plugin, pmod, claims):
-    """Any user may create claims, so the directory carries the sticky bit like
-    /tmp. Windows ignores POSIX mode bits, so this runs on Linux (CI) only."""
-    if os.name == "nt":
-        pytest.skip("Windows ignores POSIX mode bits; this runs on Linux CI")
+class _StatWithOwner:
+    """An os.stat result whose owner is replaced; every other field is the real one."""
+
+    def __init__(self, real, uid, gid):
+        self._real = real
+        self.st_uid = uid
+        self.st_gid = gid
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def _claim_folder_owned_by(pmod, monkeypatch, claims, uid, gid):
+    real_stat = os.stat
+
+    def fake_stat(path, *args, **kwargs):
+        st = real_stat(path, *args, **kwargs)
+        if str(path) == claims:
+            return _StatWithOwner(st, uid, gid)
+        return st
+
+    monkeypatch.setattr(pmod.os, "stat", fake_stat)
+
+
+def _process_is_root(pmod, monkeypatch, euid):
+    monkeypatch.setattr(pmod.os, "geteuid", lambda: euid, raising=False)
+
+
+def _plugin_folder_owner(pmod, monkeypatch, uid, gid):
+    monkeypatch.setattr(pmod.Plugin, "_plugin_owner_ids", staticmethod(lambda: (uid, gid)))
+
+
+def _record_chown(pmod, monkeypatch, raises=None):
+    calls = []
+
+    def chown(path, uid, gid):
+        calls.append((str(path), uid, gid))
+        if raises is not None:
+            raise raises
+
+    monkeypatch.setattr(pmod.os, "chown", chown, raising=False)
+    return calls
+
+
+def test_a_root_process_hands_the_claim_folder_to_the_plugin_owner(plugin, pmod, claims, monkeypatch):
+    """Root can create claims anywhere, but the folder it makes must belong to the
+    user that owns this plugin, or the Dispatcharr workers cannot write claims."""
+    _process_is_root(pmod, monkeypatch, 0)
+    _plugin_folder_owner(pmod, monkeypatch, 1000, 1000)
+    _claim_folder_owned_by(pmod, monkeypatch, claims, 0, 0)
+    calls = _record_chown(pmod, monkeypatch)
     assert plugin._claim_scheduler_fire("0 23 * * *", _minute(pmod)) is True
-    assert os.stat(claims).st_mode & 0o7777 == 0o1777
+    assert calls == [(claims, 1000, 1000)]
 
 
-def test_a_directory_it_cannot_chmod_is_still_used(plugin, pmod, claims, monkeypatch):
-    """chmod fails when another user owns the directory. That is expected and
-    ignored, and the claim is still recorded."""
-    def no_chmod(*_a, **_k):
-        raise PermissionError(1, "Operation not permitted")
+def test_a_non_root_process_never_changes_the_owner(plugin, pmod, claims, monkeypatch):
+    _process_is_root(pmod, monkeypatch, 1000)
+    _plugin_folder_owner(pmod, monkeypatch, 1000, 1000)
+    _claim_folder_owned_by(pmod, monkeypatch, claims, 0, 0)
+    calls = _record_chown(pmod, monkeypatch)
+    assert plugin._claim_scheduler_fire("0 23 * * *", _minute(pmod)) is True
+    assert calls == []
+    assert len(os.listdir(claims)) == 1
 
-    monkeypatch.setattr(pmod.os, "chmod", no_chmod)
+
+def test_a_folder_already_owned_by_the_plugin_owner_is_left_alone(plugin, pmod, claims, monkeypatch):
+    _process_is_root(pmod, monkeypatch, 0)
+    _plugin_folder_owner(pmod, monkeypatch, 1000, 1000)
+    _claim_folder_owned_by(pmod, monkeypatch, claims, 1000, 1000)
+    calls = _record_chown(pmod, monkeypatch)
+    assert plugin._claim_scheduler_fire("0 23 * * *", _minute(pmod)) is True
+    assert calls == []
+
+
+def test_a_failed_chown_still_records_the_claim(plugin, pmod, claims, monkeypatch):
+    """A root process that cannot change the owner still runs the schedule and
+    still records the claim; the only cost is a possible duplicate run."""
+    _process_is_root(pmod, monkeypatch, 0)
+    _plugin_folder_owner(pmod, monkeypatch, 1000, 1000)
+    _claim_folder_owned_by(pmod, monkeypatch, claims, 0, 0)
+    _record_chown(pmod, monkeypatch, raises=PermissionError(1, "Operation not permitted"))
     assert plugin._claim_scheduler_fire("0 23 * * *", _minute(pmod)) is True
     assert len(os.listdir(claims)) == 1
+
+
+def test_no_world_writable_chmod_remains():
+    """The Plugin Hub runs CodeQL, which refuses a listing whose chmod sets a
+    world-writable mode (rule py/overly-permissive-file). This keeps that call out."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(os.path.dirname(here), "iptv_checker", "plugin.py")
+    with open(path, encoding="utf-8") as fh:
+        source = fh.read()
+    for needle in ("0o1777", "0o777", "os.chmod("):
+        assert needle not in source, f"{needle} found in plugin.py"
 
 
 def test_no_permission_to_write_a_claim_runs_anyway_and_names_the_repair(
@@ -170,7 +246,8 @@ def test_no_permission_to_write_a_claim_runs_anyway_and_names_the_repair(
 
     errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
     assert errors, "a claim that cannot be written must be logged at ERROR"
-    assert any("as root: chmod 1777" in m and claims in m for m in errors), errors
+    assert any("as root: chown" in m and claims in m for m in errors), errors
+    assert not any("chmod" in m for m in errors), errors
 
 
 def test_a_directory_it_cannot_create_names_mkdir(plugin, pmod, claims, monkeypatch, caplog):
@@ -186,7 +263,7 @@ def test_a_directory_it_cannot_create_names_mkdir(plugin, pmod, claims, monkeypa
         assert plugin._claim_scheduler_fire("0 23 * * *", _minute(pmod)) is True
 
     errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
-    assert any("mkdir -m 1777" in m and claims in m for m in errors), errors
+    assert any("mkdir " in m and "chown" in m and claims in m for m in errors), errors
     assert not any("chmod" in m for m in errors), errors
 
 
