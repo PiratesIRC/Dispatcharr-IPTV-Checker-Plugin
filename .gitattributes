@@ -4,6 +4,9 @@
 # back on a Linux checkout, stops matching its pin, and fails CI for a reason
 # that has nothing to do with the code.
 iptv_checker/notify_client.py text eol=lf
+# The vendored usage client is sha256-pinned the same way (scripts/client_manifest.json and
+# tests/test_usage_client_parity.py), so it MUST stay LF on every OS.
+iptv_checker/usage_client.py text eol=lf
 
 # The vendored report page furniture is hash-pinned by
 # scripts/chrome_manifest.json and must stay byte-identical to the canonical
