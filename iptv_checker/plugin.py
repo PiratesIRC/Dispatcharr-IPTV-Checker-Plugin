@@ -8,6 +8,7 @@ import subprocess
 import json
 import os
 import re
+import stat
 import csv
 import fnmatch
 import hashlib
@@ -1588,9 +1589,12 @@ class Plugin:
         """(uid, gid) of the folder this plugin is installed in, or None if it cannot be read."""
         try:
             st = os.stat(os.path.dirname(os.path.abspath(__file__)))
-            return st.st_uid, st.st_gid
         except OSError:
             return None
+        # A root-owned plugin folder says nothing about the worker user.
+        if st.st_uid == 0:
+            return None
+        return st.st_uid, st.st_gid
 
     @staticmethod
     def _hand_claim_dir_to_plugin_owner():
@@ -1602,9 +1606,11 @@ class Plugin:
         if owner is None:
             return
         try:
-            st = os.stat(PluginConfig.SCHEDULER_FIRE_CLAIM_DIR)
+            st = os.lstat(PluginConfig.SCHEDULER_FIRE_CLAIM_DIR)
+            if stat.S_ISLNK(st.st_mode):
+                return
             if (st.st_uid, st.st_gid) != owner:
-                os.chown(PluginConfig.SCHEDULER_FIRE_CLAIM_DIR, owner[0], owner[1])
+                os.chown(PluginConfig.SCHEDULER_FIRE_CLAIM_DIR, owner[0], owner[1], follow_symlinks=False)
         except OSError:
             pass
 

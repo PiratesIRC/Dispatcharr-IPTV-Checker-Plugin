@@ -23,6 +23,7 @@ looks like from the claim's point of view, so that is how these tests simulate
 it.
 """
 import os
+import stat
 
 import pytest
 
@@ -136,25 +137,30 @@ def test_a_claim_from_a_previous_run_of_the_same_day_is_kept(plugin, pmod, claim
 class _StatWithOwner:
     """An os.stat result whose owner is replaced; every other field is the real one."""
 
-    def __init__(self, real, uid, gid):
+    def __init__(self, real, uid, gid, mode=None):
         self._real = real
         self.st_uid = uid
         self.st_gid = gid
+        self._mode = mode
+
+    @property
+    def st_mode(self):
+        return self._mode if self._mode is not None else self._real.st_mode
 
     def __getattr__(self, name):
         return getattr(self._real, name)
 
 
-def _claim_folder_owned_by(pmod, monkeypatch, claims, uid, gid):
-    real_stat = os.stat
+def _claim_folder_owned_by(pmod, monkeypatch, claims, uid, gid, mode=None):
+    real_lstat = os.lstat
 
-    def fake_stat(path, *args, **kwargs):
-        st = real_stat(path, *args, **kwargs)
+    def fake_lstat(path, *args, **kwargs):
+        st = real_lstat(path, *args, **kwargs)
         if str(path) == claims:
-            return _StatWithOwner(st, uid, gid)
+            return _StatWithOwner(st, uid, gid, mode)
         return st
 
-    monkeypatch.setattr(pmod.os, "stat", fake_stat)
+    monkeypatch.setattr(pmod.os, "lstat", fake_lstat)
 
 
 def _process_is_root(pmod, monkeypatch, euid):
@@ -168,7 +174,7 @@ def _plugin_folder_owner(pmod, monkeypatch, uid, gid):
 def _record_chown(pmod, monkeypatch, raises=None):
     calls = []
 
-    def chown(path, uid, gid):
+    def chown(path, uid, gid, **kwargs):
         calls.append((str(path), uid, gid))
         if raises is not None:
             raise raises
@@ -216,6 +222,51 @@ def test_a_failed_chown_still_records_the_claim(plugin, pmod, claims, monkeypatc
     _record_chown(pmod, monkeypatch, raises=PermissionError(1, "Operation not permitted"))
     assert plugin._claim_scheduler_fire("0 23 * * *", _minute(pmod)) is True
     assert len(os.listdir(claims)) == 1
+
+
+def test_a_symlinked_claim_folder_is_never_chowned(plugin, pmod, claims, monkeypatch):
+    """A symlink at the claim path could point the chown at any file the root
+    process can reach, so a symlink is left exactly as it is."""
+    _process_is_root(pmod, monkeypatch, 0)
+    _plugin_folder_owner(pmod, monkeypatch, 1000, 1000)
+    _claim_folder_owned_by(pmod, monkeypatch, claims, 0, 0, mode=stat.S_IFLNK | 0o777)
+    calls = _record_chown(pmod, monkeypatch)
+    assert plugin._claim_scheduler_fire("0 23 * * *", _minute(pmod)) is True
+    assert calls == []
+
+
+def test_a_root_owned_plugin_folder_names_no_ids(plugin, pmod, claims, monkeypatch, caplog):
+    """A root-owned plugin folder is not a worker owner. The owner is unknown, so
+    no chown runs and the ERROR names the generic user instead of 0:0."""
+    plugin_dir = os.path.dirname(os.path.abspath(pmod.__file__))
+    real_stat = os.stat
+
+    def root_owned_plugin_dir(path, *args, **kwargs):
+        st = real_stat(path, *args, **kwargs)
+        if os.path.abspath(str(path)) == plugin_dir:
+            return _StatWithOwner(st, 0, 0)
+        return st
+
+    monkeypatch.setattr(pmod.os, "stat", root_owned_plugin_dir)
+    _process_is_root(pmod, monkeypatch, 0)
+    assert plugin._plugin_owner_ids() is None
+    calls = _record_chown(pmod, monkeypatch)
+
+    real_open = pmod.os.open
+
+    def denied_for_claims(path, flags, mode=0o777, *args, **kwargs):
+        if claims in str(path):
+            raise PermissionError(13, "Permission denied")
+        return real_open(path, flags, mode, *args, **kwargs)
+
+    monkeypatch.setattr(pmod.os, "open", denied_for_claims)
+    with caplog.at_level("ERROR", logger="plugins.iptv_checker"):
+        assert plugin._claim_scheduler_fire("0 23 * * *", _minute(pmod)) is True
+
+    assert calls == []
+    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert any("the user that runs Dispatcharr" in m for m in errors), errors
+    assert not any("0:0" in m for m in errors), errors
 
 
 def test_no_world_writable_chmod_remains():
