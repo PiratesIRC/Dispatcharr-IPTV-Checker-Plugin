@@ -2,6 +2,46 @@
 
 Newest first. Versions are calver Major.YY.DDDHHMM (UTC).
 
+## 1.26.2831654 (2026-10-10)
+
+Three fixes and one addition.
+
+### Fixed
+
+- **Trigger Stream-Mapparr After Scheduled Check now finds a Plugin Hub
+  install (#29).** The Hub installs Stream-Mapparr as `stream_mapparr`, while
+  a copied folder is named `stream-mapparr`, and the step looked only for the
+  second name, so on a Hub install it logged that the plugin was not
+  installed and did nothing. It now looks for both, Hub name first.
+- **The scheduler claim folder no longer blocks other users (#29).** Each
+  scheduled run writes a claim file in `/data/iptv_checker_fire_claims` so a
+  second scheduler loop does not run the same check. When a process running
+  as root created that folder first, the Dispatcharr workers could not write
+  claims, the check ran anyway, and duplicate scans followed. The folder is
+  now made writable by every user (mode 1777) whenever a claim is written. A
+  folder that root already created cannot be changed by the workers, so the
+  log now prints an error with the one command that repairs it, to run once
+  as root: `chmod 1777 /data/iptv_checker_fire_claims`.
+- **A Skipped stream no longer has its stats set to 0x0 (#30).** Streams the
+  check could not judge (rate limited, audio only, or a Streamlink-only
+  address) were saved with a 0x0 resolution, which Stream-Mapparr reads as a
+  dead stream. They now keep whatever stats they had. A stream already saved
+  as 0x0 keeps it until a later check finds it alive or dead. Black screens
+  are reported to Stream-Mapparr by clearing the stats, which Stream-Mapparr
+  1.26.2821334 and later treats as dead.
+
+### Added
+
+- **Anonymous usage counts.** A new setting, Share anonymous usage counts,
+  last in the settings and on by default, sends this plugin's Streams Checked
+  total and a random id to the plugin author's counter so the README badges
+  count every install. It sends at most once an hour, or ten minutes after the
+  last report when a check has just recorded new work. No names, channels,
+  streams, providers or settings are sent. Untick it to stop sending; this
+  install's figures are deleted from the server the next time the plugin
+  runs. Details are in the user
+  guide under Anonymous usage counts.
+
 ## 1.26.2561754 (2026-09-13)
 
 One addition.
