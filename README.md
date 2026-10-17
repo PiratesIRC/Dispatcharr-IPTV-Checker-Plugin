@@ -47,7 +47,7 @@ Other things it does:
 
 - Scheduled checks, including overnight windows that pause at a set time and resume where they
   left off on the next window.
-- An HTML report written to `/config/iptv_checker/report.html`, grouped by what you should do
+- An HTML report written to `/config/iptv_checker/report.html` (or to `/data/iptv_checker/reports/` when `/config` cannot be written), grouped by what you should do
   about each finding, and optionally emailed through the
   [Newsflasharr](https://github.com/PiratesIRC) plugin. It is one self-contained file that fetches
   nothing from the internet, so it reads the same in a mail client and on a television browser, and

@@ -114,6 +114,9 @@ class PluginConfig:
     # DELIBERATELY NOT /data/<plugin>/: that is a named volume with no host
     # path, so nothing the operator must read may live there.
     REPORT_DIR = "/config/iptv_checker"
+    # Used only when REPORT_DIR cannot be written (a stock image has no
+    # writable /config), where the choice is this or no report at all.
+    REPORT_FALLBACK_DIR = "/data/iptv_checker/reports"
     RESULTS_FILE = "/data/iptv_checker_results.json"
     # The plugin a finished scheduled scan is handed to, in process, through
     # PluginManager.run_action. Dispatcharr's connect event bus refuses event
@@ -448,6 +451,19 @@ def _container_boot_token():
         pass
     _CONTAINER_BOOT_TOKEN = f"{boot_id}:{pid1_start}" if (boot_id or pid1_start) else ""
     return _CONTAINER_BOOT_TOKEN
+
+
+def _writable_dir(preferred, fallback):
+    """preferred when it exists or can be created and is writable, else fallback.
+    Neither usable: preferred, so the write fails and reports as before."""
+    for directory in (preferred, fallback):
+        try:
+            os.makedirs(directory, exist_ok=True)
+        except (OSError, ValueError):
+            continue
+        if os.access(directory, os.W_OK):
+            return directory
+    return preferred
 
 
 class Plugin:
@@ -4151,8 +4167,8 @@ class Plugin:
                                     version=getattr(self, "version", ""))
         model["plugin_dir"] = os.path.dirname(os.path.abspath(__file__))
 
-        written = reports.write_report(model, PluginConfig.REPORT_DIR,
-                                       PluginConfig.REPORT_DIR, now)
+        report_dir = _writable_dir(PluginConfig.REPORT_DIR, PluginConfig.REPORT_FALLBACK_DIR)
+        written = reports.write_report(model, report_dir, report_dir, now)
         if not written.get("html_path"):
             return written, ["The report could not be written. %s"
                              % (written.get("error") or "")]
