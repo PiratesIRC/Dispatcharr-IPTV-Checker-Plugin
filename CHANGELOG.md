@@ -2,6 +2,24 @@
 
 Newest first. Versions are calver Major.YY.DDDHHMM (UTC).
 
+## 1.26.2901902 (2026-10-17)
+
+### Fixed
+
+- **The report is written even when /config cannot be written.** Email Report
+  and the scheduled report wrote the HTML report and its CSV only to
+  `/config/iptv_checker`, which a stock Dispatcharr image does not let plugins
+  write, so no report was produced there. They now use `/config/iptv_checker`
+  when it can be written and `/data/iptv_checker/reports` otherwise, never
+  `/data/logos`. Installations where `/config` already worked are unchanged.
+
+### Changed
+
+- The release archive now carries signed build provenance. Check a downloaded
+  copy with `gh attestation verify iptv_checker-v1.26.2901902.zip -R
+  PiratesIRC/Dispatcharr-IPTV-Checker-Plugin --signer-workflow
+  PiratesIRC/Dispatcharr-IPTV-Checker-Plugin/.github/workflows/ci.yml`.
+
 ## 1.26.2831712 (2026-10-10)
 
 One change to the 1.26.2831654 claim folder fix. The Plugin Hub refused
