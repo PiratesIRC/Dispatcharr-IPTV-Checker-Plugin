@@ -2,6 +2,19 @@
 
 Newest first. Versions are calver Major.YY.DDDHHMM (UTC).
 
+## 1.26.3052213 (2026-11-01)
+
+### Fixed
+
+- **A dead stream no longer keeps the video details of an earlier check.**
+  When a stream failed to connect (a timeout, 403 Forbidden or a refused
+  connection), the check set its resolution to 0x0 but left the codec, frame
+  rate and bitrate saved by an earlier check that played. Dispatcharr then
+  showed old video details on a stream that does not play. A stream found dead
+  for any reason now has its saved stream details cleared. Streams that are
+  still dead are cleared on the next check; nothing needs to be done by hand.
+  Stream-Mapparr reads a cleared stream as dead, as it did before.
+
 ## 1.26.2901902 (2026-10-17)
 
 ### Fixed
