@@ -69,14 +69,15 @@ def test_no_video_stream_skipped_writes_no_stats(plugin, pmod, monkeypatch, quie
     assert result["dispatcharr_metadata"] == {}
 
 
-def test_a_dead_result_still_writes_zero_dimensions(plugin, pmod, monkeypatch, quiet_logger):
-    """Dead is unchanged: a timed-out probe keeps the 0x0 metadata."""
+def test_a_dead_result_still_reaches_the_writer(plugin, pmod, monkeypatch, quiet_logger):
+    """Dead differs from Skipped: its metadata is a NON-empty dict of None
+    values, so callers still call the writer and the writer clears the stored
+    stats to {} (tests/test_dead_results_clear_stats.py)."""
     def _timeout(*a, **k):
         raise subprocess.TimeoutExpired(cmd="ffprobe", timeout=1)
 
     monkeypatch.setattr(pmod.subprocess, "run", _timeout)
     result = plugin.check_stream(_stream(), 1, 0, quiet_logger, skip_retries=True, settings=_SETTINGS)
     assert result["status"] == "Dead"
-    assert result["dispatcharr_metadata"]["resolution"] == "0x0"
-    assert result["dispatcharr_metadata"]["width"] == 0
-    assert result["dispatcharr_metadata"]["height"] == 0
+    assert result["dispatcharr_metadata"]
+    assert set(result["dispatcharr_metadata"].values()) == {None}

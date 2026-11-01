@@ -4960,7 +4960,9 @@ class Plugin:
                 'ffprobe_monitoring_seconds': 0,
             }
         
-        # Default return for dead streams with null metadata
+        # Default return for dead streams with null metadata. Every value is None
+        # so _update_dispatcharr_metadata clears the stored stats to {}; a 0x0 or
+        # a zero width is not None and would be merged over the old stats instead.
         default_return = {
             'status': 'Dead',
             'error': '',
@@ -4970,9 +4972,9 @@ class Plugin:
             'ffprobe_data': {},
             'dispatcharr_metadata': {
                 'video_codec': None,
-                'resolution': '0x0',
-                'width': 0,
-                'height': 0,
+                'resolution': None,
+                'width': None,
+                'height': None,
                 'source_fps': None,
                 'pixel_format': None,
                 'video_bitrate': None,
