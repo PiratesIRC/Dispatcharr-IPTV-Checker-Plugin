@@ -2,6 +2,19 @@
 
 Newest first. Versions are calver Major.YY.DDDHHMM (UTC).
 
+## 1.26.3121307 (2026-11-08)
+
+### Added
+
+- **Optional closed-caption reporting.** A new setting, Report Closed Captions,
+  records in the results CSV whether each stream carries closed captions or a
+  subtitle track. It is off by default. The new `ffprobe_has_captions` column
+  shows Yes, No, or a blank cell when the check could not decide. It uses the
+  same ffmpeg decode pass as blank-screen, frozen-video and silent-audio
+  detection, and it never marks a stream Dead. Yes means caption data is present
+  in the stream the provider sends, not that the data contains text. An output
+  profile that passes only video and audio removes a separate subtitle track.
+
 ## 1.26.3052213 (2026-11-01)
 
 ### Fixed

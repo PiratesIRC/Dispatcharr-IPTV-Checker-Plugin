@@ -34,7 +34,7 @@ deletes channels that work:
 - Alive. The stream plays. Resolution, framerate, codecs and bitrate are recorded and synced
   back into Dispatcharr so the channel menu can show them.
 - Dead. The stream does not play, or it plays but shows nothing worth watching: a blank picture,
-  a frozen picture, silence, or a fixed-duration placeholder file. Those last four are opt-in.
+  a frozen picture, silence, or a fixed-duration placeholder file. Those last four are opt-in. A separate opt-in setting reports Yes or No for closed captions on each stream in the results CSV.
 - Skipped. The checker could not judge it. That covers a provider rate-limit response, a
   radio station with no video track, and hosts `ffprobe` cannot read at all. **Skipped is never
   treated as dead**, so nothing destructive touches a stream that was merely throttled.
