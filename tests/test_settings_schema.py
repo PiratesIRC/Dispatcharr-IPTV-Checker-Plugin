@@ -24,6 +24,7 @@ FIELD_IDS = {
     '_section_placeholder_file', 'placeholder_file_detection',
     '_section_frozen_video', 'frozen_video_detection', 'frozen_video_min_seconds',
     '_section_silent_audio', 'silent_audio_detection', 'silent_audio_max_db',
+    '_section_closed_captions', 'closed_caption_detection',
     '_section_post_check',
     '_section_dead', 'dead_rename_format', 'move_to_group_name', '_section_black',
     'black_screen_rename_format', 'move_black_screen_group', '_section_low_fps',

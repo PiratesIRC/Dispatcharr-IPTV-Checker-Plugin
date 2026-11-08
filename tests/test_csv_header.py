@@ -163,7 +163,8 @@ def test_yes_no_falls_back_to_the_default_when_unset(pmod):
 # --- the record has to say what was armed -----------------------------------
 
 DETECTORS = ("black_screen_detection", "placeholder_file_detection",
-             "frozen_video_detection", "silent_audio_detection")
+             "frozen_video_detection", "silent_audio_detection",
+             "closed_caption_detection")
 
 AUTOMATIC_CHANGES = ("scheduler_restore_channels", "scheduler_rename_dead_channels",
                      "scheduler_rename_black_screen_channels",
@@ -182,7 +183,7 @@ def test_the_record_says_which_detectors_were_on(header_for):
     none were found or that nobody looked, and the file did not say which.
     """
     text = "\n".join(header_for({d: True for d in DETECTORS}, _RESULTS))
-    for word in ("Blank Screen", "Placeholder File", "Frozen Video", "Silent Audio"):
+    for word in ("Blank Screen", "Placeholder File", "Frozen Video", "Silent Audio", "Closed Captions"):
         assert word in text, f"the record does not say whether {word} detection ran"
 
 

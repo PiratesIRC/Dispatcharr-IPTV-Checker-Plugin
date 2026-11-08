@@ -4035,7 +4035,8 @@ class Plugin:
         for label, key in (("Blank Screen", "black_screen_detection"),
                            ("Placeholder File", "placeholder_file_detection"),
                            ("Frozen Video", "frozen_video_detection"),
-                           ("Silent Audio", "silent_audio_detection")):
+                           ("Silent Audio", "silent_audio_detection"),
+                           ("Closed Captions", "closed_caption_detection")):
             lines.append(f"#   {label}: {_yes_no(settings.get(key))}")
         lines.append("#")
 
@@ -4843,19 +4844,37 @@ class Plugin:
             sample = PluginConfig.DEFAULT_BLACK_SAMPLE_SECONDS
         return max(1, min(wanted, sample - 1))
 
+    @staticmethod
+    def _parse_caption_presence(stderr):
+        # Parse showinfo output for CEA-608/708 caption data on any frame.
+        # True: a frame carried it. False: showinfo printed frames and none
+        # carried it. None: no frame was examined, so nothing was measured.
+        #
+        # Presence only. Caption packets holding nothing but filler also read
+        # True. Measured on ffmpeg 8.1.2 with a synthetic clip; ffprobe
+        # -show_streams did not report closed_captions for that same clip.
+        if not stderr:
+            return None
+        if re.search(r'side data - [^\n]*Closed Captions', stderr):
+            return True
+        if re.search(r'Parsed_showinfo_\d+ @ [^\]]+\] n:\s*\d+ ', stderr):
+            return False
+        return None
+
     def _analyze_stream_content(self, url, timeout, settings, logger,
-                                want_freeze=False, want_audio=False):
-        # ONE ffmpeg decode pass answering up to three questions: is the
-        # picture black, is it frozen, and how loud is the audio. Running them
+                                want_freeze=False, want_audio=False, want_captions=False):
+        # ONE ffmpeg decode pass answering up to four questions: is the
+        # picture black, is it frozen, how loud is the audio, and does the
+        # video carry caption data. Running them
         # together is what keeps the cost at a single provider connection when
         # several detectors are enabled; verified against ffmpeg 8.1.2 that
         # blackdetect, freezedetect and volumedetect all report from one pass.
         #
-        # Returns {'black': ..., 'frozen': ..., 'audio_db': ...}. Each verdict
-        # is True/False, or None meaning NOT MEASURED or NOT DECIDABLE -- and
-        # None never authorizes an action, so the caller leaves the stream
-        # Alive. Never raises.
-        unknown = {'black': None, 'frozen': None, 'audio_db': None}
+        # Returns {'black': ..., 'frozen': ..., 'audio_db': ..., 'captions': ...}.
+        # Each verdict is True/False, or None meaning NOT MEASURED or NOT
+        # DECIDABLE -- and None never authorizes an action, so the caller leaves
+        # the stream Alive. Never raises.
+        unknown = {'black': None, 'frozen': None, 'audio_db': None, 'captions': None}
         s = settings or {}
         ffmpeg_path = s.get('ffmpeg_path', '/usr/local/bin/ffmpeg')
         sample_seconds = s.get('black_screen_sample_seconds', PluginConfig.DEFAULT_BLACK_SAMPLE_SECONDS)
@@ -4872,6 +4891,8 @@ class Plugin:
                 sample_seconds,
             )
             video_filters.append(f'freezedetect=n=-60dB:d={freeze_seconds}')
+        if want_captions:
+            video_filters.append('showinfo')
 
         # Input options (-user_agent, -rw_timeout) MUST precede -i or ffmpeg
         # silently ignores them. -loglevel info is required: blackdetect,
@@ -4924,6 +4945,12 @@ class Plugin:
 
         if want_audio:
             verdicts['audio_db'] = self._parse_mean_volume_db(stderr)
+
+        if want_captions:
+            captions = self._parse_caption_presence(stderr)
+            # A pass that failed part way did not examine the whole sample, so
+            # it can prove presence but it cannot prove absence.
+            verdicts['captions'] = None if captions is False and not clean_exit else captions
 
         return verdicts
 
@@ -5223,12 +5250,25 @@ class Plugin:
                         # A stream with no audio track cannot be silent; that is
                         # a different fault and this detector must not claim it.
                         want_audio = _as_bool(s.get('silent_audio_detection')) and audio_stream is not None
+                        # Report-only: this never changes a stream's status.
+                        want_captions = _as_bool(s.get('closed_caption_detection'))
 
-                        if (want_black or want_freeze or want_audio) and not self._stop_event.is_set():
+                        if (want_black or want_freeze or want_audio or want_captions) and not self._stop_event.is_set():
                             verdicts = self._analyze_stream_content(
                                 url, timeout, settings, logger,
                                 want_freeze=want_freeze, want_audio=want_audio,
+                                want_captions=want_captions,
                             )
+
+                            if want_captions:
+                                has_subtitle_track = any(
+                                    st.get('codec_type') == 'subtitle'
+                                    for st in probe_data.get('streams') or []
+                                )
+                                if has_subtitle_track or verdicts['captions'] is True:
+                                    ffprobe_extra_data['has_captions'] = 'Yes'
+                                elif verdicts['captions'] is False:
+                                    ffprobe_extra_data['has_captions'] = 'No'
 
                             def _dead(error_type, message):
                                 dead_return = dict(default_return)

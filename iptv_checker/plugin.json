@@ -191,6 +191,19 @@
       "help_text": "Mean volume at or below this level counts as silence. Must be negative. Measured basis: digitally silent audio reports -91.0 dB, while the quietest real channel measured reported -44.4 dB, so the default of -70 sits roughly midway with about 25 dB of margin on each side. Raise it toward -50 to catch very quiet channels, at the risk of flagging quiet film soundtracks. Default: -70"
     },
     {
+      "id": "_section_closed_captions",
+      "label": "\ud83d\udcac Closed-Caption Reporting",
+      "type": "info",
+      "description": "Reports which streams carry closed captions or a subtitle track. Report-only: it never marks a stream Dead. Shares the ffmpeg decode pass used by the detectors above. If none of them are on, turning this on adds one decode pass, and one provider connection, for each stream."
+    },
+    {
+      "id": "closed_caption_detection",
+      "label": "\ud83d\udcac Report Closed Captions",
+      "type": "boolean",
+      "default": false,
+      "help_text": "When ON, the decoded sample is checked for closed-caption data (CEA-608 or CEA-708) and each stream gets Yes or No in the ffprobe_has_captions column of the results CSV. A separate subtitle track also counts as Yes. Yes describes the stream the provider sends: an output profile that passes only video and audio, such as a ticker overlay, removes a separate subtitle track before it reaches the player. A blank cell means the check could not decide. Yes means caption data is present, not that it contains text. A stream can carry captions during only some programs, so a No applies to the sample that was checked. Uses the Blank-Screen Sample length above for how much video to decode."
+    },
+    {
       "id": "_section_post_check",
       "type": "info",
       "label": "\ud83c\udff7\ufe0f Post-Check Actions",

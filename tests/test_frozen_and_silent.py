@@ -204,7 +204,7 @@ def test_all_verdicts_none_when_ffmpeg_missing(plugin, pmod, monkeypatch, quiet_
         raise FileNotFoundError("ffmpeg")
     monkeypatch.setattr(pmod.subprocess, "run", _boom)
     v = _analyze(plugin, quiet_logger, want_freeze=True, want_audio=True)
-    assert v == {"black": None, "frozen": None, "audio_db": None}
+    assert v == {"black": None, "frozen": None, "audio_db": None, "captions": None}
 
 
 def test_all_verdicts_none_on_timeout(plugin, pmod, monkeypatch, quiet_logger):
@@ -212,7 +212,7 @@ def test_all_verdicts_none_on_timeout(plugin, pmod, monkeypatch, quiet_logger):
         raise subprocess.TimeoutExpired(cmd="ffmpeg", timeout=20)
     monkeypatch.setattr(pmod.subprocess, "run", _boom)
     v = _analyze(plugin, quiet_logger, want_freeze=True, want_audio=True)
-    assert v == {"black": None, "frozen": None, "audio_db": None}
+    assert v == {"black": None, "frozen": None, "audio_db": None, "captions": None}
 
 
 def test_freeze_true_even_on_nonzero_exit(plugin, pmod, monkeypatch, quiet_logger):
