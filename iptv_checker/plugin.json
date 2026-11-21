@@ -8,6 +8,12 @@
   "license": "MIT",
   "repo_url": "https://github.com/PiratesIRC/Dispatcharr-IPTV-Checker-Plugin",
   "min_dispatcharr_version": "v0.20.0",
+  "manifest_version": 1,
+  "capabilities": [
+    "outbound_network",
+    "subprocess",
+    "filesystem_write"
+  ],
   "help_url": "https://github.com/PiratesIRC/Dispatcharr-IPTV-Checker-Plugin",
   "fields": [
     {

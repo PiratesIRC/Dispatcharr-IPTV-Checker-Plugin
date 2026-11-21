@@ -27,6 +27,7 @@ from apps.channels.models import Channel, ChannelGroup, Stream, ChannelStream, C
 from django.db import transaction
 from core.utils import send_websocket_update
 from .usage_client import UsageReporter, jsonl_sum, load_plugin_settings
+from . import settings_form
 
 # Scheduler imports
 try:
@@ -65,6 +66,14 @@ LOGGER.addFilter(PluginNameFilter())
 # --- Scheduler Globals ---
 _bg_scheduler_thread = None
 _scheduler_stop_event = threading.Event()
+# A plugin reload imports this module afresh, so the module-global stop event
+# above cannot reach a scheduler thread the previous copy started. Each thread
+# therefore carries its own stop event under SCHEDULER_STOP_ATTR, and a new copy
+# finds the old threads by name through threading.enumerate() and sets theirs.
+SCHEDULER_THREAD_NAME = "iptv-checker-scheduler"
+SCHEDULER_STOP_ATTR = "_iptv_checker_stop_event"
+# None until first checked: whether this Dispatcharr draws the 0.34 form.
+_settings_form_034 = None
 _scheduler_pending_run = False  # Flag to queue a run if check already in progress
 _scheduler_init_lock = threading.Lock()  # Serialize concurrent _init_scheduler calls
 _scheduler_initialized = False  # Set True after the first Plugin instance bootstraps the scheduler
@@ -500,6 +509,50 @@ class Plugin:
         # Start scheduler on init so it survives container restarts
         self._init_scheduler()
 
+    def get_fields(self, context=None):
+        """The settings form for Dispatcharr 0.34 and later, in collapsible sections.
+
+        Dispatcharr 0.34 calls this at discovery and on a reload; 0.33 and earlier
+        never call it and read the flat fields in plugin.json. The loader does not
+        catch an exception raised here, so any failure returns the flat list, and
+        an empty list (plugin.json unreadable) makes the loader use the manifest.
+        """
+        flat = []
+        try:
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plugin.json")
+            with open(path, "r", encoding="utf-8") as f:
+                flat = json.load(f).get("fields", []) or []
+            settings = (context or {}).get("settings") or {}
+            return settings_form.build_form(flat, settings)
+        except Exception as e:
+            LOGGER.warning(f"Sectioned settings form failed, using the flat form: {e}")
+            return flat
+
+    @staticmethod
+    def _uses_settings_form_034():
+        """True when this Dispatcharr has the 0.34 field-version module, which is
+        the release that calls get_fields and stores the pick-list ids. Checked
+        once per process; any error means False, so 0.33 keeps its text values."""
+        global _settings_form_034
+        if _settings_form_034 is None:
+            try:
+                import importlib.util
+                _settings_form_034 = importlib.util.find_spec("apps.plugins.field_versions") is not None
+            except Exception:
+                _settings_form_034 = False
+        return _settings_form_034
+
+    def _legacy_settings(self, settings):
+        """Settings with every 0.34 pick-list value written back into its old
+        text setting, so the rest of the plugin reads one text form."""
+        if not self._uses_settings_form_034():
+            return settings
+        try:
+            return settings_form.legacy_settings(settings)
+        except Exception as e:
+            LOGGER.warning(f"Could not read the 0.34 pick-list settings: {e}")
+            return settings
+
     def _init_scheduler(self):
         """Load saved settings from DB and start the scheduler if configured.
 
@@ -872,7 +925,7 @@ class Plugin:
             from apps.plugins.models import PluginConfig as DBPluginConfig
             cfg = DBPluginConfig.objects.filter(key=self.key).first()
             if cfg and cfg.settings:
-                return cfg.settings
+                return self._legacy_settings(cfg.settings)
         except Exception as e:
             LOGGER.warning(f"Could not refresh settings from DB; using cached snapshot: {e}")
         return fallback
@@ -1728,6 +1781,10 @@ class Plugin:
             tz_str = PluginConfig.DEFAULT_TIMEZONE
             local_tz = pytz.timezone(tz_str)
         
+        # This thread's own stop event, attached to the thread object below so a
+        # later copy of this module (after a plugin reload) can stop it.
+        my_stop = threading.Event()
+
         # Define the scheduler loop
         def scheduler_loop():
             global _scheduler_pending_run
@@ -1735,7 +1792,7 @@ class Plugin:
 
             LOGGER.info(f"Scheduler started. Timezone: {tz_str}, Cron expressions: {scheduled_times}")
 
-            while not _scheduler_stop_event.is_set():
+            while not _scheduler_stop_event.is_set() and not my_stop.is_set():
                 try:
                     # Self-evict if superseded: a newer _start_background_scheduler
                     # may have replaced the global without _stop_background_scheduler
@@ -1824,11 +1881,11 @@ class Plugin:
                             LOGGER.error(f"Queued scheduled check failed: {e}", exc_info=True)
                     
                     # Sleep efficiently
-                    _scheduler_stop_event.wait(PluginConfig.SCHEDULER_CHECK_INTERVAL)
+                    my_stop.wait(PluginConfig.SCHEDULER_CHECK_INTERVAL)
                 
                 except Exception as e:
                     LOGGER.error(f"Scheduler loop error: {e}", exc_info=True)
-                    _scheduler_stop_event.wait(PluginConfig.SCHEDULER_ERROR_WAIT)
+                    my_stop.wait(PluginConfig.SCHEDULER_ERROR_WAIT)
             
             LOGGER.info("Scheduler stopped")
         
@@ -1839,11 +1896,13 @@ class Plugin:
         # last_run, which caused duplicate cron fires.
         with _scheduler_lifecycle_lock:
             self._stop_background_scheduler()
+            self._stop_superseded_scheduler_threads()
             _bg_scheduler_thread = threading.Thread(
                 target=scheduler_loop,
-                name="iptv-checker-scheduler",
+                name=SCHEDULER_THREAD_NAME,
                 daemon=True
             )
+            setattr(_bg_scheduler_thread, SCHEDULER_STOP_ATTR, my_stop)
             _bg_scheduler_thread.start()
             LOGGER.info("Background scheduler thread started")
     
@@ -1858,6 +1917,9 @@ class Plugin:
                 LOGGER.info("Stopping scheduler thread...")
                 prev_thread = _bg_scheduler_thread
                 _scheduler_stop_event.set()
+                prev_stop = getattr(prev_thread, SCHEDULER_STOP_ATTR, None)
+                if prev_stop is not None:
+                    prev_stop.set()
                 prev_thread.join(timeout=PluginConfig.SCHEDULER_STOP_TIMEOUT)
                 _scheduler_stop_event.clear()
                 _scheduler_pending_run = False
@@ -1872,6 +1934,43 @@ class Plugin:
                                    "it will self-evict on its next iteration")
                 LOGGER.info("Scheduler thread stopped")
     
+    @staticmethod
+    def _superseded_scheduler_threads(threads, current):
+        """(thread, stop_event) for every live scheduler thread except current.
+
+        Called after this module's own thread was stopped, so what remains was
+        started by an earlier copy of the module (before a plugin reload) or
+        outlived a stop timeout. stop_event is None for a thread started by a
+        plugin version older than SCHEDULER_STOP_ATTR.
+        """
+        out = []
+        for t in threads:
+            if t is current or getattr(t, "name", "") != SCHEDULER_THREAD_NAME:
+                continue
+            if not t.is_alive():
+                continue
+            out.append((t, getattr(t, SCHEDULER_STOP_ATTR, None)))
+        return out
+
+    def _stop_superseded_scheduler_threads(self):
+        """Ask every scheduler thread left by an earlier copy of this module to exit.
+
+        Does not join: such a loop may be inside a scheduled check, which it
+        finishes before it exits (that check waits on the old copy's own global
+        stop event, which this does not set). The per-minute fire claim files
+        keep the two loops from firing the same minute in the meantime.
+        """
+        for thread, stop_event in self._superseded_scheduler_threads(
+                threading.enumerate(), threading.current_thread()):
+            if stop_event is None:
+                LOGGER.warning(
+                    f"A scheduler thread from an older plugin version is still running in "
+                    f"this process (thread {thread.ident}) and cannot be stopped until the "
+                    f"process restarts. The fire claim files keep each cron minute to one run.")
+                continue
+            LOGGER.info(f"Asking the scheduler thread from a previous plugin load to exit (thread {thread.ident})")
+            stop_event.set()
+
     @staticmethod
     def _post_scan_phases_should_run(results_mtime_before, results_mtime_after):
         """True only when this session's scan wrote a new results file.
@@ -2263,7 +2362,7 @@ class Plugin:
 
     def run(self, action, params, context):
         """Main plugin entry point"""
-        settings = context.get("settings", {})
+        settings = self._legacy_settings(context.get("settings", {}))
         logger = context.get("logger", LOGGER)
 
         try:
@@ -2321,7 +2420,7 @@ class Plugin:
 
             # Send GUI notification for non-background actions
             if not is_bg:
-                emoji = "✅" if status == "ok" else "❌"
+                emoji = {"ok": "✅", "partial": "⚠️"}.get(status, "❌")
                 notify_msg = msg.split("\n")[0] if msg else action
                 send_websocket_update('updates', 'update', {
                     "type": "plugin", "plugin": "IPTV Checker",
@@ -4306,7 +4405,7 @@ class Plugin:
         if deleted_count == 0:
             return {"status": "error", "message": "Failed to delete any CSV files."}
         elif deleted_count < len(csv_files):
-            return {"status": "ok", "message": f"⚠️ Partially cleared: Deleted {deleted_count} of {len(csv_files)} CSV files.\n\nSome files could not be deleted. Check logs for details."}
+            return {"status": "partial", "message": f"⚠️ Partially cleared: Deleted {deleted_count} of {len(csv_files)} CSV files.\n\nSome files could not be deleted. Check logs for details."}
         else:
             return {"status": "ok", "message": f"✅ Successfully deleted {deleted_count} CSV export file(s) from /data/exports/."}
 
