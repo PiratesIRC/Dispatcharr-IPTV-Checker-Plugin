@@ -2,6 +2,35 @@
 
 Newest first. Versions are calver Major.YY.DDDHHMM (UTC).
 
+## 1.26.3251946 (2026-11-21)
+
+### Changed
+
+- **Requires Dispatcharr 0.34.0 or newer.** The plugin now uses the 0.34
+  plugin manifest, so Dispatcharr 0.33 and earlier cannot install this
+  release. Stay on 1.26.3121307 there. Your settings carry over.
+- **Settings in collapsible sections.** The settings page is grouped into
+  sections. Group selection, check behaviour, scheduling and the scheduled
+  actions start open; the detectors, the actions and the advanced options
+  start closed. Long help texts are split into short titled paragraphs.
+- **Channel Groups is a pick list.** Choose group names instead of typing
+  them. The list also offers one prefix entry per name prefix, such as
+  `US:*` for every group starting with `US:`, and every pattern you saved
+  earlier, including the old Group(s) to Check and Group(s) to EXCLUDE
+  values. Matching is still case-sensitive. A new free-form pattern cannot
+  be typed into the list. After adding or renaming a group, press the
+  refresh control on the Plugins page to see it in the list.
+- **Video Format Suffixes is a pick list** of UHD, FHD, HD, SD and Unknown.
+
+### Fixed
+
+- **A plugin reload now stops the previous scheduler loop.** Each scheduler
+  loop can be told to stop on its own, so the loop started after a reload
+  asks the old one to exit. The old loop finishes a check that is already
+  running first.
+- **Clear CSV Exports reports a partial delete as partial**, with a warning
+  sign, instead of as a success.
+
 ## 1.26.3121307 (2026-11-08)
 
 ### Added
