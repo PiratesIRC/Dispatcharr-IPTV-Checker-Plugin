@@ -91,7 +91,17 @@ every stream that actually plays is slow: if one plays at full rate, Dispatcharr
 
 Two settings work together.
 
-**Channel Groups** is a comma-separated list. Leave it empty to check every group.
+**Channel Groups** is a pick list. Leave it empty to check every group. It offers three kinds of
+entry:
+
+- **Prefix entries**, such as `US:*`, one for each name prefix that ends in `:` or `|`. A prefix
+  entry picks every group whose name starts with that text, including groups created later.
+- **Every channel group name**, spelled exactly as in Dispatcharr.
+- **Every pattern you saved earlier**, including patterns from the old "Group(s) to Check" and
+  "Group(s) to EXCLUDE" boxes, so an upgrade loses nothing.
+
+The list holds the groups that existed when the plugin was loaded. After adding or renaming a
+group, press the refresh control on the Plugins page to see it in the list.
 
 **Channel Groups Mode** decides how that list is read:
 
@@ -100,16 +110,21 @@ Two settings work together.
 - **Check all groups except those listed above** processes everything else. A group you create later
   is picked up automatically.
 
-Wildcards work in both modes:
+Patterns use wildcards and work in both modes:
 
 | Pattern | Matches |
 |---|---|
-| `US-*` | `US-Movies`, `US-Sports`, `US-News` |
+| `US:*` | `US: Movies`, `US: Sports`, `US: News` |
 | `*Sports*` | any group with "Sports" anywhere in the name |
 | `Movies-??` | `Movies-US`, `Movies-UK` |
-| `US-*, UK-*, *Sports*` | any of the three |
 
-Matching is case-sensitive. An empty list means every group in **both** modes.
+Matching is case-sensitive, so `US:*` and `us:*` are different entries. An empty list means every
+group in **both** modes.
+
+Dispatcharr's form accepts only the entries it offers, so a new pattern of your own, such as
+`*Sports*`, cannot be typed into the list. A pattern saved earlier stays available. The plugin
+stores the picks as one comma-separated list, which is why a group whose name contains a comma is
+not offered.
 
 **A pattern that matches nothing is reported as an error in both modes.** In exclude mode a typo
 would quietly leave a group being checked and acted on, which is the outcome you were avoiding.
@@ -350,11 +365,16 @@ stream. The placeholder-file check adds none.
 
 ## Every setting
 
+The settings page groups these into collapsible sections. The everyday ones (group selection,
+check behaviour, scheduling and the scheduled actions) start open; the detectors, the actions and
+the advanced options start closed. Long help texts are split into short titled paragraphs under
+each setting.
+
 ### Scope
 
 | Setting | Default | What it does |
 |---|---|---|
-| Channel Groups | *(empty)* | Comma-separated list, wildcards supported. Empty means every group |
+| Channel Groups | *(empty)* | Pick list of group names, prefix entries and saved patterns. Empty means every group |
 | Channel Groups Mode | Check only those listed | Whether the list names groups to check or groups to skip |
 | Check Alternative Streams | on | Check backup streams as well as the primary |
 | Only Visible Channels | off | Limit to channels enabled in a channel profile |
@@ -394,7 +414,7 @@ stream. The placeholder-file check adds none.
 | Move Blank-Screen Group | `Black Screens` |
 | Low Framerate Rename Format | `{name} [Slow]` |
 | Move Low Framerate Group | `Slow` |
-| Video Format Suffixes | `UHD, FHD, HD, SD, Unknown` |
+| Video Format Suffixes | `UHD, FHD, HD, SD, Unknown` (a pick list) |
 
 ### Scheduling
 

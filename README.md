@@ -62,7 +62,9 @@ Other things it does:
 
 ## Requirements
 
-- Dispatcharr v0.20.0 or newer, with channels and groups already configured.
+- Dispatcharr v0.34.0 or newer, with channels and groups already configured. The plugin uses the
+  0.34 plugin manifest, so Dispatcharr 0.33 and earlier cannot install this release; stay on
+  v1.26.3121307 there.
 - `ffprobe` in the container, and `ffmpeg` as well if you enable blank-screen, frozen-video or
   silent-audio detection.
 - `pytz` for the scheduler, which is normally already present.
@@ -85,7 +87,8 @@ No API credentials are needed. The plugin runs inside Dispatcharr with direct da
 
 ## Quick start
 
-1. Set **Channel Groups** and **Channel Groups Mode**. Leave the box empty to check every group.
+1. Pick groups in **Channel Groups** and set **Channel Groups Mode**. Leave the list empty to check
+   every group. Entries such as `US:*` pick every group whose name starts with `US:`.
 2. Click **Validate** to confirm the plugin can see your groups. It reports how many groups will be
    checked.
 3. Click **Load Groups**, then **Start Check**.
