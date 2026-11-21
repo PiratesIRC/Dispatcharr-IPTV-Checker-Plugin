@@ -2,8 +2,9 @@
 
 0.33 and earlier read the flat fields in plugin.json and drop any field type
 they do not know, so the flat form must keep only the old types. 0.34 calls
-get_fields, which rebuilds the same settings into sections, one pick list and
-one taller text box. A field missing from the 0.34 form is silent (the loader
+get_fields, which rebuilds the same settings into sections, two pick lists
+(video formats, and channel groups built from the live group names) and one
+taller text box. A field missing from the 0.34 form is silent (the loader
 drops nothing visibly), so these tests check every id by name.
 """
 
@@ -92,7 +93,7 @@ def test_layout_tables_name_only_real_ids():
     header_ids = {f["id"] for f in FLAT if sf.is_section_header(f)}
     assert sf.COLLAPSED_SECTIONS <= header_ids
     assert set(sf.TEXT_ROWS) <= set(FLAT_IDS)
-    assert set(sf.HELP_PARAGRAPHS) <= set(FLAT_IDS)
+    assert set(sf.HELP_PARAGRAPHS) <= set(FLAT_IDS) | set(sf.LIST_SETTINGS)
     assert set(sf.NEW_ID_BY_OLD_ID) <= set(FLAT_IDS)
 
 
@@ -108,9 +109,13 @@ def test_scheduled_times_becomes_a_taller_text_box_under_the_same_id():
     assert f["type"] == "text" and f["rows"] == 3
 
 
-def test_channel_groups_stays_free_text_because_it_takes_wildcards():
-    f = {x["id"]: x for x in _form()}["channel_groups"]
-    assert f["type"] == "string"
+def test_channel_groups_becomes_a_pick_list_under_a_new_id():
+    form = {x["id"]: x for x in _form()}
+    assert "channel_groups" not in form
+    f = form["channel_group_list"]
+    assert f["type"] == "multiselect"
+    assert f["section"] == form["channel_groups_mode"]["section"]
+    assert sf.LIST_SETTINGS["channel_group_list"] == "channel_groups"
 
 
 def test_long_help_is_split_into_a_short_line_and_titled_paragraphs():
@@ -119,7 +124,8 @@ def test_long_help_is_split_into_a_short_line_and_titled_paragraphs():
     flat_by_id = {f["id"]: f for f in FLAT}
     for fid, (short, paras) in sf.HELP_PARAGRAPHS.items():
         assert by_id[fid]["help_text"] == short
-        assert len(short) < len(flat_by_id[fid]["help_text"])
+        old_id = sf.LIST_SETTINGS.get(fid, fid)
+        assert len(short) < len(flat_by_id[old_id]["help_text"])
         ids = [f["id"] for f in form]
         pos = ids.index(fid)
         for n, (title, text) in enumerate(paras, start=1):
@@ -175,6 +181,159 @@ def test_write_back_does_not_modify_its_input():
     s = {"video_format_suffix_list": ["HD"]}
     sf.legacy_settings(s)
     assert "video_format_suffixes" not in s
+
+
+# ---- the channel group pick list -------------------------------------------
+
+GROUPS = ["US: News", "US: Sports", "us: lower", "UK| Drama", "UK| Film", "Kids",
+          "News", "news", "Odd [HD]", "Star*Plus", "What?", "A, B", ": empty", "LONGPREFIXNAME: x"]
+
+
+def _group_field(settings=None, groups=GROUPS):
+    form = sf.build_form(FLAT, settings, groups)
+    return {f["id"]: f for f in form}["channel_group_list"]
+
+
+def _values(field):
+    return [o["value"] for o in field["options"]]
+
+
+def test_name_prefix_rules():
+    assert sf.name_prefix("US: News") == "US:"
+    assert sf.name_prefix("AR| BEIN") == "AR|"
+    assert sf.name_prefix("Kids") == ""
+    assert sf.name_prefix(": empty") == "", "nothing before the separator"
+    assert sf.name_prefix("US:") == "", "nothing after the separator"
+    assert sf.name_prefix("LONGPREFIXNAME: x") == "", "separator past PREFIX_MAX_CHARS"
+
+
+def test_one_prefix_pattern_per_prefix_with_case_kept():
+    values = _values(_group_field())
+    assert values.count("US:*") == 1
+    assert "us:*" in values, "matching is case-sensitive, so us: is its own prefix"
+    assert "UK|*" in values
+    first = values[:3]
+    assert first == sorted(first) and all(v.endswith("*") for v in first)
+
+
+def test_every_group_name_is_offered_exactly_and_case_variants_both_kept():
+    values = _values(_group_field())
+    for name in ("US: News", "Kids", "News", "news", ": empty"):
+        assert name in values
+    labels = {o["value"]: o["label"] for o in _group_field()["options"]}
+    assert labels["Odd [[]HD]"] == "Odd [HD]"
+
+
+def test_a_name_with_a_comma_cannot_be_offered():
+    assert not any("," in v for v in _values(_group_field()))
+
+
+def test_every_option_matches_with_the_plugin_matcher(pmod):
+    names = {g for g in GROUPS if "," not in g}
+    match = pmod.Plugin._match_group_names
+    for opt in _group_field()["options"]:
+        got = match(opt["value"], names)
+        if opt["value"].endswith("*") and opt["label"].endswith(")"):
+            prefix = opt["label"].split("* (", 1)[0]
+            assert got == {n for n in names if n.startswith(prefix)}, opt
+            assert got
+        else:
+            assert got == {opt["label"]}, opt
+
+
+def test_escaping_is_needed_for_a_name_with_wildcard_characters(pmod):
+    """Negative control: the raw name of a bracketed group does not match itself."""
+    assert pmod.Plugin._match_group_names("Odd [HD]", {"Odd [HD]"}) == set()
+    assert pmod.Plugin._match_group_names(sf.glob_escape("Odd [HD]"), {"Odd [HD]"}) == {"Odd [HD]"}
+
+
+def test_saved_patterns_are_kept_verbatim_as_options_and_default():
+    f = _group_field({"channel_groups": "US: *, Sport?, [Kk]ids, news",
+                      "channel_group_list": ["Gone Group", "*PPV*"]})
+    values = _values(f)
+    assert f["default"] == ["US: *", "Sport?", "[Kk]ids", "news"], "no case change, no reordering"
+    for v in ("US: *", "Sport?", "[Kk]ids", "news", "Gone Group", "*PPV*"):
+        assert values.count(v) == 1, v
+
+
+def test_old_group_setting_patterns_are_offered_but_not_selected(pmod):
+    f = _group_field({"group_names_exclude": "*PPV*", "group_names": "Kids, Odd?"})
+    values = _values(f)
+    for v in ("*PPV*", "Odd?"):
+        assert values.count(v) == 1, v
+    assert values.count("Kids") == 1
+    assert f["default"] == []
+    assert sf.LEGACY_GROUP_KEYS == (pmod.PluginConfig.LEGACY_GROUP_INCLUDE_KEY,
+                                    pmod.PluginConfig.LEGACY_GROUP_EXCLUDE_KEY)
+
+
+def test_default_and_stored_values_pass_dispatcharr_option_check():
+    """Mirror of loader._validate_multiselect_value: every saved value must be an option."""
+    f = _group_field({"channel_groups": "X*, Y", "channel_group_list": ["Z"]}, groups=[])
+    allowed = {o["value"] for o in f["options"]}
+    assert set(f["default"]) | {"Z"} <= allowed
+
+
+def test_no_groups_and_nothing_saved_gives_an_empty_pick_list():
+    f = _group_field(groups=[])
+    assert f["options"] == [] and f["default"] == []
+
+
+def test_channel_group_write_back_feeds_the_resolver(pmod):
+    out = sf.legacy_settings({"channel_group_list": ["US:*", "Kids"], "channel_groups": "old",
+                              "channel_groups_mode": "exclude"})
+    assert out["channel_groups"] == "US:*, Kids"
+    patterns, mode, legacy = pmod.Plugin._resolve_channel_groups(out)
+    assert (patterns, mode, legacy) == ("US:*, Kids", "exclude", "")
+    selected = pmod.Plugin._select_groups(patterns, mode, {"US: News", "Kids", "UK| Film"})
+    assert selected == {"UK| Film"}
+
+
+def test_an_empty_channel_group_list_keeps_the_legacy_fallback(pmod):
+    out = sf.legacy_settings({"channel_group_list": [], "group_names_exclude": "*PPV*"})
+    assert out["channel_groups"] == ""
+    assert pmod.Plugin._resolve_channel_groups(out) == ("*PPV*", "exclude", "")
+
+
+def test_get_fields_offers_the_live_group_names(plugin, pmod, monkeypatch):
+    import types
+    qs = types.SimpleNamespace(values_list=lambda *a, **k: ["US: News", "Kids"])
+    monkeypatch.setattr(pmod, "ChannelGroup", types.SimpleNamespace(objects=qs))
+    f = {x["id"]: x for x in plugin.get_fields({"settings": {"channel_groups": "Old*"}})}["channel_group_list"]
+    assert _values(f) == ["US:*", "Kids", "US: News", "Old*"]
+
+
+def test_get_fields_keeps_saved_patterns_when_groups_cannot_be_read(plugin, pmod, monkeypatch):
+    import types
+
+    def boom(*a, **k):
+        raise RuntimeError("db down")
+    monkeypatch.setattr(pmod, "ChannelGroup", types.SimpleNamespace(objects=types.SimpleNamespace(values_list=boom)))
+    fields = plugin.get_fields({"settings": {"channel_groups": "US:*"}})
+    f = {x["id"]: x for x in fields}["channel_group_list"]
+    assert any(x["type"] == "section" for x in fields)
+    assert _values(f) == ["US:*"]
+
+
+def test_scheduler_startup_reads_the_written_back_groups(plugin, pmod, monkeypatch):
+    import sys
+    import types
+    monkeypatch.setattr(pmod, "_settings_form_034", True)
+    monkeypatch.setattr(pmod, "_scheduler_initialized", False)
+    row = types.SimpleNamespace(settings={"scheduled_times": "0 4 * * *",
+                                          "channel_group_list": ["US:*"], "channel_groups": "old"})
+    mgr = types.SimpleNamespace(filter=lambda **k: types.SimpleNamespace(first=lambda: row))
+    models = types.ModuleType("apps.plugins.models")
+    models.PluginConfig = types.SimpleNamespace(objects=mgr)
+    monkeypatch.setitem(sys.modules, "apps.plugins.models", models)
+    seen = {}
+    monkeypatch.setattr(plugin, "_normalize_stale_progress", lambda: None, raising=False)
+    monkeypatch.setattr(plugin, "_acquire_scheduler_lock", lambda: True, raising=False)
+    monkeypatch.setattr(plugin, "_start_background_scheduler", lambda s: seen.setdefault("start", s), raising=False)
+    monkeypatch.setattr(plugin, "_maybe_resume_after_restart", lambda s: seen.setdefault("resume", s), raising=False)
+    plugin._init_scheduler()
+    assert seen["start"]["channel_groups"] == "US:*"
+    assert seen["resume"]["channel_groups"] == "US:*"
 
 
 # ---- Plugin.get_fields and the write-back gate --------------------------------

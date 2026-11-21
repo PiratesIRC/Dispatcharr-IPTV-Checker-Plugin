@@ -17,16 +17,34 @@ import copy
 LIST_SETTINGS = {
     # new id: old id
     "video_format_suffix_list": "video_format_suffixes",
+    "channel_group_list": "channel_groups",
 }
 NEW_ID_BY_OLD_ID = {old: new for new, old in LIST_SETTINGS.items()}
 
 VIDEO_FORMATS = ("UHD", "FHD", "HD", "SD", "Unknown")
 
+# A name prefix ends at the first of these characters ("US: ABC" -> "US:"),
+# found within PREFIX_MAX_CHARS characters, and is offered as "US:*".
+PREFIX_SEPARATORS = ":|"
+PREFIX_MAX_CHARS = 12
+# fnmatch reads these as wildcards, so a literal one is wrapped as [*], [?], [[].
+GLOB_CHARS = "*?["
+# The two group settings channel_groups replaced (PluginConfig.LEGACY_GROUP_*_KEY
+# in plugin.py). Their patterns are offered so they can be moved into the list.
+LEGACY_GROUP_KEYS = ("group_names", "group_names_exclude")
+
 NEW_FIELDS = {
     "video_format_suffix_list": {
-        "label": "🎬 Add Video Format Suffixes",
+        "label": "\U0001F3AC Add Video Format Suffixes",
         "help_text": "The formats to add as a suffix, for example [HD], to channel names by the Add Video Format Suffix action and its scheduled step. Pick one or more.",
         "options": VIDEO_FORMATS,
+    },
+    # Options come from the channel groups that exist when the plugin loads,
+    # passed in by Plugin.get_fields; see channel_group_options().
+    "channel_group_list": {
+        "label": "\U0001F4C1 Channel Groups",
+        "help_text": "The channel groups this plugin should act on. Leave empty for all groups. How this list is read depends on the Channel Groups Mode setting directly below.",
+        "options": None,
     },
 }
 
@@ -66,10 +84,11 @@ HELP_SUFFIX = "_help_"
 # right below the field. The flat form keeps the full text.
 # Value: (short help, [(title, paragraph), ...]).
 HELP_PARAGRAPHS = {
-    "channel_groups": (
+    "channel_group_list": (
         "The channel groups this plugin should act on. Leave empty for all groups. How this list is read depends on the Channel Groups Mode setting directly below.",
         [
-            ("Wildcards", "Wildcards are supported: * matches any characters, ? matches one, and [abc] matches a character from the set. Matching is case-sensitive."),
+            ("Prefix entries", "An entry ending in * picks every group whose name starts with the text before it, for example US:* picks US: News and US: Sports, including groups created later. Matching is case-sensitive. A pattern saved earlier, such as one using ? or [abc], stays in the list."),
+            ("Where the list comes from", "The list holds the channel groups that existed when the plugin was loaded. After adding or renaming a group, press the refresh control on the Plugins page to see it here."),
             ("Names that match nothing", "A group name or pattern that matches nothing is reported as an error by Validate Settings in both modes, because a typo in exclude mode would check the group you meant to skip."),
         ],
     ),
@@ -190,10 +209,59 @@ def _canonical(values, names):
     return [by_key.get(v.casefold(), v) for v in values]
 
 
-def pick_list_fields(flat_fields, settings=None):
+def glob_escape(name):
+    """A group name as a pattern that matches only itself under fnmatchcase."""
+    return "".join(f"[{c}]" if c in GLOB_CHARS else c for c in str(name))
+
+
+def name_prefix(name):
+    """The leading part of a group name up to and including its first
+    PREFIX_SEPARATORS character, or "" when there is none within
+    PREFIX_MAX_CHARS characters, nothing before it, or nothing after it."""
+    name = str(name or "")
+    for pos, ch in enumerate(name[:PREFIX_MAX_CHARS + 1]):
+        if ch in PREFIX_SEPARATORS:
+            if name[:pos].strip() and name[pos + 1:].strip():
+                return name[:pos + 1]
+            return ""
+    return ""
+
+
+def channel_group_options(group_names, saved=()):
+    """Pick-list options for the channel group setting, case kept exactly
+    because matching is case-sensitive.
+
+    Order: one prefix pattern per distinct name prefix ("US:*"), then every
+    group name, then every saved value that is neither. A name holding a
+    wildcard character is offered escaped so it matches only itself. A name
+    holding a comma is left out: the setting is a comma-separated list, so it
+    cannot be stored. A saved value is never left out, because Dispatcharr
+    rejects a save holding a value that is not an option."""
+    names = sorted({str(n) for n in group_names or () if str(n or "").strip() and "," not in str(n)})
+    prefixes = sorted({p for p in (name_prefix(n) for n in names) if p})
+    out = []
+    seen = set()
+
+    def add(value, label):
+        if value and "," not in value and value not in seen:
+            seen.add(value)
+            out.append({"label": label, "value": value})
+
+    for p in prefixes:
+        add(glob_escape(p) + "*", f"{p}* (every group starting with {p})")
+    for n in names:
+        add(glob_escape(n), n)
+    for v in saved or ():
+        v = str(v or "").strip()
+        add(v, v)
+    return out
+
+
+def pick_list_fields(flat_fields, settings=None, group_names=()):
     """The flat form with each LIST_SETTINGS text field replaced by a pick list
     under its new id. The default is built from the saved old text value, so an
-    install that never saved the new field keeps its choices. The input is not
+    install that never saved the new field keeps its choices. group_names are
+    the channel groups offered by the channel group pick list. The input is not
     modified."""
     settings = settings or {}
     out = []
@@ -205,12 +273,19 @@ def pick_list_fields(flat_fields, settings=None):
         new_id = NEW_ID_BY_OLD_ID[old_id]
         meta = NEW_FIELDS[new_id]
         names = meta["options"]
-        default = _canonical(split_list(settings.get(old_id, field.get("default", ""))), names)
+        default = split_list(settings.get(old_id, field.get("default", "")))
         stored = settings.get(new_id)
         stored = split_list(stored) if isinstance(stored, list) else []
+        if names is None:
+            # Channel groups: wildcard patterns, case-sensitive, kept as saved.
+            legacy = [v for key in LEGACY_GROUP_KEYS for v in split_list(settings.get(key))]
+            options = channel_group_options(group_names, default + stored + legacy)
+        else:
+            default = _canonical(default, names)
+            options = _options(names, default + stored)
         out.append({
             "id": new_id, "label": meta["label"], "type": "multiselect",
-            "default": default, "options": _options(names, default + stored),
+            "default": default, "options": options,
             "help_text": meta["help_text"],
         })
     return out
@@ -274,6 +349,6 @@ def _split_help(item, section):
     return extra
 
 
-def build_form(flat_fields, settings=None):
+def build_form(flat_fields, settings=None, group_names=()):
     """The complete 0.34 form: pick lists first, then sections."""
-    return sectioned_fields(pick_list_fields(flat_fields, settings))
+    return sectioned_fields(pick_list_fields(flat_fields, settings, group_names))

@@ -523,10 +523,21 @@ class Plugin:
             with open(path, "r", encoding="utf-8") as f:
                 flat = json.load(f).get("fields", []) or []
             settings = (context or {}).get("settings") or {}
-            return settings_form.build_form(flat, settings)
+            return settings_form.build_form(flat, settings, self._group_names_for_form())
         except Exception as e:
             LOGGER.warning(f"Sectioned settings form failed, using the flat form: {e}")
             return flat
+
+    @staticmethod
+    def _group_names_for_form():
+        """Every channel group name, for the 0.34 channel group pick list. Read
+        once per plugin load. On an error the list is empty and the pick list
+        still offers every saved pattern, so a save keeps them."""
+        try:
+            return list(ChannelGroup.objects.values_list("name", flat=True))
+        except Exception as e:
+            LOGGER.warning(f"Could not read channel groups for the settings form: {e}")
+            return []
 
     @staticmethod
     def _uses_settings_form_034():
@@ -576,11 +587,12 @@ class Plugin:
                 from apps.plugins.models import PluginConfig as DBPluginConfig
                 cfg = DBPluginConfig.objects.filter(key=self.key).first()
                 if cfg and cfg.settings:
-                    if cfg.settings.get("scheduled_times", "").strip():
+                    saved = self._legacy_settings(cfg.settings)
+                    if saved.get("scheduled_times", "").strip():
                         LOGGER.info("Loading saved settings for scheduler startup")
-                        self._start_background_scheduler(cfg.settings)
+                        self._start_background_scheduler(saved)
                     # If a window was open when the container went down, resume it now
-                    self._maybe_resume_after_restart(cfg.settings)
+                    self._maybe_resume_after_restart(saved)
                 _scheduler_initialized = True
             except Exception as e:
                 LOGGER.warning(f"Could not load settings for scheduler on init: {e}")
