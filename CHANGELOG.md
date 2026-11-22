@@ -2,6 +2,13 @@
 
 Newest first. Versions are calver Major.YY.DDDHHMM (UTC).
 
+## 1.26.3262133 (2026-11-22)
+
+### Changed
+
+- **One View Status button replaces View Check Progress and View Last Results.** It shows the running check's progress, or the last results when no check is running. A check whose progress file has not changed for 15 minutes also shows the last results.
+- **Times you read use Dispatcharr's time zone.** The date in View Status, the CSV file name, and the CSV "Generated", start and end lines no longer show the container's UTC clock.
+
 ## 1.26.3251946 (2026-11-21)
 
 ### Changed
