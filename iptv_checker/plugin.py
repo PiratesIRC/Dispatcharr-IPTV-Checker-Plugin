@@ -2390,6 +2390,8 @@ class Plugin:
                 "validate_settings": self.validate_settings_action,
                 "load_groups": self.load_groups_action,
                 "check_streams": self.check_streams_action,
+                "view_status": self.view_status_action,
+                # The two buttons View Status replaced; kept so an old page or caller still gets an answer.
                 "view_progress": self.view_progress_action,
                 "cancel_check": self.cancel_check_action,
                 "view_results": self.view_results_action,
@@ -2625,7 +2627,7 @@ class Plugin:
 
         logger.info(f"Stream check cancelled by user. Processed {current}/{total} streams before cancellation.")
 
-        return {"status": "ok", "message": f"✅ Stream check cancelled.\n\nProcessed {current}/{total} streams before cancellation.\n\nPartial results have been saved and can be viewed with '📋 View Last Results'."}
+        return {"status": "ok", "message": f"✅ Stream check cancelled.\n\nProcessed {current}/{total} streams before cancellation.\n\nPartial results have been saved and can be viewed with '📊 View Status'."}
 
     def _results_timestamp_str(self):
         """Best-effort 'when were these results produced' string, or None.
@@ -2649,14 +2651,46 @@ class Plugin:
         except (OverflowError, OSError, ValueError):
             return None
 
+    def view_status_action(self, settings, logger):
+        """View Status: the live stream check if one is running, else the last results.
+
+        A check whose progress file has not been written for PROGRESS_STALE_AFTER_SECONDS
+        may have ended without a final state, so its progress line is followed by the
+        last results.
+        """
+        if self.load_progress.get('status') == 'loading':
+            return self.view_progress_action(settings, logger)
+        self.check_progress = self._load_progress()
+        if self.check_progress.get('status') != 'running':
+            return self._last_results_message()
+        progress = self.view_progress_action(settings, logger)["message"]
+        if not self._progress_file_is_stale():
+            return {"status": "ok", "message": progress}
+        minutes = PluginConfig.PROGRESS_STALE_AFTER_SECONDS // 60
+        progress += (f"\n\nNo progress update for {minutes}+ minutes. "
+                     "The check may have stalled or already finished.")
+        return {"status": "ok", "message": progress + "\n\n" + self._last_results_message()["message"]}
+
+    def _progress_file_is_stale(self):
+        """True when nothing has written progress.json for PROGRESS_STALE_AFTER_SECONDS."""
+        try:
+            quiet_for = time.time() - os.path.getmtime(self.progress_file)
+        except OSError:
+            return True
+        return quiet_for > PluginConfig.PROGRESS_STALE_AFTER_SECONDS
+
     def view_results_action(self, settings, logger):
-        """View summary of the last completed stream check."""
+        """View summary of the last completed stream check. Kept for old callers; View Status replaces it."""
         # Reload progress from file to get latest state
         self.check_progress = self._load_progress()
-        
-        if self.check_progress['status'] == 'running':
-            return {"status": "ok", "message": "A stream check is currently running.\n\nUse '📊 View Check Progress' to see the current status."}
 
+        if self.check_progress['status'] == 'running':
+            return {"status": "ok", "message": "A stream check is currently running.\n\nUse '📊 View Status' to see the current status."}
+
+        return self._last_results_message()
+
+    def _last_results_message(self):
+        """Summary of the saved results, whether or not a check is running."""
         results = self._load_json_file(self.results_file)
         if results is None:
             return {"status": "ok", "message": "No results available yet.\n\nUse '▶️ Start Stream Check' to begin checking streams."}
@@ -3052,7 +3086,7 @@ class Plugin:
 
         # Try to start background thread atomically
         if not self._try_start_thread(self._process_streams_background, (all_streams, settings, logger)):
-            return {"status": "ok", "message": "A stream check is already running. Use View Check Progress to monitor."}
+            return {"status": "ok", "message": "A stream check is already running. Use View Status to monitor."}
 
         logger.info(f"Starting check for {len(all_streams)} streams...")
 
@@ -3062,7 +3096,7 @@ class Plugin:
         mode_info = f"parallel mode with {parallel_workers} workers" if parallel_enabled else "sequential mode"
         estimated_total_time = max(1, int(self._estimate_check_seconds(len(all_streams), settings) / 60))
 
-        return {"status": "ok", "message": f"Stream check started for {len(all_streams)} streams. Estimated time: ~{estimated_total_time} min ({mode_info}). Use View Check Progress to monitor.", "background": True}
+        return {"status": "ok", "message": f"Stream check started for {len(all_streams)} streams. Estimated time: ~{estimated_total_time} min ({mode_info}). Use View Status to monitor.", "background": True}
 
     def _process_streams_background(self, all_streams, settings, logger):
         """Background processing of streams to avoid request timeout"""

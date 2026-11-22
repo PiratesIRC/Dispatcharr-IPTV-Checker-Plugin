@@ -562,12 +562,12 @@
       "button_label": "\u25b6\ufe0f Start Stream Check"
     },
     {
-      "id": "view_progress",
-      "label": "\ud83d\udcca View Check Progress",
-      "description": "View the current progress and ETA of the running stream check.",
+      "id": "view_status",
+      "label": "\ud83d\udcca View Status",
+      "description": "Show the running stream check's progress and estimated time, or a summary of the last finished check when nothing is running.",
       "button_variant": "outline",
       "button_color": "blue",
-      "button_label": "\ud83d\udcca View Progress"
+      "button_label": "\ud83d\udcca View Status"
     },
     {
       "id": "cancel_check",
@@ -579,14 +579,6 @@
       "confirm": {
         "message": "Cancel the in-progress stream check? Streams already probed are kept; queued and in-flight streams are aborted (ffprobe currently running may take a few seconds to exit)."
       }
-    },
-    {
-      "id": "view_results",
-      "label": "\ud83d\udccb View Last Results",
-      "description": "View summary of the last completed stream check.",
-      "button_variant": "outline",
-      "button_color": "blue",
-      "button_label": "\ud83d\udccb View Last Results"
     },
     {
       "id": "rename_channels",

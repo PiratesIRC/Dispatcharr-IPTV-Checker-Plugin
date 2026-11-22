@@ -76,8 +76,7 @@ EXPECTED_COLOURS = {
     # blue: reads and reports
     "validate_settings": "blue",
     "check_scheduler_status": "blue",
-    "view_progress": "blue",
-    "view_results": "blue",
+    "view_status": "blue",
     "view_table": "blue",
 }
 

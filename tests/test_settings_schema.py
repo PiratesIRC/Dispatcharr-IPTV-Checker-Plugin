@@ -44,7 +44,7 @@ FIELD_IDS = {
 }
 ACTION_IDS = {
     'validate_settings', 'update_schedule', 'reset_progress', 'check_scheduler_status',
-    'load_groups', 'check_streams', 'view_progress', 'cancel_check', 'view_results',
+    'load_groups', 'check_streams', 'view_status', 'cancel_check',
     'rename_channels', 'move_dead_channels', 'rename_black_screen_channels',
     'move_black_screen_channels', 'restore_channels', 'rename_low_framerate_channels',
     'move_low_framerate_channels', 'add_video_format_suffix', 'view_table', 'export_results',

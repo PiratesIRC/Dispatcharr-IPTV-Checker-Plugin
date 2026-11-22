@@ -144,8 +144,8 @@ would quietly leave a group being checked and acted on, which is the outcome you
    start.
 2. **Load Groups** gathers the channels and their streams. Large lists load in the background.
 3. **Start Check** runs the probes in a background thread and returns immediately with an estimate.
-4. **View Progress** shows a live percentage and estimated finish time. It stays honest through
-   retry passes rather than jumping to 100% early.
+4. **View Status** shows a live percentage and estimated finish time while a check runs, then the
+   last results once it finishes. It stays honest through retry passes rather than jumping to 100% early.
 5. **Cancel Check** stops cleanly. Already-probed results are kept.
 
 Streams that fail with a transient error are queued and retried after the rest of the list, giving
@@ -474,7 +474,7 @@ Every setting above defaults to off, and the retention setting defaults to 0.
 
 **Checking**
 
-- **Load Groups**, **Start Check**, **View Progress**, **Cancel Check**, **View Results**
+- **Load Groups**, **Start Check**, **View Status**, **Cancel Check**
 
 **Acting**
 

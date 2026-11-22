@@ -92,7 +92,7 @@ No API credentials are needed. The plugin runs inside Dispatcharr with direct da
 2. Click **Validate** to confirm the plugin can see your groups. It reports how many groups will be
    checked.
 3. Click **Load Groups**, then **Start Check**.
-4. Watch **View Progress**, then read **View Results** or **Email Report**.
+4. Click **View Status** to follow the check. It shows progress while the check runs and the last results once it finishes. **Email Report** sends the full report.
 
 ## Documentation
 
