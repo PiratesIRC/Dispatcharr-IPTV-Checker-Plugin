@@ -1004,6 +1004,24 @@ class Plugin:
             LOGGER.debug(f"{LOG_PREFIX} Could not read Dispatcharr timezone, using {PluginConfig.DEFAULT_TIMEZONE}: {e}")
             return PluginConfig.DEFAULT_TIMEZONE
 
+    def _dispatcharr_tz(self):
+        """Dispatcharr's timezone as a pytz zone, or None when pytz is missing or the name is bad.
+
+        For times a person reads (file names, the CSV header, the results date).
+        None means the caller falls back to the machine's own clock.
+        """
+        if not PYTZ_AVAILABLE:
+            return None
+        try:
+            return pytz.timezone(self._dispatcharr_timezone())
+        except Exception:
+            return None
+
+    def _dispatcharr_now(self):
+        """Now in Dispatcharr's timezone, or on the machine clock when that is unavailable."""
+        tz = self._dispatcharr_tz()
+        return datetime.now(tz) if tz is not None else datetime.now()
+
     def _setup_window_state(self, settings):
         """Resolve TZ and compute end-of-window. Stores state on self. Returns False on bad config."""
         if not PYTZ_AVAILABLE:
@@ -2647,7 +2665,7 @@ class Plugin:
         if not ts:
             return None
         try:
-            return datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+            return datetime.fromtimestamp(ts, self._dispatcharr_tz()).strftime('%Y-%m-%d %H:%M:%S')
         except (OverflowError, OSError, ValueError):
             return None
 
@@ -4082,7 +4100,7 @@ class Plugin:
         """Generate CSV header comments with settings and statistics"""
         lines = []
         lines.append("# IPTV Checker Plugin - Export Results")
-        lines.append(f"# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append(f"# Generated: {self._dispatcharr_now().strftime('%Y-%m-%d %H:%M:%S')}")
         lines.append(f"# Plugin Version: {self.version}")
         lines.append("#")
         lines.append("# WHAT THIS FILE IS")
@@ -4120,8 +4138,9 @@ class Plugin:
         if self.check_progress.get('start_time') and self.check_progress.get('end_time'):
             start_time = self.check_progress['start_time']
             end_time = self.check_progress['end_time']
-            start_str = datetime.fromtimestamp(start_time).strftime('%Y-%m-%d %H:%M:%S')
-            end_str = datetime.fromtimestamp(end_time).strftime('%Y-%m-%d %H:%M:%S')
+            tz = self._dispatcharr_tz()
+            start_str = datetime.fromtimestamp(start_time, tz).strftime('%Y-%m-%d %H:%M:%S')
+            end_str = datetime.fromtimestamp(end_time, tz).strftime('%Y-%m-%d %H:%M:%S')
             duration_seconds = end_time - start_time
             hours = int(duration_seconds // 3600)
             minutes = int((duration_seconds % 3600) // 60)
@@ -4397,7 +4416,7 @@ class Plugin:
         fieldnames = self._compute_csv_fieldnames(results)
 
         filename = (PluginConfig.CSV_EXPORT_PREFIX
-                    + datetime.now().strftime('%Y%m%d_%H%M%S')
+                    + self._dispatcharr_now().strftime('%Y%m%d_%H%M%S')
                     + PluginConfig.CSV_EXPORT_SUFFIX)
         filepath = os.path.join(PluginConfig.EXPORTS_DIR, filename)
         os.makedirs(PluginConfig.EXPORTS_DIR, exist_ok=True)

@@ -7,7 +7,6 @@
 - "View Last Results" must show when the check was produced
 """
 import json
-from datetime import datetime
 
 
 # --- bug-csv-dup-monitoring-col -------------------------------------------------
@@ -72,6 +71,8 @@ def test_view_results_includes_checked_date(plugin, quiet_logger, monkeypatch):
         json.dump(results, f)
     ts = 1_700_000_000.0
     monkeypatch.setattr(plugin, '_load_progress', lambda: {'status': 'idle', 'end_time': ts})
+    # 1700000000 is 22:13:20 UTC; Dispatcharr's zone here is America/Chicago (CST, UTC-6).
+    monkeypatch.setattr(plugin, '_dispatcharr_timezone', lambda: 'America/Chicago')
     out = plugin.view_results_action({}, quiet_logger)
-    expected = datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+    expected = '2023-11-14 16:13:20'
     assert expected in out['message'], f"no checked-date in: {out['message']!r}"
