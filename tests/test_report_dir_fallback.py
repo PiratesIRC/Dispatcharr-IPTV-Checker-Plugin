@@ -9,8 +9,10 @@ still produce a file on a stock installation.
 """
 import ast
 import pathlib
+import re
 
 import iptv_checker.plugin as pm
+import iptv_checker.storage as storage
 
 PLUGIN = pathlib.Path(pm.__file__)
 
@@ -31,9 +33,14 @@ def test_the_preferred_directory_is_returned_when_neither_can_be_used():
     assert pm._writable_dir("/nonexistent\x00a", "/nonexistent\x00b") == "/nonexistent\x00a"
 
 
-def test_the_fallback_is_under_data_and_never_under_logos():
-    assert pm.PluginConfig.REPORT_FALLBACK_DIR.startswith("/data/")
-    assert "/logos" not in pm.PluginConfig.REPORT_FALLBACK_DIR
+def test_the_fallback_literal_is_under_data_and_never_under_logos():
+    """The legacy literal is the old /data folder. bind moves the fallback to the shared Newsflasharr
+    folder (test_storage_bind.py), and that target must never be under /logos either."""
+    literal = re.search(r'REPORT_FALLBACK_DIR = "([^"]+)"', PLUGIN.read_text(encoding="utf-8")).group(1)
+    assert literal.startswith("/data/")
+    assert "/logos" not in literal
+    assert storage.SPEC.reports_constant == "REPORT_FALLBACK_DIR"
+    assert "logos" not in storage.SPEC.reports_subdir
 
 
 def test_the_report_is_written_through_the_fallback_chooser():

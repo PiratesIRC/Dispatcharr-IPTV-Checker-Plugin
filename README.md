@@ -122,6 +122,43 @@ This plugin makes bulk changes to your channel database, including permanent del
 enable it. Test on a small group first, keep a database backup, and read what an action says it will
 do before confirming it.
 
+## Where IPTV Checker keeps its files
+
+The plugin's private state is kept in a data folder that Dispatcharr creates for it under
+`/data/plugins/_data/`. The folder is named after the install: `iptv_checker` for a folder install and
+`iptv-checker` for an install from the Plugin Hub. In this guide `<data folder>` means that folder.
+
+| What | Where |
+|---|---|
+| Last results, loaded channels, windowed resume state, original groups for Restore | `<data folder>` (`results.json`, `loaded_channels.json`, `pending_resume.json`, `channel_state.json`) |
+| Streams-checked tally and the record of how far it was copied | `<data folder>` (`stream_counts.jsonl`, `stream_counts.offsets.json`) |
+| Anonymous usage install id and timing | `<data folder>/usage/iptv_checker/` |
+| Scheduler owner record, reload flag, fired-minute claims | Beside the data folder: `/data/plugins/_data/iptv_checker.scheduler.pid`, `iptv_checker.scheduler_reload.flag` and the folder `iptv_checker.fire_claims/` |
+| Progress file | Beside the data folder: `/data/plugins/_data/iptv_checker.progress.json` |
+| Report fallback, used only when `/config` cannot be written | `/data/plugins/_shared/newsflasharr/iptv-checker/` (the folder Newsflasharr reads) |
+| HTML report, dated copies and report CSV | `/config/iptv_checker/` (unchanged) |
+| CSV exports | `/data/exports/` (unchanged, shared with other plugins) |
+
+The files beside the data folder always use the folder key `iptv_checker`, whatever the install route,
+so every Dispatcharr worker finds the same owner record and claims. "Delete data" on uninstall removes
+the data folder only. The files beside it and the report folder are left in place.
+
+**Moving from the old layout.** The first start of this release copies each old `/data/iptv_checker_*`
+file into its new place. It only copies: a file that already exists in the new place is kept, and no old
+file is deleted or changed. While this release keeps the old layout, a worker on this release also reads
+the old owner record, reload flag and fire claims, so a worker still running the previous release does
+not start a second scheduler or fire a minute twice. The carry-over record is `migrated.json` in the data
+folder. Its `failed` list should be empty.
+
+**Progress mirror.** While the old layout is kept, every progress write also goes to
+`/data/iptv_checker_progress.json`, because Stream-Mapparr reads that exact path to stand aside while a
+scan runs. Point Stream-Mapparr at `/data/plugins/_data/iptv_checker.progress.json` and remove the mirror in
+the release after this one.
+
+**When the old files are safe to delete.** Only when `migrated.json` has an empty `failed` list and no old
+file has changed since the `time` recorded in it. An old file that keeps changing means a worker still runs
+the previous release.
+
 ## Anonymous usage counts
 
 The Streams Checked and Active Installs badges count every install that leaves

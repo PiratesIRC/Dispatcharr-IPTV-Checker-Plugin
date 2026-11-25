@@ -28,6 +28,10 @@ from django.db import transaction
 from core.utils import send_websocket_update
 from .usage_client import UsageReporter, jsonl_sum, load_plugin_settings
 from . import settings_form
+try:
+    from . import storage  # data-dir layout and the carry-over from /data (bound below)
+except ImportError:  # loaded as a bare module, as tests/conftest.py allows
+    import storage
 
 # Scheduler imports
 try:
@@ -100,9 +104,26 @@ LOG_PREFIX = "[IPTV Checker]"
 
 
 class PluginConfig:
+    # Registry key (the folder name). storage.py names the files beside the data directory with
+    # it, so it must not change with a Hub slug (the Hub slug is iptv-checker).
+    PLUGIN_DB_KEY = "iptv_checker"
+    # The version written to migrated.json by the carry-over. Not stamped by bump_version, so it
+    # is left null; migrated.json is a diagnosis record only.
+    PLUGIN_VERSION = None
+
     # --- File Paths ---
+    # Every state path below is a legacy /data literal. storage.bind records each one in
+    # LEGACY_PATHS and rebinds the constant to the plugin data directory, once per import.
+    # Legacy mode (Dispatcharr 0.33, tests, a failed carry-over) leaves them as written here.
+    STORAGE_LAYOUT = None
+    STORAGE_MIGRATION = None
+    LEGACY_PATHS = {}
+    # DATA_DIR and EXPORTS_DIR stay where they are; see docs/USER-GUIDE.md for what the files are.
     DATA_DIR = "/data"
     EXPORTS_DIR = "/data/exports"
+    # The anonymous usage counter keeps its own folder, one subfolder per plugin (the reporter
+    # appends the plugin key), so the data dir gets <data>/usage/iptv_checker/.
+    USAGE_DATA_DIR = "/data/plugin_stats"
     # This plugin's own export files. EXPORTS_DIR is SHARED with other plugins,
     # so every selection is scoped to this prefix: matching every .csv there
     # would delete another project's data.
@@ -124,7 +145,9 @@ class PluginConfig:
     # path, so nothing the operator must read may live there.
     REPORT_DIR = "/config/iptv_checker"
     # Used only when REPORT_DIR cannot be written (a stock image has no
-    # writable /config), where the choice is this or no report at all.
+    # writable /config), where the choice is this or no report at all. Bound by
+    # storage.py to the shared Newsflasharr folder, because the report path is
+    # attached to a Newsflasharr event (old reports are not copied).
     REPORT_FALLBACK_DIR = "/data/iptv_checker/reports"
     RESULTS_FILE = "/data/iptv_checker_results.json"
     # The plugin a finished scheduled scan is handed to, in process, through
@@ -135,6 +158,8 @@ class PluginConfig:
     STREAM_MAPPARR_ACTION_ID = "on_iptv_checker_scan"
     STREAM_MAPPARR_EVENT_NAME = "iptv_checker_scan_complete"
     LOADED_CHANNELS_FILE = "/data/iptv_checker_loaded_channels.json"
+    # Bound by storage.py to <plugins>/_data/iptv_checker.progress.json. While the rollout keeps it,
+    # the same bytes are also written to this old path: Stream-Mapparr reads it to stand aside.
     PROGRESS_FILE = "/data/iptv_checker_progress.json"
     PENDING_RESUME_FILE = "/data/iptv_checker_pending_resume.json"
     # Append-only tally of how many streams each completed pass probed, one JSON
@@ -243,16 +268,63 @@ class PluginConfig:
     VERSION_CHECK_DURATION = 86400  # Cache version check for 24 hours
 
 
+# Bind the state paths to the plugin data directory, once per import. Each /data literal in
+# PluginConfig is recorded in LEGACY_PATHS and its constant rebound (storage.py). Legacy mode, or a
+# failed carry-over, leaves every constant as written. Runs before USAGE is built.
+storage.bind(PluginConfig, __file__, LOGGER)
+
+
+def _rollout_old_path(name):
+    """The old /data path of a state constant, while this release still honours it.
+
+    Only while storage.ROLLOUT_DUAL_PATHS is on, the process is not in legacy mode and the old
+    path differs from the current one. Otherwise None, and the caller uses the one path.
+    """
+    layout = PluginConfig.STORAGE_LAYOUT
+    if not storage.ROLLOUT_DUAL_PATHS or layout is None or layout.legacy:
+        return None
+    old = (PluginConfig.LEGACY_PATHS or {}).get(name)
+    if not old or old == getattr(PluginConfig, name, None):
+        return None
+    return old
+
+
+def _state_paths(name):
+    """The paths a coordination file is read and written at: the old /data path first while the
+    rollout keeps it, then the current path. Old first is also the order every lock is taken in."""
+    old = _rollout_old_path(name)
+    current = getattr(PluginConfig, name)
+    return [current] if old is None else [old, current]
+
+
+def _stream_tally_total():
+    """Lifetime streams-checked total: copy the old ledger's new lines first, then sum the ledger."""
+    storage.sync_tally_tail(PluginConfig.STORAGE_LAYOUT, PluginConfig.STREAM_COUNT_LEDGER_FILE, LOGGER)
+    return jsonl_sum(PluginConfig.STREAM_COUNT_LEDGER_FILE + "*", key="streams")
+
+
 # Reports the Streams Checked total and a random install id to the plugin-stats Worker so
 # the README badges count every install (docs/USER-GUIDE.md, "Anonymous usage counts").
 # report() returns at once and never raises; the network work runs on a background thread.
-USAGE = UsageReporter(
+def _silence_usage_if_install_id_blocked(reporter, migration):
+    """Stop the reporter when the old install id could not be carried over.
+
+    A fresh id minted here would be a second install, so this process reports nothing. A settings_fn
+    cannot do this: report() prefers the settings argument, so an opt-out would still reach delete.
+    """
+    if migration is not None and migration.install_id_blocked:
+        reporter.report = lambda *args, **kwargs: None
+    return reporter
+
+
+USAGE = _silence_usage_if_install_id_blocked(UsageReporter(
     plugin="iptv_checker",
     counter="streams_checked",
     label="Streams Checked",
-    total_fn=lambda: jsonl_sum(PluginConfig.STREAM_COUNT_LEDGER_FILE + "*", key="streams"),
+    total_fn=_stream_tally_total,
     settings_fn=lambda: load_plugin_settings("iptv_checker"),
-)
+    data_dir=PluginConfig.USAGE_DATA_DIR,
+), PluginConfig.STORAGE_MIGRATION)
 
 
 class ProgressTracker:
@@ -779,7 +851,30 @@ class Plugin:
                         "worker); not eligible to host the scheduler.")
             return False
 
-        lock_path = PluginConfig.SCHEDULER_LOCK_FILE
+        # While the rollout keeps the old /data record, a worker on the previous release takes
+        # that record too, so it sees this process as the owner. The old record is taken first, the
+        # order the previous release uses. A lost election gives back what was taken here.
+        taken = []
+        for lock_path in _state_paths("SCHEDULER_LOCK_FILE"):
+            if self._elect_scheduler_lock_at(lock_path):
+                taken.append(lock_path)
+                continue
+            for path in taken:
+                self._give_back_scheduler_record(path)
+            return False
+        return True
+
+    def _give_back_scheduler_record(self, lock_path):
+        """Remove an owner record that names this process (a lost election undoes its claim)."""
+        holder_pid, _token, readable = self._read_scheduler_lock(lock_path)
+        if readable and holder_pid == os.getpid():
+            try:
+                os.unlink(lock_path)
+            except OSError:
+                pass
+
+    def _elect_scheduler_lock_at(self, lock_path):
+        """One election at lock_path: True iff this PID now holds that owner record."""
         my_pid = os.getpid()
         my_token = _container_boot_token()
 
@@ -855,16 +950,25 @@ class Plugin:
         file yields instead of zombie-firing cron. An unreadable/missing lock
         returns False (don't kill the real owner on a transient read glitch).
         """
-        holder_pid, _token, readable = self._read_scheduler_lock(PluginConfig.SCHEDULER_LOCK_FILE)
-        return bool(readable and holder_pid and holder_pid != os.getpid())
+        # Either record naming another process supersedes this loop: while the rollout keeps the
+        # old record, a worker on the previous release may own that one.
+        for lock_path in _state_paths("SCHEDULER_LOCK_FILE"):
+            holder_pid, _token, readable = self._read_scheduler_lock(lock_path)
+            if readable and holder_pid and holder_pid != os.getpid():
+                return True
+        return False
 
     def _request_scheduler_reload(self):
-        """Signal the elected scheduler process to re-read settings from DB."""
-        try:
-            with open(PluginConfig.SCHEDULER_RELOAD_FLAG, 'w') as f:
-                f.write(str(time.time()))
-        except OSError as e:
-            LOGGER.warning(f"Could not write scheduler reload flag: {e}")
+        """Signal the elected scheduler process to re-read settings from DB.
+
+        Written at every path the flag is kept at, so the owner sees it whichever release it runs.
+        """
+        for flag in _state_paths("SCHEDULER_RELOAD_FLAG"):
+            try:
+                with open(flag, 'w') as f:
+                    f.write(str(time.time()))
+            except OSError as e:
+                LOGGER.warning(f"Could not write scheduler reload flag: {e}")
 
     def _normalize_stale_progress(self):
         """Clear progress.json when it claims a check is running and no check is.
@@ -926,7 +1030,7 @@ class Plugin:
             )
             data['status'] = 'idle'
             data['end_time'] = time.time()
-            self._save_json_file(self.progress_file, data, indent=2)
+            self._save_progress_file(data, indent=2)
             self.check_progress = data
         except Exception as e:
             LOGGER.warning(f"Could not normalize progress.json on startup: {e}")
@@ -1299,7 +1403,19 @@ class Plugin:
             self.check_progress['boot_token'] = _container_boot_token()
         except Exception:
             pass
-        self._save_json_file(self.progress_file, self.check_progress)
+        self._save_progress_file(self.check_progress)
+
+    def _save_progress_file(self, data, indent=None):
+        """Write the progress file, and while the rollout keeps it, the same bytes at the old /data path.
+
+        Stream-Mapparr (released 1.26.3281300) stands aside while a scan runs by reading exactly
+        /data/iptv_checker_progress.json, so that path must keep the same content until that
+        release is replaced. Readers in this plugin read self.progress_file only.
+        """
+        self._save_json_file(self.progress_file, data, indent=indent)
+        mirror = _rollout_old_path("PROGRESS_FILE")
+        if mirror is not None:
+            self._save_json_file(mirror, data, indent=indent)
 
     def _load_json_file(self, filepath):
         """Safely load a JSON file, returning None if corrupted or missing."""
@@ -1356,6 +1472,9 @@ class Plugin:
             return False
         line = json.dumps({"ts": int(time.time()), "streams": count, "mode": mode})
         try:
+            # Lines an old-code worker appended to the old ledger since the carry-over go in first,
+            # so the tally keeps its order and no line is counted twice (storage.sync_tally_tail).
+            storage.sync_tally_tail(PluginConfig.STORAGE_LAYOUT, PluginConfig.STREAM_COUNT_LEDGER_FILE, log)
             with open(PluginConfig.STREAM_COUNT_LEDGER_FILE, 'a') as f:
                 f.write(line + "\n")
             self._report_usage(None, log, force=count > 0)
@@ -1649,27 +1768,30 @@ class Plugin:
             return False
     
     @staticmethod
-    def _fire_claim_path(cron_expr, current_minute):
-        """Path of the on-disk claim for one (cron expression, minute).
+    def _fire_claim_path(cron_expr, current_minute, claim_dir=None):
+        """Path of the on-disk claim for one (cron expression, minute) in claim_dir.
 
         The cron expression is hashed rather than written into the name because
         it contains spaces, asterisks and slashes. Eight hex characters are
         plenty: the only thing that must not collide is two DIFFERENT schedules
         due in the SAME minute, of which an install has a handful at most.
+        The name is the same in every claim folder, so two releases name one slot alike.
         """
         stamp = current_minute.strftime('%Y%m%dT%H%M')
         digest = hashlib.sha256(cron_expr.encode('utf-8')).hexdigest()[:8]
-        return os.path.join(PluginConfig.SCHEDULER_FIRE_CLAIM_DIR, f"fire-{stamp}-{digest}")
+        directory = claim_dir or PluginConfig.SCHEDULER_FIRE_CLAIM_DIR
+        return os.path.join(directory, f"fire-{stamp}-{digest}")
 
     @staticmethod
-    def _prune_fire_claims(current_minute):
+    def _prune_fire_claims(current_minute, claim_dir=None):
         """Drop claim files from an earlier DAY. Their minute cannot come round
         again, and the directory would otherwise grow without bound. Claims from
         earlier today are kept: an earlier minute today is exactly what stops a
         duplicate loop re-firing it."""
+        directory = claim_dir or PluginConfig.SCHEDULER_FIRE_CLAIM_DIR
         today = current_minute.strftime('%Y%m%d')
         try:
-            names = os.listdir(PluginConfig.SCHEDULER_FIRE_CLAIM_DIR)
+            names = os.listdir(directory)
         except OSError:
             return
         for name in names:
@@ -1679,7 +1801,7 @@ class Plugin:
             day = parts[1].split('T')[0]
             if len(day) == 8 and day.isdigit() and day < today:
                 try:
-                    os.unlink(os.path.join(PluginConfig.SCHEDULER_FIRE_CLAIM_DIR, name))
+                    os.unlink(os.path.join(directory, name))
                 except OSError:
                     pass
 
@@ -1696,7 +1818,7 @@ class Plugin:
         return st.st_uid, st.st_gid
 
     @staticmethod
-    def _hand_claim_dir_to_plugin_owner():
+    def _hand_claim_dir_to_plugin_owner(claim_dir=None):
         """A root process must not leave the claim folder root-owned: give it to whoever owns this
         plugin's folder, so the Dispatcharr workers can write claims in it."""
         if not hasattr(os, "geteuid") or os.geteuid() != 0:
@@ -1704,12 +1826,13 @@ class Plugin:
         owner = Plugin._plugin_owner_ids()
         if owner is None:
             return
+        directory = claim_dir or PluginConfig.SCHEDULER_FIRE_CLAIM_DIR
         try:
-            st = os.lstat(PluginConfig.SCHEDULER_FIRE_CLAIM_DIR)
+            st = os.lstat(directory)
             if stat.S_ISLNK(st.st_mode):
                 return
             if (st.st_uid, st.st_gid) != owner:
-                os.chown(PluginConfig.SCHEDULER_FIRE_CLAIM_DIR, owner[0], owner[1], follow_symlinks=False)
+                os.chown(directory, owner[0], owner[1], follow_symlinks=False)
         except OSError:
             pass
 
@@ -1744,18 +1867,28 @@ class Plugin:
                 return False
             _scheduler_last_fired[cron_expr] = current_minute
 
+        # The claim is written in every claim folder the rollout keeps, old folder first. A claim
+        # that exists in either one means another loop, on either release, has this minute.
+        claim_dirs = _state_paths("SCHEDULER_FIRE_CLAIM_DIR")
+        claim_dir = claim_dirs[0]
         try:
-            os.makedirs(PluginConfig.SCHEDULER_FIRE_CLAIM_DIR, exist_ok=True)
-            self._hand_claim_dir_to_plugin_owner()
-            fd = os.open(self._fire_claim_path(cron_expr, current_minute),
-                         os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            for claim_dir in claim_dirs:
+                os.makedirs(claim_dir, exist_ok=True)
+                self._hand_claim_dir_to_plugin_owner(claim_dir)
+                fd = os.open(self._fire_claim_path(cron_expr, current_minute, claim_dir),
+                             os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                try:
+                    os.write(fd, f"{os.getpid()}\n".encode('utf-8'))
+                except OSError:
+                    pass
+                finally:
+                    os.close(fd)
         except FileExistsError:
             LOGGER.warning(f"Cron '{cron_expr}' was already claimed for this minute by another "
                            "scheduler loop; not firing again. A duplicate loop is running, which "
                            "a container restart clears.")
             return False
         except PermissionError:
-            claim_dir = PluginConfig.SCHEDULER_FIRE_CLAIM_DIR
             owner = self._plugin_owner_ids()
             who = f"{owner[0]}:{owner[1]}" if owner else "the user that runs Dispatcharr"
             if os.path.isdir(claim_dir):
@@ -1772,14 +1905,8 @@ class Plugin:
                            "running the schedule anyway, but a duplicate run is now possible.")
             return True
 
-        try:
-            os.write(fd, f"{os.getpid()}\n".encode('utf-8'))
-        except OSError:
-            pass
-        finally:
-            os.close(fd)
-
-        self._prune_fire_claims(current_minute)
+        for claim_dir in claim_dirs:
+            self._prune_fire_claims(current_minute, claim_dir)
         return True
 
     def _start_background_scheduler(self, settings):
@@ -1842,11 +1969,13 @@ class Plugin:
 
                     # Reload schedule from DB if a non-owner worker requested it
                     # (UI "Update Schedule" handled in a different uwsgi process).
-                    if os.path.exists(PluginConfig.SCHEDULER_RELOAD_FLAG):
-                        try:
-                            os.remove(PluginConfig.SCHEDULER_RELOAD_FLAG)
-                        except OSError:
-                            pass
+                    reload_flags = _state_paths("SCHEDULER_RELOAD_FLAG")
+                    if any(os.path.exists(flag) for flag in reload_flags):
+                        for flag in reload_flags:
+                            try:
+                                os.remove(flag)
+                            except OSError:
+                                pass
                         fresh = self._fresh_settings(settings)
                         new_times_str = (fresh.get("scheduled_times") or "").strip()
                         new_times = self._parse_scheduled_times(new_times_str) if new_times_str else []
@@ -4741,12 +4870,15 @@ class Plugin:
                 thread_status = "✅ Running"
                 scheduler_running = True
             else:
-                holder_pid, holder_token, readable = self._read_scheduler_lock(
-                    PluginConfig.SCHEDULER_LOCK_FILE)
-                other_owner_alive = bool(
-                    readable and holder_pid and holder_pid != os.getpid()
-                    and self._scheduler_holder_alive(holder_pid, holder_token, _container_boot_token())
-                )
+                holder_pid = 0
+                other_owner_alive = False
+                for lock_path in _state_paths("SCHEDULER_LOCK_FILE"):
+                    holder_pid, holder_token, readable = self._read_scheduler_lock(lock_path)
+                    if bool(readable and holder_pid and holder_pid != os.getpid()
+                            and self._scheduler_holder_alive(holder_pid, holder_token,
+                                                             _container_boot_token())):
+                        other_owner_alive = True
+                        break
                 if other_owner_alive:
                     thread_status = f"✅ Running (owner PID {holder_pid})"
                     scheduler_running = True

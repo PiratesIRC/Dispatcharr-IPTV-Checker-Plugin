@@ -173,3 +173,34 @@ def fake_clock(monkeypatch, pmod):
     monkeypatch.setattr(pmod.time, "time", clock.time)
     monkeypatch.setattr(pmod.time, "sleep", clock.sleep)
     return clock
+
+
+@pytest.fixture(autouse=True)
+def _sandbox_plugin_data_paths(tmp_path, monkeypatch):
+    """Redirect every /data path in PluginConfig into the test's tmp dir.
+
+    The storage layer runs at import and stays in legacy mode under test (no Dispatcharr apps), so
+    the legacy /data literals are the live values. Redirect those, and the LEGACY_PATHS record of
+    them, and refuse any real /data path outright (plugin_storage.REFUSE_REAL_DATA) in case a
+    redirect is missed.
+    """
+    import iptv_checker.storage as storage
+
+    cfg = plugin_mod.PluginConfig
+    sandbox = tmp_path / "data"
+    sandbox.mkdir(exist_ok=True)
+
+    def redirect(value):
+        return str(sandbox / value[len("/data/"):].lstrip("/")) if value.startswith("/data") else value
+
+    for name in dir(cfg):
+        if name.startswith("_"):
+            continue
+        value = getattr(cfg, name)
+        if isinstance(value, str) and value.startswith("/data"):
+            monkeypatch.setattr(cfg, name, redirect(value), raising=False)
+    legacy = getattr(cfg, "LEGACY_PATHS", None)
+    if isinstance(legacy, dict):
+        monkeypatch.setattr(cfg, "LEGACY_PATHS", {k: redirect(v) for k, v in legacy.items()}, raising=False)
+    monkeypatch.setattr(storage._ps, "REFUSE_REAL_DATA", True)
+    yield

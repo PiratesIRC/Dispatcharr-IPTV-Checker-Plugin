@@ -172,13 +172,13 @@ of the above.
 | What | Where |
 |------|-------|
 | Plugin install dir | `/data/plugins/iptv_checker/` |
-| Data files | `/data/iptv_checker_*.json` |
-| Channel state (restore) | `/data/iptv_checker_channel_state.json` (orig group per channel; captured on Move, consumed by Restore) |
+| Data files | `/data/plugins/_data/iptv_checker/` (see README, "Where IPTV Checker keeps its files") |
+| Channel state (restore) | `<data folder>/channel_state.json` (orig group per channel; captured on Move, consumed by Restore) |
 | CSV exports | `/data/exports/` |
-| Scheduler lock | `/data/iptv_checker_scheduler.pid` (2 lines: pid + boot token) |
-| Fired-minute claims | `/data/iptv_checker_fire_claims/` (one `O_EXCL` file per cron expression and minute, mode `0o600`, holding the claiming pid; older days pruned) |
+| Scheduler lock | `/data/plugins/_data/iptv_checker.scheduler.pid` (2 lines: pid + boot token; the old `/data/iptv_checker_scheduler.pid` while the rollout keeps it) |
+| Fired-minute claims | `/data/plugins/_data/iptv_checker.fire_claims/` (one `O_EXCL` file per cron expression and minute, mode `0o600`, holding the claiming pid; older days pruned) |
 | HTML report, dated copies, report CSV | `/config/iptv_checker/` (a real host folder, deliberately NOT `/data/logos/`, which nginx serves unauthenticated to the whole network) |
-| Streams-checked tally | `/data/iptv_checker_stream_counts.jsonl` (append-only, one JSON line per finished pass: epoch, streams probed, sequential or parallel) |
+| Streams-checked tally | `<data folder>/stream_counts.jsonl` (append-only, one JSON line per finished pass: epoch, streams probed, sequential or parallel) |
 | ffprobe | `/usr/local/bin/ffprobe` (configurable) |
 | ffmpeg | `/usr/local/bin/ffmpeg` (configurable; only used by opt-in black-screen detection) |
 
@@ -187,7 +187,7 @@ of the above.
 - A scheduled run can fire twice even with the election lock held, because a plugin
   discovery pass re-imports the module and every in-memory guard is per module
   object. The claim that prevents it is a FILE, `_claim_scheduler_fire` under
-  `/data/iptv_checker_fire_claims/`. Do not "simplify" it back to module state
+  `/data/plugins/_data/iptv_checker.fire_claims/`. Do not "simplify" it back to module state
   (v1.26.2191151+, `tests/test_scheduler_fire_claim.py`).
 - Anything that runs from `Plugin.__init__` runs in EVERY Dispatcharr worker, and
   a plugin discovery pass triggers it at any time, including while a check is

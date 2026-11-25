@@ -497,13 +497,17 @@ Every setting above defaults to off, and the retention setting defaults to 0.
 |---|---|
 | HTML report, dated copies and report CSV | `/config/iptv_checker/` |
 | CSV exports | `/data/exports/` |
-| Last results | `/data/iptv_checker_results.json` |
-| Loaded channels | `/data/iptv_checker_loaded_channels.json` |
-| Progress state | `/data/iptv_checker_progress.json` |
-| Windowed resume state | `/data/iptv_checker_pending_resume.json` |
-| Original groups, for restore | `/data/iptv_checker_channel_state.json` |
-| Scheduler election lock | `/data/iptv_checker_scheduler.pid` |
-| Record of which cron minutes already ran | `/data/iptv_checker_fire_claims/` |
+| Last results | `<data folder>/results.json` |
+| Loaded channels | `<data folder>/loaded_channels.json` |
+| Progress state | `/data/plugins/_data/iptv_checker.progress.json` |
+| Windowed resume state | `<data folder>/pending_resume.json` |
+| Original groups, for restore | `<data folder>/channel_state.json` |
+| Scheduler election lock | `/data/plugins/_data/iptv_checker.scheduler.pid` |
+| Record of which cron minutes already ran | `/data/plugins/_data/iptv_checker.fire_claims/` |
+
+`<data folder>` is `/data/plugins/_data/iptv_checker/`, or `/data/plugins/_data/iptv-checker/` after an
+install from the Plugin Hub. The README section "Where IPTV Checker keeps its files" lists every file,
+the progress mirror and when the old files can be deleted.
 
 `/config/` is a folder on your host, so the report opens by double-clicking it. `/data/` is inside
 the container.
@@ -547,7 +551,7 @@ the next action or check finishes; the plugin then asks the server to delete
 this install's figures. Once the server confirms the delete, the plugin forgets
 its id, and ticking the setting again later starts a new one; if the delete
 could not reach the server, the plugin keeps the id and retries. The plugin
-keeps that id and the timing of its reports in /data/plugin_stats/iptv_checker/
+keeps that id and the timing of its reports in `<data folder>/usage/iptv_checker/`
 (install_id, sent, backoff, disabled, delete_backoff, lock). To start a new id,
 untick the setting and let an action or check finish so the server deletes this
 install's figures; deleting the folder instead leaves the old figures on the
@@ -614,9 +618,9 @@ find. These four are more reliable than the log in any case:
 
 | Question | Where to look |
 |---|---|
-| Did the schedule fire, and how many times? | One file per fired minute in `/data/iptv_checker_fire_claims/` |
+| Did the schedule fire, and how many times? | One file per fired minute in `/data/plugins/_data/iptv_checker.fire_claims/` |
 | Did it produce a report? | The dated HTML and CSV in `/config/iptv_checker/` |
-| Did a windowed run finish the whole list? | `/data/iptv_checker_pending_resume.json` is gone when it has |
+| Did a windowed run finish the whole list? | `<data folder>/pending_resume.json` is gone when it has |
 | Was the email handed over? | Your entry in Newsflasharr's own delivery record |
 
 ### Bitrate is missing for some streams
