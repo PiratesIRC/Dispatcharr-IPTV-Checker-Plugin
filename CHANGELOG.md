@@ -2,6 +2,14 @@
 
 Newest first. Versions are calver Major.YY.DDDHHMM (UTC).
 
+## 1.26.3302104 (2026-11-26)
+
+### Fixed
+
+- **The private state files are readable by their owner only.** Each save of the results, progress and resume files writes a fresh temporary file with owner-only permissions, and leftover temporary files from an interrupted save are removed at startup. This answers the Plugin Hub storage audit (Dispatcharr/Plugins#620).
+- **The Streams Checked tally catches up after a failed first copy.** Legacy tally lines are counted once after a failed first copy, and the catch-up happens in the same process instead of waiting for a restart. Tally writes no longer interleave.
+- **A failed storage check no longer touches the progress record.** A check that cannot read the storage folders logs one warning per process and leaves a running check's progress alone.
+
 ## 1.26.3301646 (2026-11-26)
 
 ### Changed
