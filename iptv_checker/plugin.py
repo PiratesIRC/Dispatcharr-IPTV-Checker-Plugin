@@ -1454,6 +1454,12 @@ class Plugin:
         """
         tmp_path = filepath + '.tmp'
         try:
+            # A temp file left by a crashed write can carry a wider mode, and O_TRUNC keeps it, so
+            # remove it first and let the open create a fresh file at 0o600.
+            try:
+                os.remove(tmp_path)
+            except FileNotFoundError:
+                pass
             fd = os.open(tmp_path, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
             with os.fdopen(fd, 'w') as f:
                 json.dump(data, f, indent=indent, default=str)
@@ -2557,7 +2563,12 @@ class Plugin:
                 logger.addFilter(PluginNameFilter())
 
             # Warns once per process when Dispatcharr's data_dir differs from the resolved one.
-            storage.check_context(PluginConfig.STORAGE_LAYOUT, context, logger)
+            # Its own guard: a failure here must not reach the handler below, which resets the
+            # progress record of a live run to idle.
+            try:
+                storage.check_context(PluginConfig.STORAGE_LAYOUT, context, logger)
+            except Exception as e:
+                logger.debug(f"{LOG_PREFIX} data_dir check skipped: {e}")
 
             action_map = {
                 "validate_settings": self.validate_settings_action,
