@@ -548,6 +548,9 @@ def _writable_dir(preferred, fallback):
     return preferred
 
 
+# A leftover save temp file older than this is removed at startup (see _remove_old_temp_files).
+LEFTOVER_TEMP_AGE_SECONDS = 600
+
 # Set once the directory check in run() has failed and been logged for this process.
 _DATA_DIR_CHECK_WARNED = False
 
@@ -1007,6 +1010,7 @@ class Plugin:
         BOTH PATHS. While the rollout keeps the old /data progress file, a previous-release worker
         may have left a stuck record there, so every path _state_paths names is checked.
         """
+        self._remove_old_temp_files()
         old = _rollout_old_path("PROGRESS_FILE")
         for path in ([old] if old else []) + [self.progress_file]:
             self._normalize_progress_file(path)
@@ -1459,20 +1463,64 @@ class Plugin:
         its temp file and logs an ERROR.
         """
         tmp_path = None
+        fd = None
         try:
             directory = os.path.dirname(filepath) or "."
             fd, tmp_path = tempfile.mkstemp(
                 prefix="." + os.path.basename(filepath) + ".", suffix=".tmp", dir=directory)
-            with os.fdopen(fd, 'w') as f:
+            f = os.fdopen(fd, 'w')
+            fd = None  # the file object owns the descriptor from here on
+            with f:
                 json.dump(data, f, indent=indent, default=str)
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_path, filepath)
         except Exception as e:
             LOGGER.error(f"Failed to save JSON file {filepath}: {e}")
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
             if tmp_path is not None:
                 try:
                     os.remove(tmp_path)
+                except OSError:
+                    pass
+
+    def _remove_old_temp_files(self):
+        """Remove this plugin's own leftover temp files from a crashed save.
+
+        A save writes <dir>/.<name>.XXXXXXXX.tmp (see _save_json_file). A crash between the write
+        and the replace leaves one behind, and nothing else removes it. Only names of this plugin's
+        state files, in their own directories, with exactly that pattern, and only when older than
+        LEFTOVER_TEMP_AGE_SECONDS, so a save in progress is never touched.
+        """
+        state_paths = [self.progress_file, self.results_file, self.loaded_channels_file,
+                       self.pending_resume_file, self.channel_state_file]
+        old_progress = _rollout_old_path("PROGRESS_FILE")
+        if old_progress:
+            state_paths.append(old_progress)
+        targets = set()
+        for path in state_paths:
+            if path:
+                targets.add((os.path.dirname(path) or ".", os.path.basename(path)))
+        now = time.time()
+        for directory, name in sorted(targets):
+            pattern = re.compile(r"\." + re.escape(name) + r"\.[A-Za-z0-9_]{8}\.tmp")
+            try:
+                entries = os.listdir(directory)
+            except OSError:
+                continue
+            for entry in entries:
+                if not pattern.fullmatch(entry):
+                    continue
+                full = os.path.join(directory, entry)
+                try:
+                    if now - os.path.getmtime(full) < LEFTOVER_TEMP_AGE_SECONDS:
+                        continue
+                    os.remove(full)
+                    LOGGER.info(f"{LOG_PREFIX} removed leftover temp file {full}")
                 except OSError:
                     pass
 
