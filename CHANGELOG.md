@@ -2,6 +2,19 @@
 
 Newest first. Versions are calver Major.YY.DDDHHMM (UTC).
 
+## 1.26.3301619 (2026-11-26)
+
+### Fixed
+
+- **The settings page opens again when a channel group name starts or ends with a space** (#32). Such a name, next to the same name without the space, made Dispatcharr show "Something went wrong" ("Duplicate options are not supported") instead of the settings. The Channel Groups pick list now offers each name once, without the spaces, and choosing it selects the group either way.
+
+### Changed
+
+- **IPTV Checker keeps its private files in Dispatcharr's per-plugin data folder,** `/data/plugins/_data/iptv_checker/` (`iptv-checker/` after a Plugin Hub install). The last results, the loaded channel list, the windowed resume state, the original groups kept for Restore, the Streams Checked tally and the usage reporter's install id move there. The progress file and the scheduler's coordination files sit beside that folder in `/data/plugins/_data/`. The README section "Where IPTV Checker keeps its files" lists every file.
+- On the first start after the upgrade the plugin copies the old files into the new folder. It never deletes or edits an old file, and a file already in the new folder is kept. The copy is recorded in `migrated.json` in the new folder.
+- While a worker still runs the previous version, the scheduler takes the old and new coordination files, so a scheduled check does not start twice. The progress file is also written to the old `/data/iptv_checker_progress.json`, which earlier Stream-Mapparr versions read.
+- The emailed report's fallback folder moves to `/data/plugins/_shared/newsflasharr/iptv-checker/`. `/config/iptv_checker`, the CSV exports in `/data/exports` and the settings file stay where they are.
+
 ## 1.26.3262133 (2026-11-22)
 
 ### Changed
