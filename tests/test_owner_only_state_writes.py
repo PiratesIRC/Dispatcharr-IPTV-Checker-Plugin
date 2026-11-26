@@ -1,12 +1,15 @@
-"""The progress file, the reload flag and every JSON state file are created owner-only (0o600).
+"""Every state file is written through a unique temp file that is owner-only (0o600 on POSIX).
 
-The mode is asserted on the os.open argument, not on stat(): Windows has no POSIX permission
-bits, and the Hub's CodeQL rule judges the mode written in the source.
+Two saves of the same file can overlap across Dispatcharr workers, so each save uses its own
+temp file. A fixed temp name would let one save remove or replace the other's, and that save
+would be dropped with an error.
 """
+import glob
 import json
+import logging
+import os
 import stat
 import sys
-import os
 
 import pytest
 
@@ -25,17 +28,6 @@ def _spy_on_os_open(monkeypatch):
     return seen
 
 
-def test_save_json_file_creates_its_temp_file_owner_only(plugin, tmp_path, monkeypatch):
-    seen = _spy_on_os_open(monkeypatch)
-    target = tmp_path / "state.json"
-
-    plugin._save_json_file(str(target), {"a": 1})
-
-    assert json.loads(target.read_text(encoding="utf-8")) == {"a": 1}
-    temp_modes = [mode for path, mode in seen if path.endswith(".tmp")]
-    assert temp_modes == [0o600]
-
-
 def test_the_reload_flag_is_created_owner_only(plugin, tmp_path, monkeypatch):
     flag = tmp_path / "reload.flag"
     monkeypatch.setattr(pm.PluginConfig, "STORAGE_LAYOUT", None)
@@ -48,40 +40,73 @@ def test_the_reload_flag_is_created_owner_only(plugin, tmp_path, monkeypatch):
     assert [mode for path, mode in seen if path == str(flag)] == [0o600]
 
 
-def test_a_stale_temp_file_is_removed_before_the_owner_only_create(plugin, tmp_path, monkeypatch):
-    """A crashed earlier write can leave <file>.tmp at 0644. O_TRUNC would keep that mode and
-    os.replace would carry it onto the state file, so the leftover is removed first."""
-    events = []
-    real_remove = os.remove
-    real_open = os.open
-    stale = str(tmp_path / "state.json.tmp")
+def test_the_temp_file_sits_beside_the_target_with_a_unique_name(plugin, tmp_path, monkeypatch):
+    target = tmp_path / "state.json"
+    sources = []
+    real_replace = os.replace
 
-    def spy_remove(path, *args, **kwargs):
-        events.append(("remove", os.fspath(path)))
-        return real_remove(path, *args, **kwargs)
+    def spy_replace(src, dst, *args, **kwargs):
+        sources.append(os.fspath(src))
+        return real_replace(src, dst, *args, **kwargs)
 
-    def spy_open(path, flags, mode=0o777, *args, **kwargs):
-        events.append(("open", os.fspath(path), mode))
-        return real_open(path, flags, mode, *args, **kwargs)
+    monkeypatch.setattr(pm.os, "replace", spy_replace)
 
-    monkeypatch.setattr(pm.os, "remove", spy_remove)
-    monkeypatch.setattr(pm.os, "open", spy_open)
-    with open(stale, "w", encoding="utf-8") as fh:
-        fh.write("old crashed write")
+    plugin._save_json_file(str(target), {"a": 1})
 
-    plugin._save_json_file(str(tmp_path / "state.json"), {"a": 1})
+    assert len(sources) == 1
+    temp = sources[0]
+    assert os.path.dirname(temp) == str(tmp_path)
+    assert os.path.basename(temp).startswith(".state.json.")
+    assert temp.endswith(".tmp")
+    assert temp != str(target) + ".tmp"
 
-    assert events[0] == ("remove", stale)
-    assert events[1] == ("open", stale, 0o600)
+
+def test_two_interleaved_saves_of_one_file_both_complete(plugin, tmp_path, monkeypatch, caplog):
+    """A second save starts after the first has written its temp file and before the first
+    replaces the target. With one fixed temp name the second save removed the first's temp,
+    and the first save's replace failed."""
+    target = tmp_path / "state.json"
+    real_replace = os.replace
+    state = {"inside": False}
+
+    def replace_with_a_second_save_first(src, dst, *args, **kwargs):
+        if not state["inside"] and os.fspath(dst) == str(target):
+            state["inside"] = True
+            try:
+                plugin._save_json_file(str(target), {"who": "second"})
+            finally:
+                state["inside"] = False
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(pm.os, "replace", replace_with_a_second_save_first)
+
+    with caplog.at_level(logging.ERROR, logger="plugins.iptv_checker"):
+        plugin._save_json_file(str(target), {"who": "first"})
+
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR], "a save was dropped"
+    assert json.loads(target.read_text(encoding="utf-8")) == {"who": "first"}
+    assert glob.glob(str(tmp_path / ".state.json.*")) == []
+
+
+def test_a_failed_save_removes_its_temp_file(plugin, tmp_path, monkeypatch, caplog):
+    target = tmp_path / "state.json"
+
+    def failing_replace(src, dst, *args, **kwargs):
+        raise OSError("replace refused")
+
+    monkeypatch.setattr(pm.os, "replace", failing_replace)
+
+    with caplog.at_level(logging.ERROR, logger="plugins.iptv_checker"):
+        plugin._save_json_file(str(target), {"a": 1})
+
+    assert not target.exists()
+    assert glob.glob(str(tmp_path / ".state.json.*")) == [], "temp file left behind"
+    assert any("replace refused" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
-def test_a_stale_0644_temp_file_does_not_leave_the_state_file_world_readable(plugin, tmp_path):
+def test_the_state_file_is_owner_only_on_posix(plugin, tmp_path):
     target = tmp_path / "state.json"
-    stale = str(target) + ".tmp"
-    with open(stale, "w", encoding="utf-8") as fh:
-        fh.write("old crashed write")
-    os.chmod(stale, 0o644)
 
     plugin._save_json_file(str(target), {"a": 1})
 

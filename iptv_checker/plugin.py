@@ -9,6 +9,7 @@ import json
 import os
 import re
 import stat
+import tempfile
 import csv
 import fnmatch
 import hashlib
@@ -545,6 +546,10 @@ def _writable_dir(preferred, fallback):
         if os.access(directory, os.W_OK):
             return directory
     return preferred
+
+
+# Set once the directory check in run() has failed and been logged for this process.
+_DATA_DIR_CHECK_WARNED = False
 
 
 class Plugin:
@@ -1447,26 +1452,25 @@ class Plugin:
             return None
 
     def _save_json_file(self, filepath, data, indent=None):
-        """Atomically save data to a JSON file using temp file + rename.
+        """Atomically save data to a JSON file: a unique temp file, fsync, then replace.
 
-        The temp file is created owner-only (0o600): the progress file and the other state files
-        hold run details and the Hub's CodeQL rejects a wider mode on os.open.
+        tempfile.mkstemp gives each save its own temp name, created owner-only (0o600 on POSIX), so
+        two saves of one file cannot remove or replace each other's temp file. A failed save removes
+        its temp file and logs an ERROR.
         """
-        tmp_path = filepath + '.tmp'
+        tmp_path = None
         try:
-            # A temp file left by a crashed write can carry a wider mode, and O_TRUNC keeps it, so
-            # remove it first and let the open create a fresh file at 0o600.
-            try:
-                os.remove(tmp_path)
-            except FileNotFoundError:
-                pass
-            fd = os.open(tmp_path, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+            directory = os.path.dirname(filepath) or "."
+            fd, tmp_path = tempfile.mkstemp(
+                prefix="." + os.path.basename(filepath) + ".", suffix=".tmp", dir=directory)
             with os.fdopen(fd, 'w') as f:
                 json.dump(data, f, indent=indent, default=str)
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp_path, filepath)
         except Exception as e:
             LOGGER.error(f"Failed to save JSON file {filepath}: {e}")
-            if os.path.exists(tmp_path):
+            if tmp_path is not None:
                 try:
                     os.remove(tmp_path)
                 except OSError:
@@ -2564,11 +2568,14 @@ class Plugin:
 
             # Warns once per process when Dispatcharr's data_dir differs from the resolved one.
             # Its own guard: a failure here must not reach the handler below, which resets the
-            # progress record of a live run to idle.
+            # progress record of a live run to idle. One WARNING per process, then silence.
             try:
                 storage.check_context(PluginConfig.STORAGE_LAYOUT, context, logger)
             except Exception as e:
-                logger.debug(f"{LOG_PREFIX} data_dir check skipped: {e}")
+                global _DATA_DIR_CHECK_WARNED
+                if not _DATA_DIR_CHECK_WARNED:
+                    _DATA_DIR_CHECK_WARNED = True
+                    logger.warning(f"{LOG_PREFIX} data_dir check failed, continuing: {e}")
 
             action_map = {
                 "validate_settings": self.validate_settings_action,

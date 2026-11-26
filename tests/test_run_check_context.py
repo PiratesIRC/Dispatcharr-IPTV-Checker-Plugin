@@ -40,3 +40,26 @@ def test_a_check_context_that_raises_leaves_the_progress_record_alone(plugin, pm
     assert progress.read_text(encoding="utf-8") == running
     assert ran == [1]
     assert result.get("status") == "ok"
+
+
+def test_a_failing_directory_check_warns_once_per_process(plugin, pmod, monkeypatch, caplog):
+    """The check is a diagnostic, so a failure is one WARNING per process, not one per action."""
+    import logging
+
+    monkeypatch.setattr(pmod, "_DATA_DIR_CHECK_WARNED", False)
+
+    def boom(layout, context, logger):
+        raise RuntimeError("check_context failed")
+
+    monkeypatch.setattr(storage, "check_context", boom)
+    monkeypatch.setattr(plugin, "view_status_action", lambda settings, logger: {"status": "ok"}, raising=False)
+    logger = logging.getLogger("iptv_checker.warn_once_test")
+    logger.propagate = True
+    context = {"settings": {}, "logger": logger, "data_dir": "/x"}
+
+    with caplog.at_level(logging.WARNING):
+        plugin.run("view_status", {}, context)
+        plugin.run("view_status", {}, context)
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "data_dir" in r.getMessage()]
+    assert len(warnings) == 1
