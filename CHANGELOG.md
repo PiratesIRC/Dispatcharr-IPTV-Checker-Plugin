@@ -2,6 +2,12 @@
 
 Newest first. Versions are calver Major.YY.DDDHHMM (UTC).
 
+## 1.26.3301646 (2026-11-26)
+
+### Changed
+
+- **The plugin declares the `proxy_internals` capability.** IPTV Checker saves each checked stream's stats, such as resolution and bitrate, through a Dispatcharr method that is not part of the plugin API, and the Plugin Hub asks plugins to declare that. Nothing else changes.
+
 ## 1.26.3301619 (2026-11-26)
 
 ### Fixed
