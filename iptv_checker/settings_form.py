@@ -236,8 +236,14 @@ def channel_group_options(group_names, saved=()):
     wildcard character is offered escaped so it matches only itself. A name
     holding a comma is left out: the setting is a comma-separated list, so it
     cannot be stored. A saved value is never left out, because Dispatcharr
-    rejects a save holding a value that is not an option."""
-    names = sorted({str(n) for n in group_names or () if str(n or "").strip() and "," not in str(n)})
+    rejects a save holding a value that is not an option.
+
+    Names are trimmed before duplicates are removed: Dispatcharr's option
+    serializer trims every value, so "A " and "A" would reach the frontend as
+    two options with the same value, and the frontend then refuses the whole
+    form (issue #32). The matcher compares trimmed group names too."""
+    names = sorted({str(n or "").strip() for n in group_names or ()} - {""})
+    names = [n for n in names if "," not in n]
     prefixes = sorted({p for p in (name_prefix(n) for n in names) if p})
     out = []
     seen = set()

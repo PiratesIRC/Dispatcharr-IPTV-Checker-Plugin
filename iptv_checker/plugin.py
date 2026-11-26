@@ -2966,15 +2966,19 @@ class Plugin:
     def _match_group_names(patterns_str, all_group_names):
         """Return the set of group names matching any comma-separated pattern.
         Wildcards (containing * ? [) use fnmatch.fnmatchcase (case-sensitive);
-        literals use case-sensitive exact membership — symmetric with the include path."""
+        literals use case-sensitive exact membership — symmetric with the include path.
+        A group name is also compared with its surrounding spaces removed: patterns
+        are always trimmed, and so are the pick-list values (issue #32), so a group
+        stored as "A " is selected by "A"."""
         matched = set()
         for pattern in (p.strip() for p in (patterns_str or '').split(',')):
             if not pattern:
                 continue
             if any(c in pattern for c in '*?['):
-                matched |= {g for g in all_group_names if fnmatch.fnmatchcase(g, pattern)}
-            elif pattern in all_group_names:
-                matched.add(pattern)
+                matched |= {g for g in all_group_names
+                            if fnmatch.fnmatchcase(g, pattern) or fnmatch.fnmatchcase(g.strip(), pattern)}
+            else:
+                matched |= {g for g in all_group_names if g == pattern or g.strip() == pattern}
         return matched
 
     @staticmethod

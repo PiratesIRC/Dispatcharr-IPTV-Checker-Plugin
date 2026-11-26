@@ -274,6 +274,36 @@ def test_default_and_stored_values_pass_dispatcharr_option_check():
     assert set(f["default"]) | {"Z"} <= allowed
 
 
+def _drf_trimmed_values(field):
+    """The option values as Dispatcharr's PluginFieldOptionSerializer returns them:
+    its value is a DRF CharField, which trims surrounding whitespace by default."""
+    return [str(o["value"]).strip() for o in field["options"]]
+
+
+def test_names_with_surrounding_spaces_give_no_duplicate_after_dispatcharr_trims():
+    """Issue #32: a group named "24/7 CHANNELS " beside a group or saved value
+    "24/7 CHANNELS" gave two options that the serializer trimmed into one value,
+    and the frontend refused the whole form ("Duplicate options are not supported")."""
+    groups = ["24/7 CHANNELS ", "24/7 CHANNELS", " US: News", "US: News"]
+    f = _group_field({"channel_group_list": ["24/7 CHANNELS"]}, groups=groups)
+    values = _values(f)
+    assert values == _drf_trimmed_values(f), "every value is already trimmed"
+    assert len(values) == len(set(values)), values
+    assert values.count("24/7 CHANNELS") == 1
+    assert values.count("US:*") == 1, "a leading space does not make a second prefix"
+    assert all(o["label"] == o["label"].strip() for o in f["options"])
+
+
+def test_a_trimmed_option_still_selects_a_group_stored_with_spaces(pmod):
+    match = pmod.Plugin._match_group_names
+    names = {"24/7 CHANNELS ", " Kids", "News"}
+    assert match("24/7 CHANNELS", names) == {"24/7 CHANNELS "}
+    assert match("Kids", names) == {" Kids"}
+    assert match("24/7*", names) == {"24/7 CHANNELS "}
+    assert match("News", names) == {"News"}, "an exact name is unchanged"
+    assert match("news", names) == set(), "still case-sensitive"
+
+
 def test_no_groups_and_nothing_saved_gives_an_empty_pick_list():
     f = _group_field(groups=[])
     assert f["options"] == [] and f["default"] == []
