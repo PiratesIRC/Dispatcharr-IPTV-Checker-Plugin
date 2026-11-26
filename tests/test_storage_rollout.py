@@ -9,7 +9,9 @@ import datetime
 import logging
 import os
 import subprocess
+import json
 import sys
+import time
 import types
 
 import pytest
@@ -232,3 +234,63 @@ def test_a_tally_append_first_copies_the_old_ledger_tail(rollout, plugin, monkey
     assert lines[1] == '{"streams": 2}', "the old-code line is copied before the new one"
     assert '"streams": 5' in lines[2]
     assert len(lines) == 3, "no line is counted twice"
+
+
+# --- Startup normalise at both progress paths -----------------------------------------------------
+
+def _write_progress_record(path, status, token, age_seconds=0):
+    data = {"current": 418, "total": 2691, "status": status, "start_time": time.time() - 600}
+    if token:
+        data["boot_token"] = token
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh)
+    if age_seconds:
+        old = time.time() - age_seconds
+        os.utime(path, (old, old))
+
+
+def _status_at(path):
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)["status"]
+
+
+@pytest.fixture
+def this_boot(monkeypatch):
+    monkeypatch.setattr(pm, "_container_boot_token", lambda: "thisboot:100")
+
+
+def test_a_stale_running_record_at_the_old_path_is_reset(rollout, plugin, this_boot):
+    """A file the previous release left at the old /data path must not keep saying running."""
+    plugin.progress_file = rollout.cfg.PROGRESS_FILE
+    old = rollout.old / "iptv_checker_progress.json"
+    _write_progress_record(old, "running", "oldboot:99")
+    plugin._normalize_stale_progress()
+    assert _status_at(old) == "idle"
+
+
+def test_both_stale_running_records_are_reset(rollout, plugin, this_boot):
+    plugin.progress_file = rollout.cfg.PROGRESS_FILE
+    old = rollout.old / "iptv_checker_progress.json"
+    _write_progress_record(old, "running", "oldboot:99")
+    _write_progress_record(rollout.cfg.PROGRESS_FILE, "running", "oldboot:99")
+    plugin._normalize_stale_progress()
+    assert _status_at(old) == "idle"
+    assert _status_at(rollout.cfg.PROGRESS_FILE) == "idle"
+
+
+def test_a_live_run_at_the_old_path_is_left_alone(rollout, plugin, this_boot):
+    """An old-code worker still checking: fresh, stamped by this container, so not debris."""
+    plugin.progress_file = rollout.cfg.PROGRESS_FILE
+    old = rollout.old / "iptv_checker_progress.json"
+    _write_progress_record(old, "running", "thisboot:100", age_seconds=0)
+    plugin._normalize_stale_progress()
+    assert _status_at(old) == "running"
+
+
+def test_the_old_path_is_not_normalised_when_rollout_is_off(rollout, plugin, this_boot, monkeypatch):
+    monkeypatch.setattr(storage, "ROLLOUT_DUAL_PATHS", False)
+    plugin.progress_file = rollout.cfg.PROGRESS_FILE
+    old = rollout.old / "iptv_checker_progress.json"
+    _write_progress_record(old, "running", "oldboot:99")
+    plugin._normalize_stale_progress()
+    assert _status_at(old) == "running"

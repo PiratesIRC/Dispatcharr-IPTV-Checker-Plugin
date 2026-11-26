@@ -965,7 +965,9 @@ class Plugin:
         """
         for flag in _state_paths("SCHEDULER_RELOAD_FLAG"):
             try:
-                with open(flag, 'w') as f:
+                # Owner-only, as every state file this plugin creates (see _save_json_file).
+                fd = os.open(flag, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+                with os.fdopen(fd, 'w') as f:
                     f.write(str(time.time()))
             except OSError as e:
                 LOGGER.warning(f"Could not write scheduler reload flag: {e}")
@@ -996,11 +998,20 @@ class Plugin:
         was written before this release and is treated as debris, which restores
         the old behaviour for it. That is the safe default here: the alternative
         leaves a genuinely stuck file stuck forever.
+
+        BOTH PATHS. While the rollout keeps the old /data progress file, a previous-release worker
+        may have left a stuck record there, so every path _state_paths names is checked.
         """
+        old = _rollout_old_path("PROGRESS_FILE")
+        for path in ([old] if old else []) + [self.progress_file]:
+            self._normalize_progress_file(path)
+
+    def _normalize_progress_file(self, path):
+        """Reset one progress file if it is stale (see _normalize_stale_progress)."""
         try:
-            if not os.path.exists(self.progress_file):
+            if not os.path.exists(path):
                 return
-            with open(self.progress_file, 'r') as f:
+            with open(path, 'r') as f:
                 data = json.load(f) or {}
             if data.get('status') != 'running':
                 return
@@ -1009,7 +1020,7 @@ class Plugin:
             same_container = bool(token) and token == _container_boot_token()
             if same_container:
                 try:
-                    quiet_for = time.time() - os.path.getmtime(self.progress_file)
+                    quiet_for = time.time() - os.path.getmtime(path)
                 except OSError:
                     quiet_for = 0
                 if quiet_for < PluginConfig.PROGRESS_STALE_AFTER_SECONDS:
@@ -1030,8 +1041,12 @@ class Plugin:
             )
             data['status'] = 'idle'
             data['end_time'] = time.time()
-            self._save_progress_file(data, indent=2)
-            self.check_progress = data
+            if path == self.progress_file:
+                # The current file also goes to its mirror, as every progress write does.
+                self._save_progress_file(data, indent=2)
+                self.check_progress = data
+            else:
+                self._save_json_file(path, data, indent=2)
         except Exception as e:
             LOGGER.warning(f"Could not normalize progress.json on startup: {e}")
 
@@ -1432,10 +1447,15 @@ class Plugin:
             return None
 
     def _save_json_file(self, filepath, data, indent=None):
-        """Atomically save data to a JSON file using temp file + rename."""
+        """Atomically save data to a JSON file using temp file + rename.
+
+        The temp file is created owner-only (0o600): the progress file and the other state files
+        hold run details and the Hub's CodeQL rejects a wider mode on os.open.
+        """
+        tmp_path = filepath + '.tmp'
         try:
-            tmp_path = filepath + '.tmp'
-            with open(tmp_path, 'w') as f:
+            fd = os.open(tmp_path, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+            with os.fdopen(fd, 'w') as f:
                 json.dump(data, f, indent=indent, default=str)
             os.replace(tmp_path, filepath)
         except Exception as e:
@@ -1475,8 +1495,11 @@ class Plugin:
             # Lines an old-code worker appended to the old ledger since the carry-over go in first,
             # so the tally keeps its order and no line is counted twice (storage.sync_tally_tail).
             storage.sync_tally_tail(PluginConfig.STORAGE_LAYOUT, PluginConfig.STREAM_COUNT_LEDGER_FILE, log)
-            with open(PluginConfig.STREAM_COUNT_LEDGER_FILE, 'a') as f:
-                f.write(line + "\n")
+            # The append holds the tally lock, the one sync_tally_tail takes, so it cannot land in
+            # another worker's tail sync. The sync takes the lock itself and is not nested here.
+            with storage.tally_lock(PluginConfig.STORAGE_LAYOUT):
+                with open(PluginConfig.STREAM_COUNT_LEDGER_FILE, 'a') as f:
+                    f.write(line + "\n")
             self._report_usage(None, log, force=count > 0)
             return True
         except Exception as e:
@@ -2532,6 +2555,9 @@ class Plugin:
             # Add our filter to context logger to ensure all logs are prefixed
             if logger is not LOGGER and not any(isinstance(f, PluginNameFilter) for f in logger.filters):
                 logger.addFilter(PluginNameFilter())
+
+            # Warns once per process when Dispatcharr's data_dir differs from the resolved one.
+            storage.check_context(PluginConfig.STORAGE_LAYOUT, context, logger)
 
             action_map = {
                 "validate_settings": self.validate_settings_action,
