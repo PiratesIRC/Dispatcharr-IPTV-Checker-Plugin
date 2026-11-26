@@ -12,7 +12,8 @@
   "capabilities": [
     "outbound_network",
     "subprocess",
-    "filesystem_write"
+    "filesystem_write",
+    "proxy_internals"
   ],
   "help_url": "https://github.com/PiratesIRC/Dispatcharr-IPTV-Checker-Plugin",
   "fields": [

@@ -36,7 +36,10 @@ def _form(settings=None):
 
 def test_manifest_declares_version_1_and_capabilities():
     assert _DATA["manifest_version"] == 1, "version 2 turns on the sandbox; that needs its own decision"
-    assert set(_DATA["capabilities"]) == {"outbound_network", "subprocess", "filesystem_write"}
+    # proxy_internals: _update_dispatcharr_metadata calls ChannelService._update_stream_stats_in_db,
+    # a private Dispatcharr method (Hub CodeQL rule capability-contract/proxy-internals, audit #620).
+    assert set(_DATA["capabilities"]) == {"outbound_network", "subprocess", "filesystem_write",
+                                          "proxy_internals"}
 
 
 def test_flat_form_holds_only_types_that_033_understands():
