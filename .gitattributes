@@ -15,3 +15,13 @@ iptv_checker/usage_client.py text eol=lf
 # matching its pin.
 iptv_checker/report_chrome.py text eol=lf
 .githooks/* text eol=lf
+# The vendored storage layer is sha256-pinned by scripts/storage_manifest.json
+# (tests/test_storage_parity.py), so it MUST stay LF on every OS.
+iptv_checker/plugin_storage.py text eol=lf
+# The release tools are sha256-pinned by scripts/tools_manifest.json, so they
+# MUST stay LF on every OS. A CRLF copy changes the hash of the pinned file.
+scripts/release_config.py text eol=lf
+scripts/bump_version.py text eol=lf
+scripts/check_version_sync.py text eol=lf
+scripts/validate_zip.py text eol=lf
+scripts/build_release_zip.py text eol=lf
